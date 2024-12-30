@@ -1,23 +1,31 @@
+import copy
 import logging
 import math
+import tempfile
 from abc import ABC, abstractmethod
+from itertools import tee
 from pathlib import Path
+from typing import Generator, Iterable
 
 import numpy as np
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
-from imitation.algorithms.bc import BC
+from imitation.algorithms.bc import BC, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
-from imitation.data.types import Transitions
+from imitation.data.types import TrajectoryWithRew, Transitions
 from imitation.rewards.reward_nets import BasicRewardNet
 from imitation.util.networks import RunningNorm
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.base_class import BasePolicy
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import MlpPolicy
+
+from rl_framework.util import LoggingCallback, SavingCallback, add_callbacks_to_callback
 
 FILE_NAME_POLICY = "policy"
 FILE_NAME_SB3_ALGORITHM = "algorithm.zip"
@@ -30,12 +38,16 @@ class AlgorithmWrapper(ABC):
 
     @abstractmethod
     def build_algorithm(
-        self, algorithm_parameters, total_timesteps, trajectories, vectorized_environment
+        self,
+        algorithm_parameters: dict,
+        total_timesteps: int,
+        trajectories: Generator[TrajectoryWithRew, None, None],
+        vectorized_environment: VecEnv,
     ) -> DemonstrationAlgorithm:
         raise NotImplementedError
 
     @abstractmethod
-    def train(self, algorithm, total_timesteps):
+    def train(self, algorithm: DemonstrationAlgorithm, total_timesteps: int, callback_list: CallbackList):
         raise NotImplementedError
 
     @staticmethod
@@ -74,7 +86,18 @@ class AlgorithmWrapper(ABC):
 
 
 class BCAlgorithmWrapper(AlgorithmWrapper):
-    def build_algorithm(self, algorithm_parameters, total_timesteps, trajectories, vectorized_environment) -> BC:
+    def __init__(self):
+        super().__init__()
+        self.venv = None
+
+    def build_algorithm(
+        self,
+        algorithm_parameters: dict,
+        total_timesteps: int,
+        trajectories: Generator[TrajectoryWithRew, None, None],
+        vectorized_environment: VecEnv,
+    ) -> BC:
+        self.venv = vectorized_environment
         parameters = {
             "observation_space": vectorized_environment.observation_space,
             "action_space": vectorized_environment.action_space,
@@ -87,11 +110,48 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         algorithm = BC(demonstrations=trajectories, **parameters)
         return algorithm
 
+    def train(self, algorithm: BC, total_timesteps: int, callback_list: CallbackList):
+        on_batch_end_functions = []
+
+        for callback in callback_list.callbacks:
+            if isinstance(callback, SavingCallback):
+                saving_callback = copy.copy(callback)
+
+                def save(batch_number):
+                    on_batch_end_counter[save] += 1
+                    saving_callback.num_timesteps = algorithm.batch_size * batch_number
+                    saving_callback._on_step()
+
+                on_batch_end_functions.append(save)
+
+            elif isinstance(callback, LoggingCallback):
+                logging_callback = copy.copy(callback)
+                logging_interval = 100
+                compute_rollout_stats = RolloutStatsComputer(
+                    self.venv,
+                    1,
+                )
+
+                def log(batch_number):
+                    on_batch_end_counter[log] += 1
+                    if on_batch_end_counter[log] % logging_interval == 0:
+                        rollout_stats = compute_rollout_stats(algorithm.policy, algorithm.rng)
+                        logging_callback.connector.log_value(
+                            algorithm.batch_size * batch_number, rollout_stats["return_mean"], "Episode reward"
+                        )
+
+                on_batch_end_functions.append(log)
+
+        on_batch_end_counter = {func: 0 for func in on_batch_end_functions}
+
+        def on_batch_end():
+            for func in on_batch_end_functions:
+                func(on_batch_end_counter[func])
+
+        algorithm.train(n_batches=math.ceil(total_timesteps / algorithm.batch_size), on_batch_end=on_batch_end)
+
     def save_algorithm(self, algorithm: DemonstrationAlgorithm, folder_path: Path):
         pass  # only policy saving is required for this algorithm
-
-    def train(self, algorithm, total_timesteps):
-        algorithm.train(n_batches=math.ceil(total_timesteps / algorithm.batch_size))
 
     def load_algorithm(self, folder_path: Path):
         policy = self.load_policy(folder_path)
@@ -99,17 +159,20 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
 
 class GAILAlgorithmWrapper(AlgorithmWrapper):
-    def build_algorithm(self, algorithm_parameters, total_timesteps, trajectories, vectorized_environment) -> GAIL:
+    def build_algorithm(
+        self,
+        algorithm_parameters: dict,
+        total_timesteps: int,
+        trajectories: Generator[TrajectoryWithRew, None, None],
+        vectorized_environment: VecEnv,
+    ) -> GAIL:
         parameters = {
             "venv": vectorized_environment,
             "demo_batch_size": 1024,
             # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(
-                    env=vectorized_environment,
-                    policy=MlpPolicy,
-                ),
+                PPO(env=vectorized_environment, policy=MlpPolicy, tensorboard_log=tempfile.mkdtemp()),
             ),
             "reward_net": self.loaded_parameters.get(
                 "reward_net",
@@ -127,7 +190,8 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         algorithm = GAIL(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm, total_timesteps):
+    def train(self, algorithm: GAIL, total_timesteps: int, callback_list: CallbackList):
+        add_callbacks_to_callback(callback_list, algorithm.gen_callback)
         algorithm.train(total_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: GAIL, folder_path: Path):
@@ -142,17 +206,20 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
 
 
 class AIRLAlgorithmWrapper(AlgorithmWrapper):
-    def build_algorithm(self, algorithm_parameters, total_timesteps, trajectories, vectorized_environment) -> AIRL:
+    def build_algorithm(
+        self,
+        algorithm_parameters: dict,
+        total_timesteps: int,
+        trajectories: Generator[TrajectoryWithRew, None, None],
+        vectorized_environment: VecEnv,
+    ) -> AIRL:
         parameters = {
             "venv": vectorized_environment,
             "demo_batch_size": 1024,
             # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(
-                    env=vectorized_environment,
-                    policy=MlpPolicy,
-                ),
+                PPO(env=vectorized_environment, policy=MlpPolicy, tensorboard_log=tempfile.mkdtemp()),
             ),
             "reward_net": self.loaded_parameters.get(
                 "reward_net",
@@ -170,7 +237,8 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         algorithm = AIRL(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm, total_timesteps):
+    def train(self, algorithm: AIRL, total_timesteps: int, callback_list: CallbackList):
+        add_callbacks_to_callback(callback_list, algorithm.gen_callback)
         algorithm.train(total_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: AIRL, folder_path: Path):
@@ -186,7 +254,11 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
 
 class DensityAlgorithmWrapper(AlgorithmWrapper):
     def build_algorithm(
-        self, algorithm_parameters, total_timesteps, trajectories, vectorized_environment
+        self,
+        algorithm_parameters: dict,
+        total_timesteps: int,
+        trajectories: Generator[TrajectoryWithRew, None, None],
+        vectorized_environment: VecEnv,
     ) -> DensityAlgorithm:
         parameters = {
             "venv": vectorized_environment,
@@ -205,8 +277,10 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         algorithm = DensityAlgorithm(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm, total_timesteps):
+    def train(self, algorithm: DensityAlgorithm, total_timesteps: int, callback_list: CallbackList):
         algorithm.train()
+        # NOTE: All callbacks concerning reward calculation will use the density reward and not the environment reward
+        add_callbacks_to_callback(callback_list, algorithm.wrapper_callback)
         algorithm.train_policy(n_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: DensityAlgorithm, folder_path: Path):
@@ -219,7 +293,13 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
 
 
 class SQILAlgorithmWrapper(AlgorithmWrapper):
-    def build_algorithm(self, algorithm_parameters, total_timesteps, trajectories, vectorized_environment) -> SQIL:
+    def build_algorithm(
+        self,
+        algorithm_parameters: dict,
+        total_timesteps: int,
+        trajectories: Generator[TrajectoryWithRew, None, None],
+        vectorized_environment: VecEnv,
+    ) -> SQIL:
         parameters = {
             "venv": vectorized_environment,
             "policy": "MlpPolicy",
@@ -229,6 +309,16 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
             logging.warning("SQIL algorithm does not support passing of the parameter `allow_variable_horizon`.")
+
+        class MockedIterableFromGenerator(Iterable):
+            def __init__(self, generator):
+                self._generator = generator
+
+            def __iter__(self):
+                self._generator, generator_copy = tee(self._generator)
+                return generator_copy
+
+        trajectories = MockedIterableFromGenerator(trajectories)
         algorithm = SQIL(demonstrations=trajectories, **parameters)
         if "rl_algo" in self.loaded_parameters:
             algorithm.rl_algo = self.loaded_parameters.get("rl_algo")
@@ -236,8 +326,8 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
             algorithm.rl_algo.replay_buffer.set_demonstrations(trajectories)
         return algorithm
 
-    def train(self, algorithm, total_timesteps):
-        algorithm.train(total_timesteps=total_timesteps)
+    def train(self, algorithm: SQIL, total_timesteps: int, callback_list: CallbackList):
+        algorithm.train(total_timesteps=total_timesteps, callback=callback_list)
 
     def save_algorithm(self, algorithm: SQIL, folder_path: Path):
         algorithm.rl_algo.save(folder_path / FILE_NAME_SB3_ALGORITHM, exclude=["replay_buffer_kwargs"])

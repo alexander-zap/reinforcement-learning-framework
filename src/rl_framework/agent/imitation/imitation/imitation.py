@@ -10,6 +10,7 @@ from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
@@ -24,7 +25,7 @@ from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import 
     SQILAlgorithmWrapper,
 )
 from rl_framework.agent.imitation.imitation_learning_agent import ILAgent
-from rl_framework.util import Connector
+from rl_framework.util import Connector, LoggingCallback, SavingCallback
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY = {
     BC: BCAlgorithmWrapper,
@@ -115,7 +116,10 @@ class ImitationAgent(ILAgent):
         else:
             self.algorithm.set_demonstrations(trajectories)
 
-        self.algorithm_wrapper.train(self.algorithm, total_timesteps)
+        callback_list = CallbackList(
+            [SavingCallback(self, connector, training_environments[0]), LoggingCallback(connector)]
+        )
+        self.algorithm_wrapper.train(self.algorithm, total_timesteps, callback_list)
 
         self.algorithm_policy = self.algorithm.policy
 
