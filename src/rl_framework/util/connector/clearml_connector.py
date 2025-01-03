@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, SupportsFloat, Text
 
+import gymnasium as gym
 import stable_baselines3
 from clearml import Task
 from clearml.model import InputModel
@@ -78,8 +79,8 @@ class ClearMLConnector(Connector):
     def upload(
         self,
         agent,
-        evaluation_environment,
-        variable_values_to_log: Dict = None,
+        video_recording_environment: Optional[gym.Env] = None,
+        variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
@@ -89,10 +90,11 @@ class ClearMLConnector(Connector):
 
         Args:
             agent (Agent): Agent (and its .algorithm attribute) to be uploaded.
-            evaluation_environment (Environment): Environment used for final evaluation and clip creation before upload.
+            video_recording_environment (Environment): Environment used for clip creation before upload.
+                If not provided, no video will be created.
             variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
-            checkpoint_id (int): If specified, we do not perform a final upload with evaluating and generating but
-                instead upload only a model checkpoint to ClearML.
+            checkpoint_id (int): If specified, we do not perform a final upload with video generation and
+                scalar logging but instead upload only a model checkpoint to ClearML.
         """
         if variable_values_to_log is None:
             variable_values_to_log = {}
@@ -142,13 +144,13 @@ class ClearMLConnector(Connector):
             self.task.upload_artifact(name="system_info", artifact_object=system_info)
 
             # Step 4: Record a video and log local video file
-            if video_length > 0:
+            if video_recording_environment and video_length > 0:
                 temp_path = tempfile.mkdtemp()
                 logging.debug(f"Recording video to {temp_path} and uploading as debug sample ...")
                 video_path = Path(temp_path) / "replay.mp4"
                 record_video(
                     agent=agent,
-                    evaluation_environment=evaluation_environment,
+                    video_recording_environment=video_recording_environment,
                     file_path=video_path,
                     fps=1,
                     video_length=video_length,

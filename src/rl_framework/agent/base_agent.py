@@ -83,7 +83,7 @@ class Agent(ABC):
     def upload(
         self,
         connector: Connector,
-        evaluation_environment: gym.Env,
+        video_recording_environment: gym.Env,
         variable_values_to_log: Dict,
     ) -> None:
         """
@@ -92,11 +92,13 @@ class Agent(ABC):
 
         Args:
             connector (Connector): Connector for uploading.
-            evaluation_environment (gym.Env): Env used for final evaluation and clip creation before upload.
+            video_recording_environment (gym.Env): Env used for clip creation before upload.
             variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
         """
         connector.upload(
-            agent=self, evaluation_environment=evaluation_environment, variable_values_to_log=variable_values_to_log
+            agent=self,
+            video_recording_environment=video_recording_environment,
+            variable_values_to_log=variable_values_to_log,
         )
 
     def download(

@@ -52,7 +52,7 @@ class SavingCallback(BaseCallback):
     A custom callback which uploads the agent to the connector after every `checkpoint_frequency` steps.
     """
 
-    def __init__(self, agent, connector, evaluation_environment, checkpoint_frequency=50000, verbose=0):
+    def __init__(self, agent, connector, checkpoint_frequency=50000, verbose=0):
         """
         Args:
             checkpoint_frequency: After how many steps a checkpoint should be saved to the connector.
@@ -61,7 +61,6 @@ class SavingCallback(BaseCallback):
         super().__init__(verbose)
         self.agent = agent
         self.connector = connector
-        self.evaluation_environment = evaluation_environment
         self.checkpoint_frequency = checkpoint_frequency
         self.next_upload = checkpoint_frequency
 
@@ -73,7 +72,6 @@ class SavingCallback(BaseCallback):
         if self.num_timesteps > self.next_upload:
             self.connector.upload(
                 agent=self.agent,
-                evaluation_environment=self.evaluation_environment,
                 checkpoint_id=self.num_timesteps,
             )
             self.next_upload = self.num_timesteps + self.checkpoint_frequency

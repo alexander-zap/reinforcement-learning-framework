@@ -104,6 +104,6 @@ if __name__ == "__main__":
     # Upload the model
     agent.upload(
         connector=connector,
-        evaluation_environment=environments[0],
+        video_recording_environment=environments[0],
         variable_values_to_log={"mean_reward": mean_reward, "std_reward": std_reward},
     )

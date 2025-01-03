@@ -2,7 +2,11 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, SupportsFloat, Text, Tuple
+from typing import Dict, List, Optional, SupportsFloat, Text, Tuple
+
+import gymnasium as gym
+
+from rl_framework.agent import Agent
 
 
 @dataclass
@@ -75,7 +79,13 @@ class Connector(ABC):
 
     @abstractmethod
     def upload(
-        self, agent, evaluation_environment, variable_values_to_log=None, checkpoint_id=None, *args, **kwargs
+        self,
+        agent: Agent,
+        video_recording_environment: Optional[gym.Env] = None,
+        variable_values_to_log: Optional[Dict] = None,
+        checkpoint_id: Optional[int] = None,
+        *args,
+        **kwargs,
     ) -> None:
         raise NotImplementedError
 

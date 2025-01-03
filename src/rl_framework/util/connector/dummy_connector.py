@@ -1,4 +1,7 @@
 from pathlib import Path
+from typing import Dict, Optional
+
+import gymnasium as gym
 
 from .base_connector import Connector, DownloadConfig, UploadConfig
 
@@ -8,7 +11,13 @@ class DummyConnector(Connector):
         super().__init__(upload_config, download_config)
 
     def upload(
-        self, agent, evaluation_environment, variable_values_to_log=None, checkpoint_id=None, *args, **kwargs
+        self,
+        agent,
+        video_recording_environment: Optional[gym.Env] = None,
+        variable_values_to_log: Optional[Dict] = None,
+        checkpoint_id: Optional[int] = None,
+        *args,
+        **kwargs,
     ) -> None:
         pass
 
