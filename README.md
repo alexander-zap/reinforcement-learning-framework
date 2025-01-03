@@ -1,6 +1,6 @@
 # Reinforcement Learning Framework
 
-An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and environments. Also this is the main place to start your journey with Reinforcement Learning and learn from tutorials and examples.
+An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and environments. Also, this is the main place to start your journey with Reinforcement Learning and learn from tutorials and examples.
 
 ### Main Features
 
@@ -95,7 +95,7 @@ agent.evaluate(evaluation_environment=environment, n_eval_episodes=100, determin
 
 ### Uploading and downloading models from the HuggingFace Hub
 
-Once you trained the agent, you can upload the agent model to the HuggingFace Hub in order to share and compare your agent to others. You can also downloaded yours or other agents from the same HuggingFace Hub and use them for solving environments or re-training.
+Once you trained the agent, you can upload the agent model to the HuggingFace Hub in order to share and compare your agent to others. You can also download yours or other agents from the same HuggingFace Hub and use them for solving environments or re-training.
 The object which allows for this functionality is `HuggingFaceConnector`, which can be found in the [connection collection package](src/rl_framework/util/saving_and_loading/connector).
 
 ### Example
