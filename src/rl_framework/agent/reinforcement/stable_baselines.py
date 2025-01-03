@@ -3,7 +3,7 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Type
 
-import gymnasium
+import gymnasium as gym
 import numpy as np
 import stable_baselines3
 from stable_baselines3.common.base_class import BaseAlgorithm
@@ -12,7 +12,7 @@ from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
-from rl_framework.agent.reinforcement.reinforcement_learning_agent import RLAgent
+from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import Connector, LoggingCallback, SavingCallback
 
 
@@ -28,7 +28,7 @@ class StableBaselinesAgent(RLAgent):
     def __init__(
         self,
         algorithm_class: Type[BaseAlgorithm] = stable_baselines3.PPO,
-        algorithm_parameters: Dict = None,
+        algorithm_parameters: Optional[Dict] = None,
     ):
         """
         Initialize an agent which will trained on one of Stable-Baselines3 algorithms.
@@ -58,7 +58,7 @@ class StableBaselinesAgent(RLAgent):
         self,
         total_timesteps: int,
         connector: Connector,
-        training_environments: List[gymnasium.Env] = None,
+        training_environments: List[gym.Env] = None,
         *args,
         **kwargs,
     ):
@@ -71,7 +71,7 @@ class StableBaselinesAgent(RLAgent):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gymnasium.Env]): List of environments on which the agent should be trained on.
+            training_environments (List[gym.Env]): List of environments on which the agent should be trained on.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.

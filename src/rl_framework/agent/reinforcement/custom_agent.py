@@ -1,34 +1,35 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Type
 
+import gymnasium as gym
+
 from rl_framework.agent.reinforcement.custom_algorithms import (
     CustomAlgorithm,
     QLearning,
 )
-from rl_framework.agent.reinforcement.reinforcement_learning_agent import RLAgent
-from rl_framework.environment import Environment
+from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import Connector
 
 
 class CustomAgent(RLAgent):
     @property
-    def algorithm(self):
+    def algorithm(self) -> CustomAlgorithm:
         return self._algorithm
 
     @algorithm.setter
-    def algorithm(self, value):
+    def algorithm(self, value: CustomAlgorithm):
         self._algorithm = value
 
     def __init__(
         self,
         algorithm_class: Type[CustomAlgorithm] = QLearning,
-        algorithm_parameters: Dict = None,
+        algorithm_parameters: Optional[Dict] = None,
     ):
         """
         Initialize an agent which will trained on one of custom implemented algorithms.
 
         Args:
-            algorithm_class (Type[Algorithm]): Class of custom implemented Algorithm.
+            algorithm_class (Type[CustomAlgorithm]): Class of custom implemented Algorithm.
                 Specifies the algorithm for RL training.
                 Defaults to Q-Learning.
             algorithm_parameters (Dict): Parameters / keyword arguments for the specified Algorithm class.
@@ -43,7 +44,7 @@ class CustomAgent(RLAgent):
         self,
         total_timesteps: int,
         connector: Connector,
-        training_environments: List[Environment] = None,
+        training_environments: List[gym.Env] = None,
         *args,
         **kwargs,
     ):
@@ -53,7 +54,7 @@ class CustomAgent(RLAgent):
         This training is done by using the agent-on-environment training method provided by the custom algorithm.
 
         Args:
-            training_environments (List[Environment): Environment on which the agent should be trained on.
+            training_environments (List[gym.Env]): Environment on which the agent should be trained on.
                 If n_environments is set above 1, multiple environments enables parallel training of an agent.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
