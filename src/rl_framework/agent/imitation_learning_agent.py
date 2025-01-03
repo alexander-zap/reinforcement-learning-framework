@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 from rl_framework.agent import Agent
 from rl_framework.agent.imitation.episode_sequence import EpisodeSequence
-from rl_framework.util.saving_and_loading import Connector
+from rl_framework.util import Connector
 
 
 class ILAgent(Agent, ABC):
@@ -11,7 +11,7 @@ class ILAgent(Agent, ABC):
         self,
         total_timesteps: int,
         connector: Connector,
-        episode_sequence: EpisodeSequence = None,
+        episode_sequence: EpisodeSequence,
         *args,
         **kwargs,
     ):

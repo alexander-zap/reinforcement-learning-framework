@@ -1,4 +1,4 @@
-from .saving_and_loading import (
+from .connector import (
     ClearMLConnector,
     ClearMLDownloadConfig,
     ClearMLUploadConfig,

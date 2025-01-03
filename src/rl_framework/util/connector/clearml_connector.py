@@ -35,7 +35,7 @@ class ClearMLDownloadConfig(DownloadConfig):
     file_name (Optional[str]): The name of the output model and save file, used when a task_id is specified.
     task_id (str): A ClearML task id.
     If no file_name is provided, it will use the last added output model.
-    model_id (str): Id of the existing ClearML model to download the agent from, preferred over task_id and file_name.
+    model_id (str): ID of the existing ClearML model to download the agent from, preferred over task_id and file_name.
     """
 
     file_name: Optional[str] = None
@@ -72,7 +72,7 @@ class ClearMLConnector(Connector):
         """
         super().log_value(timestep, value_scalar, value_name)
         self.task.get_logger().report_scalar(
-            title=value_name, series=value_name, value=value_scalar, iteration=timestep
+            title=value_name, series=value_name, value=float(value_scalar), iteration=timestep
         )
 
     def upload(
