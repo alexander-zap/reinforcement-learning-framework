@@ -100,9 +100,7 @@ class StableBaselinesAgent(RLAgent):
                     path=tmp_path, env=vectorized_environment, custom_objects=self.algorithm_parameters
                 )
 
-        callback_list = CallbackList(
-            [SavingCallback(self, connector, training_environments[0]), LoggingCallback(connector)]
-        )
+        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
 
         vectorized_environment.close()

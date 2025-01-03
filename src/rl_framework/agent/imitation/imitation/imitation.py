@@ -116,9 +116,7 @@ class ImitationAgent(ILAgent):
         else:
             self.algorithm.set_demonstrations(trajectories)
 
-        callback_list = CallbackList(
-            [SavingCallback(self, connector, training_environments[0]), LoggingCallback(connector)]
-        )
+        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm_wrapper.train(self.algorithm, total_timesteps, callback_list)
 
         self.algorithm_policy = self.algorithm.policy
