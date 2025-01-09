@@ -6,8 +6,6 @@ from typing import Dict, List, Optional, SupportsFloat, Text, Tuple
 
 import gymnasium as gym
 
-from rl_framework.agent import Agent
-
 
 @dataclass
 class UploadConfig(ABC):
@@ -80,7 +78,7 @@ class Connector(ABC):
     @abstractmethod
     def upload(
         self,
-        agent: Agent,
+        agent,
         video_recording_environment: Optional[gym.Env] = None,
         variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
