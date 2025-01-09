@@ -118,7 +118,6 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                 saving_callback = copy.copy(callback)
 
                 def save(batch_number):
-                    on_batch_end_counter[save] += 1
                     saving_callback.num_timesteps = algorithm.batch_size * batch_number
                     saving_callback._on_step()
 
@@ -133,7 +132,6 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                 )
 
                 def log(batch_number):
-                    on_batch_end_counter[log] += 1
                     if on_batch_end_counter[log] % logging_interval == 0:
                         rollout_stats = compute_rollout_stats(algorithm.policy, algorithm.rng)
                         logging_callback.connector.log_value(
@@ -146,6 +144,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
         def on_batch_end():
             for func in on_batch_end_functions:
+                on_batch_end_counter[func] += 1
                 func(on_batch_end_counter[func])
 
         algorithm.train(n_batches=math.ceil(total_timesteps / algorithm.batch_size), on_batch_end=on_batch_end)
