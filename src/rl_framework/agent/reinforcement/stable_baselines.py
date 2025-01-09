@@ -7,13 +7,13 @@ import gymnasium
 import numpy as np
 import stable_baselines3
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from rl_framework.agent.reinforcement.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector
+from rl_framework.util import Connector, LoggingCallback, SavingCallback
 
 
 class StableBaselinesAgent(RLAgent):
@@ -77,65 +77,6 @@ class StableBaselinesAgent(RLAgent):
                 on training time. Calls need to be declared manually in the code.
         """
 
-        class LoggingCallback(BaseCallback):
-            """
-            A custom callback that logs episode rewards after every done episode.
-            """
-
-            def __init__(self, verbose=0):
-                """
-                Args:
-                    verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
-                """
-                super().__init__(verbose)
-                self.episode_reward = np.zeros(len(training_environments))
-
-            def _on_step(self) -> bool:
-                """
-                This method will be called by the model after each call to `env.step()`.
-                If the callback returns False, training is aborted early.
-                """
-                self.episode_reward += self.locals["rewards"]
-                done_indices = np.where(self.locals["dones"] == True)[0]
-                if done_indices.size != 0:
-                    for done_index in done_indices:
-                        if not self.locals["infos"][done_index].get("discard", False):
-                            connector.log_value(self.num_timesteps, self.episode_reward[done_index], "Episode reward")
-                            self.episode_reward[done_index] = 0
-
-                return True
-
-        class SavingCallback(BaseCallback):
-            """
-            A custom callback which uploads the agent to the connector after every `checkpoint_frequency` steps.
-            """
-
-            def __init__(self, agent, checkpoint_frequency=50000, verbose=0):
-                """
-                Args:
-                    checkpoint_frequency: After how many steps a checkpoint should be saved to the connector.
-                    verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
-                """
-                super().__init__(verbose)
-                self.agent = agent
-                self.checkpoint_frequency = checkpoint_frequency
-                self.next_upload = self.checkpoint_frequency
-
-            def _on_step(self) -> bool:
-                """
-                This method will be called by the model after each call to `env.step()`.
-                If the callback returns False, training is aborted early.
-                """
-                if self.num_timesteps > self.next_upload:
-                    connector.upload(
-                        agent=self.agent,
-                        evaluation_environment=training_environments[0],
-                        checkpoint_id=self.num_timesteps,
-                    )
-                    self.next_upload = self.num_timesteps + self.checkpoint_frequency
-
-                return True
-
         def make_env(index: int):
             return training_environments[index]
 
@@ -159,7 +100,9 @@ class StableBaselinesAgent(RLAgent):
                     path=tmp_path, env=vectorized_environment, custom_objects=self.algorithm_parameters
                 )
 
-        callback_list = CallbackList([SavingCallback(self), LoggingCallback()])
+        callback_list = CallbackList(
+            [SavingCallback(self, connector, training_environments[0]), LoggingCallback(connector)]
+        )
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
 
         vectorized_environment.close()

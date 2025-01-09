@@ -10,4 +10,9 @@ from .saving_and_loading import (
     HuggingFaceUploadConfig,
     UploadConfig,
 )
+from .training_callbacks import (
+    LoggingCallback,
+    SavingCallback,
+    add_callbacks_to_callback,
+)
 from .video_recording import record_video
