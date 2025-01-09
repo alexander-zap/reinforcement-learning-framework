@@ -4,4 +4,3 @@ from .imitation import (
     AlgorithmWrapper,
     ImitationAgent,
 )
-from .imitation_learning_agent import ILAgent

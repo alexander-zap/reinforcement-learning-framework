@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Type
 
+import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
-from rl_framework.environment import Environment
-from rl_framework.util.saving_and_loading import Connector
+from rl_framework.util import Connector
 
 
 class Agent(ABC):
@@ -16,16 +16,12 @@ class Agent(ABC):
         return NotImplementedError
 
     @abstractmethod
-    def __init__(self, algorithm_class, algorithm_parameters: Dict, *args, **kwargs):
-        raise NotImplementedError
-
-    @abstractmethod
-    def train(self, total_timesteps: int, connector: Connector, *args, **kwargs):
+    def __init__(self, algorithm_class: Type, algorithm_parameters: Optional[Dict], *args, **kwargs):
         raise NotImplementedError
 
     def evaluate(
         self,
-        evaluation_environment,
+        evaluation_environment: gym.Env,
         n_eval_episodes: int,
         seeds: Optional[List[int]] = None,
         deterministic: bool = False,
@@ -34,7 +30,7 @@ class Agent(ABC):
         Evaluate the agent for ``n_eval_episodes`` episodes and returns average reward and std of reward.
 
         Args:
-            evaluation_environment (Environment): The evaluation environment.
+            evaluation_environment (gym.Env): The evaluation environment.
             n_eval_episodes (int): Number of episode to evaluate the agent.
             seeds (Optional[List[int]]): List of seeds for evaluations.
                 No seed is used if not provided or fewer seeds are provided then n_eval_episodes.
@@ -87,7 +83,7 @@ class Agent(ABC):
     def upload(
         self,
         connector: Connector,
-        evaluation_environment: Environment,
+        video_recording_environment: gym.Env,
         variable_values_to_log: Dict,
     ) -> None:
         """
@@ -95,12 +91,14 @@ class Agent(ABC):
             Additional option: Generate a video of the agent interacting with the environment.
 
         Args:
-            connector: Connector for uploading.
-            evaluation_environment: Environment used for final evaluation and clip creation before upload.
+            connector (Connector): Connector for uploading.
+            video_recording_environment (gym.Env): Env used for clip creation before upload.
             variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
         """
         connector.upload(
-            agent=self, evaluation_environment=evaluation_environment, variable_values_to_log=variable_values_to_log
+            agent=self,
+            video_recording_environment=video_recording_environment,
+            variable_values_to_log=variable_values_to_log,
         )
 
     def download(

@@ -3,7 +3,7 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Type
 
-import gymnasium
+import gymnasium as gym
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -24,10 +24,10 @@ from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import 
     GAILAlgorithmWrapper,
     SQILAlgorithmWrapper,
 )
-from rl_framework.agent.imitation.imitation_learning_agent import ILAgent
+from rl_framework.agent.imitation_learning_agent import ILAgent
 from rl_framework.util import Connector, LoggingCallback, SavingCallback
 
-IMITATION_ALGORITHM_WRAPPER_REGISTRY = {
+IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,
     GAIL: GAILAlgorithmWrapper,
     AIRL: AIRLAlgorithmWrapper,
@@ -72,7 +72,7 @@ class ImitationAgent(ILAgent):
         total_timesteps: int,
         connector: Connector,
         episode_sequence: EpisodeSequence = None,
-        training_environments: List[gymnasium.Env] = None,
+        training_environments: List[gym.Env] = None,
         *args,
         **kwargs,
     ):
@@ -116,9 +116,7 @@ class ImitationAgent(ILAgent):
         else:
             self.algorithm.set_demonstrations(trajectories)
 
-        callback_list = CallbackList(
-            [SavingCallback(self, connector, training_environments[0]), LoggingCallback(connector)]
-        )
+        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm_wrapper.train(self.algorithm, total_timesteps, callback_list)
 
         self.algorithm_policy = self.algorithm.policy

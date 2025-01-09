@@ -5,13 +5,13 @@ import random
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
 from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
     CustomAlgorithm,
 )
-from rl_framework.environment import Environment
 from rl_framework.util import Connector
 
 
@@ -87,7 +87,7 @@ class QLearning(CustomAlgorithm):
     def train(
         self,
         connector: Connector,
-        training_environments: List[Environment],
+        training_environments: List[gym.Env],
         total_timesteps: int,
         *args,
         **kwargs,
@@ -101,7 +101,7 @@ class QLearning(CustomAlgorithm):
         after the agent has been trained.
 
         Args:
-            training_environments (List[Environment]): List of environments on which the agent should be trained on.
+            training_environments (List[gym.Env]): List of environments on which the agent should be trained on.
                 # NOTE: This class only supports training on one environment
             total_timesteps (int): Number of timesteps the agent should train for before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
@@ -135,7 +135,7 @@ class QLearning(CustomAlgorithm):
                 return greedy_action
 
         if len(training_environments) > 1:
-            logging.info(
+            logging.warning(
                 f"Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
                 f"training on multiple environments in parallel. Continuing with one environment as "
                 f"training environment."
@@ -166,7 +166,7 @@ class QLearning(CustomAlgorithm):
                 episode_reward += reward
                 # TODO: Replay sampling strategy is currently hard-coded as on-line.
                 #   Instead: Pass replay sampling strategy from outside (as Memory-class).
-                self._update_q_table(prev_observation, prev_action, observation, reward)
+                self._update_q_table(prev_observation, prev_action, observation, float(reward))
 
                 prev_observation = observation
                 prev_action = action

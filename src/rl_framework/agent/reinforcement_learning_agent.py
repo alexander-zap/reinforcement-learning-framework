@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List
 
+import gymnasium as gym
+
 from rl_framework.agent.base_agent import Agent
-from rl_framework.environment import Environment
-from rl_framework.util.saving_and_loading import Connector
+from rl_framework.util import Connector
 
 
 class RLAgent(Agent, ABC):
@@ -12,7 +13,7 @@ class RLAgent(Agent, ABC):
         self,
         total_timesteps: int,
         connector: Connector,
-        training_environments: List[Environment] = None,
+        training_environments: List[gym.Env],
         *args,
         **kwargs,
     ):

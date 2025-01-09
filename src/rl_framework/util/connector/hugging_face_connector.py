@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Text
 
+import gymnasium as gym
 import stable_baselines3
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 from huggingface_hub.repocard import metadata_eval_result, metadata_save
@@ -57,8 +58,8 @@ class HuggingFaceConnector(Connector):
     def upload(
         self,
         agent,
-        evaluation_environment,
-        variable_values_to_log: Dict = None,
+        video_recording_environment: Optional[gym.Env] = None,
+        variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
@@ -73,7 +74,8 @@ class HuggingFaceConnector(Connector):
 
         Args:
             agent (Agent): Agent (and its .algorithm attribute) to be uploaded.
-            evaluation_environment (Environment): Environment used for final evaluation and clip creation before upload.
+            video_recording_environment (Environment): Environment used for clip creation before upload.
+                If not provided, no video will be created.
             variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
                 Should contain "mean_reward" and "std_reward" variables so that these can be saved in metadata.
             checkpoint_id (int): If specified, we do not perform a final upload with evaluating and generating but
@@ -171,7 +173,8 @@ See further agent and evaluation metadata in the according README section.
 
 
 ## Import
-The Python module used for training and uploading/downloading is [reinforcement-learning-framework](https://github.com/alexander-zap/reinforcement-learning-framework).
+The Python module used for training and uploading/downloading is
+[reinforcement-learning-framework](https://github.com/alexander-zap/reinforcement-learning-framework).
 It is an easy-to-read, plug-and-use Reinforcement Learning framework and provides standardized interfaces
 and implementations to various Reinforcement Learning methods and environments.
 
@@ -198,7 +201,8 @@ agent.download(repository_id=repository_id, filename=file_name)
 
 ```
 
-Further examples can be found in the [exploration section of the reinforcement-learning-framework repository](https://github.com/alexander-zap/reinforcement-learning-framework/tree/main/exploration).
+Further examples can be found in the exploration section of the
+[reinforcement-learning-framework repository](https://github.com/alexander-zap/reinforcement-learning-framework).
 
             """
 
@@ -246,11 +250,11 @@ Further examples can be found in the [exploration section of the reinforcement-l
             metadata_save(readme_path, metadata)
 
             # Step 6: Record a video
-            if video_length > 0:
+            if video_recording_environment and video_length > 0:
                 video_path = repo_local_path / "replay.mp4"
                 record_video(
                     agent=agent,
-                    evaluation_environment=evaluation_environment,
+                    video_recording_environment=video_recording_environment,
                     file_path=video_path,
                     fps=1,
                     video_length=video_length,
