@@ -134,7 +134,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                 def log(batch_number):
                     if on_batch_end_counter[log] % logging_interval == 0:
                         rollout_stats = compute_rollout_stats(algorithm.policy, algorithm.rng)
-                        logging_callback.connector.log_value(
+                        logging_callback.connector.log_value_with_timestep(
                             algorithm.batch_size * batch_number, rollout_stats["return_mean"], "Episode reward"
                         )
 

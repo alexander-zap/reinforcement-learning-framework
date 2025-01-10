@@ -10,11 +10,13 @@ import gymnasium as gym
 @dataclass
 class UploadConfig(ABC):
     """
+    upload (bool): Flag whether an agent should be uploaded after training.
     file_name (Text): Name of the file the agent model should be saved to (uploaded model will be named accordingly).
     video_length (int): Length of video in frames (which should be generated and uploaded to the connector).
         No video is uploaded if length is 0 or negative.
     """
 
+    upload: bool
     file_name: str
     video_length: int
 
@@ -25,6 +27,7 @@ class UploadConfig(ABC):
 @dataclass
 class DownloadConfig(ABC):
     """
+    download (bool): Flag whether an agent should be downloaded at the very beginning.
     file_name (str): File name of previously saved agent model (the saved agent file previously uploaded).
     """
 
@@ -61,9 +64,10 @@ class Connector(ABC):
         """
         self.upload_config = upload_config
         self.download_config = download_config
-        self.logging_history: Dict[Text, List[Tuple]] = defaultdict(list)
+        self.value_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
+        self.values_to_log: Dict[Text, SupportsFloat] = {}
 
-    def log_value(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
+    def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
         """
         Log scalar value to create a sequence of values over time steps.
         Can be used afterward for visualization (e.g., plotting of value over time).
@@ -71,16 +75,25 @@ class Connector(ABC):
         Args:
             timestep: Time step which the scalar value corresponds to (x-value)
             value_scalar: Scalar value which should be logged (y-value)
-            value_name: Name of scalar value (e.g., "avg. sum of reward")
+            value_name: Name of scalar value (e.g., "episode_reward")
         """
-        self.logging_history[value_name].append((timestep, value_scalar))
+        self.value_sequences_to_log[value_name].append((timestep, value_scalar))
+
+    def log_value(self, metric_scalar: SupportsFloat, metric_name: Text) -> None:
+        """
+        Log one value with a certain metric name (once).
+
+        Args:
+            metric_scalar: Scalar value which should be logged
+            metric_name: Name of scalar value (e.g., "mean_episode_reward")
+        """
+        self.values_to_log[metric_name] = float(metric_scalar)
 
     @abstractmethod
     def upload(
         self,
         agent,
         video_recording_environment: Optional[gym.Env] = None,
-        variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,

@@ -41,7 +41,9 @@ class LoggingCallback(BaseCallback):
         if done_indices.size != 0:
             for done_index in done_indices:
                 if not self.locals["infos"][done_index].get("discard", False):
-                    self.connector.log_value(self.num_timesteps, self.episode_reward[done_index], "Episode reward")
+                    self.connector.log_value_with_timestep(
+                        self.num_timesteps, self.episode_reward[done_index], "Episode reward"
+                    )
                     self.episode_reward[done_index] = 0
 
         return True

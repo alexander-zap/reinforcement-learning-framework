@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import gymnasium as gym
 
@@ -14,7 +14,6 @@ class DummyConnector(Connector):
         self,
         agent,
         video_recording_environment: Optional[gym.Env] = None,
-        variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,

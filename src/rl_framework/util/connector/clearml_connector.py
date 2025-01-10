@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, SupportsFloat, Text
+from typing import Optional, SupportsFloat, Text
 
 import gymnasium as gym
 import stable_baselines3
@@ -61,26 +61,37 @@ class ClearMLConnector(Connector):
 
         self.task.add_tags(list(self.upload_config.task_tags))
 
-    def log_value(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
+    def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
         """
         Log scalar value to create a sequence of values over time steps.
-        Will appear in the "Scalar" section of the ClearML experiment page.
+        Will appear in the "Scalar" section of the ClearML experiment page as a graph.
 
         Args:
             timestep: Time step which the scalar value corresponds to (x-value)
             value_scalar: Scalar value which should be logged (y-value)
             value_name: Name of scalar value (e.g., "avg. sum of reward")
         """
-        super().log_value(timestep, value_scalar, value_name)
+        super().log_value_with_timestep(timestep, value_scalar, value_name)
         self.task.get_logger().report_scalar(
             title=value_name, series=value_name, value=float(value_scalar), iteration=timestep
         )
+
+    def log_value(self, metric_scalar: SupportsFloat, metric_name: Text) -> None:
+        """
+        Log one value with a certain metric name (once).
+        Will appear in the "Scalar" section of the ClearML experiment page in a "Summary" window.
+
+        Args:
+            metric_scalar: Value which should be logged
+            metric_name: Name of value (e.g., "mean_episode_reward")
+        """
+        super().log_value(metric_scalar, metric_name)
+        self.task.logger.report_single_value(metric_name, round(float(metric_scalar), 2))
 
     def upload(
         self,
         agent,
         video_recording_environment: Optional[gym.Env] = None,
-        variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
@@ -92,13 +103,9 @@ class ClearMLConnector(Connector):
             agent (Agent): Agent (and its .algorithm attribute) to be uploaded.
             video_recording_environment (Environment): Environment used for clip creation before upload.
                 If not provided, no video will be created.
-            variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
             checkpoint_id (int): If specified, we do not perform a final upload with video generation and
                 scalar logging but instead upload only a model checkpoint to ClearML.
         """
-        if variable_values_to_log is None:
-            variable_values_to_log = {}
-
         file_name = self.upload_config.file_name
         video_length = self.upload_config.video_length
 
@@ -131,19 +138,12 @@ class ClearMLConnector(Connector):
                 "environment will be generated and uploaded to the 'Debug Sample' section of the ClearML experiment."
             )
 
-            # Step 2: Upload a dictionary with variables to log (e.g. evaluation metrics)
-            for key, value in variable_values_to_log.items():
-                if isinstance(value, float):
-                    self.task.logger.report_single_value(key, round(value, 2))
-                else:
-                    logging.warning(f"Value for parameter {key} is not 'float'. Skipping logging of value ...")
-
-            # Step 3: Create a system info dictionary and upload it
+            # Step 2: Create a system info dictionary and upload it
             logging.debug("Uploading system meta information ...")
             system_info, _ = stable_baselines3.get_system_info()
             self.task.upload_artifact(name="system_info", artifact_object=system_info)
 
-            # Step 4: Record a video and log local video file
+            # Step 3: Record a video and log local video file
             if video_recording_environment and video_length > 0:
                 temp_path = tempfile.mkdtemp()
                 logging.debug(f"Recording video to {temp_path} and uploading as debug sample ...")
