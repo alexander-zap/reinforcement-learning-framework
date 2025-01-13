@@ -183,8 +183,8 @@ class QLearning(CustomAlgorithm):
                     )
 
                     if connector:
-                        connector.log_value(current_timestep, episode_reward, "Episode reward")
-                        connector.log_value(current_timestep, self.epsilon, "Epsilon")
+                        connector.log_value_with_timestep(current_timestep, episode_reward, "Episode reward")
+                        connector.log_value_with_timestep(current_timestep, self.epsilon, "Epsilon")
 
         tqdm_progress_bar.close()
 

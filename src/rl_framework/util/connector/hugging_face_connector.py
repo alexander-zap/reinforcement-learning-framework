@@ -4,7 +4,7 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Text
+from typing import Optional, Text
 
 import gymnasium as gym
 import stable_baselines3
@@ -59,7 +59,6 @@ class HuggingFaceConnector(Connector):
         self,
         agent,
         video_recording_environment: Optional[gym.Env] = None,
-        variable_values_to_log: Optional[Dict] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
@@ -76,8 +75,6 @@ class HuggingFaceConnector(Connector):
             agent (Agent): Agent (and its .algorithm attribute) to be uploaded.
             video_recording_environment (Environment): Environment used for clip creation before upload.
                 If not provided, no video will be created.
-            variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
-                Should contain "mean_reward" and "std_reward" variables so that these can be saved in metadata.
             checkpoint_id (int): If specified, we do not perform a final upload with evaluating and generating but
                 instead upload only a model checkpoint to a "checkpoints" folder.
 
@@ -85,9 +82,6 @@ class HuggingFaceConnector(Connector):
             following code: `cd <path_to_repo> && git add . && git commit -m "Add message" && git pull`
             And don't forget to do a `git push` at the end to push the change to the hub.
         """
-
-        if variable_values_to_log is None:
-            variable_values_to_log = {}
 
         repository_id = self.upload_config.repository_id
         environment_name = self.upload_config.environment_name
@@ -139,7 +133,7 @@ class HuggingFaceConnector(Connector):
                 "env_id": environment_name,
                 "datetime": datetime.datetime.now().isoformat(),
             }
-            for key, value in variable_values_to_log.items():
+            for key, value in self.values_to_log.items():
                 result_data[key] = value
 
             # Write a JSON file called "results.json" that will contain the
@@ -149,7 +143,7 @@ class HuggingFaceConnector(Connector):
 
             # Additionally write a JSON file for all manually logged training metrics
             with open(repo_local_path / "training_metrics.json", "w") as outfile:
-                json.dump(self.logging_history, outfile)
+                json.dump(self.value_sequences_to_log, outfile)
 
             # Step 5: Create a system info file
             with open(repo_local_path / "system.json", "w") as outfile:
@@ -221,8 +215,8 @@ Further examples can be found in the exploration section of the
             }
 
             metrics_value = "not evaluated"
-            mean_reward = variable_values_to_log.get("mean_reward")
-            std_reward = variable_values_to_log.get("std_reward")
+            mean_reward = self.values_to_log.get("mean_reward")
+            std_reward = self.values_to_log.get("std_reward")
             if (
                 mean_reward is not None
                 and std_reward is not None
