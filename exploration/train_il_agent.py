@@ -65,6 +65,7 @@ if __name__ == "__main__":
     # Create connector
     task = Task.init(project_name="synthetic-player", auto_connect_frameworks={"pytorch": False})
     upload_connector_config = ClearMLUploadConfig(
+        upload=True,
         file_name="agent.zip",
         video_length=0,
     )
@@ -101,9 +102,8 @@ if __name__ == "__main__":
     )
     print(f"mean_reward={mean_reward:.2f} +/- {std_reward:.2f}")
 
+    connector.log_value(mean_reward, "mean_reward")
+    connector.log_value(std_reward, "std_reward")
+
     # Upload the model
-    agent.upload(
-        connector=connector,
-        video_recording_environment=environments[0],
-        variable_values_to_log={"mean_reward": mean_reward, "std_reward": std_reward},
-    )
+    agent.upload(connector=connector, video_recording_environment=environments[0])
