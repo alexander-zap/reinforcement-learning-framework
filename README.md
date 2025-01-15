@@ -1,29 +1,19 @@
 # Reinforcement Learning Framework
 
-An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and environments. Also, this is the main place to start your journey with Reinforcement Learning and learn from tutorials and examples.
+An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning and Imitation Learning methods and utilities.
 
 ### Main Features
 
-- Choose from a growing number of **Gym environments** and **MLAgent environments**
-- Using various Reinforcement Learning algorithms for learning, which are implemented in **Stable-Baselines 3**
-- Integrate or implement own **custom environments and agents** in a standardized interface
-- Upload your models to the **HuggingFace Hub**
+- Using various Reinforcement Learning algorithms to learn from gym environment interaction, which are implemented in **Stable-Baselines 3**
+- Using various Imitation Learning algorithms to learn from replays, which are implemented in **Imitation**
+- Integrate or implement own **custom agents and algorithms** in a standardized interface
+- Upload your models (with logged metrics, checkpoints and video recordings) to **HuggingFace Hub** or **ClearML**
 
 ## Set-Up
 
-### Activate your development environment
-
-If you are on a UNIX-based OS:
-You are fine. Continue with the next step.
-
-If you are on Windows:
-Make sure to use a WSL Python interpreter as your development environment, since we require a UNIX-based system underneath Python to run a lot of the environments and algorithms.
-For users using PyCharm, see https://www.jetbrains.com/help/pycharm/using-wsl-as-a-remote-interpreter.html for more information.
-For users using Visual Studio Code, see https://code.visualstudio.com/docs/remote/wsl-tutorial and https://code.visualstudio.com/docs/remote/wsl for more information.
-
 ### Install all dependencies in your development environment
 
-To set up your local development environment, please run:
+To set up your local development environment, please install poetry (see (tutorial)\[https://python-poetry.org/docs/\]) and run:
 
 ```
 poetry install
@@ -60,31 +50,59 @@ In short:
 
 ### Configuring an environment
 
-To integrate your environment you wish to train on, you need to create an Environment class representing your problem. For this you can
+To integrate your environment you wish to train on, you need to create a gymnasium.Env object representing your problem.
+For this you can use any existing environment with the gym interface. See [here](https://gymnasium.farama.org/api/env/) for further documentation.
 
-- you use an existing Gym environment with [the `GymEnvironment` class](src/rl_framework/environment/gym_environment.py)
-- you use an existing MLAgent environment with [the `MLAgentsEnvironment` class](src/rl_framework/environment/mlagents_environment.py)
-- create a custom environment by inheriting from [the base `Environment` class](src/rl_framework/environment/base_environment.py), which specifies the required interface
+### Reinforcement Learning agent
 
-### Configuring an agent
+#### Class definition
 
-To integrate the Reinforcement Learning algorithm you wish to train an agent on your environment with, you need to create an Agent class representing your training agent. For this you can
+To integrate the Reinforcement Learning algorithm you wish to train an agent on your environment with, you need to create an RLAgent class representing your training agent. For this you can
 
-- you use an existing Reinforcement Learning algorithm implemented in the Stable-Baselines 3 framework with [the `StableBaselinesAgent` class](src/rl_framework/agent/stable_baselines.py) (see the Example section below)
-- create a custom Reinforcement Learning algorithm by inheriting from [the base `BaseAgent` class](src/rl_framework/agent/base_agent.py), which specifies the required interface
+- use an existing Reinforcement Learning algorithm implemented in the Stable-Baselines 3 framework with [the `StableBaselinesAgent` class](src/rl_framework/agent/reinforcement/stable_baselines.py) (as seen in the [example script](exploration/train_rl_agent.py))
+- create a custom Reinforcement Learning algorithm by inheriting from [the base `RLAgent` class](src/rl_framework/agent/reinforcement_learning_agent.py), which specifies the required interface
 
-### Training
+#### Training
 
 After configuring the environment and the agent, you can start training your agent on the environment.
 This can be done in one line of code:
 
 ```
-agent.train(environments=environments, total_timesteps=100000)
+agent.train(training_environments=environments, total_timesteps=N_TRAINING_TIMESTEPS)
 ```
 
 Independent of which environment and which agent you choose, the unified interface allows to always start the training this way.
 
-### Evaluating
+### Imitation Learning agent
+
+#### Class definition
+
+To integrate the Imitation Learning algorithm you wish to train an agent on your replays with, you need to create an ILAgent class representing your training agent. For this you can
+
+- use an existing Imitation Learning algorithm implemented in the Imitation framework with [the `ImitationAgent` class](src/rl_framework/agent/imitation/imitation/imitation.py) (as seen in the [example script](exploration/train_il_agent.py))
+- create a custom Imitation Learning algorithm by inheriting from [the base `ILAgent` class](src/rl_framework/agent/imitation_learning_agent.py), which specifies the required interface
+
+#### Training
+
+First you need to collect the replays (recorded episode sequences) from an expert policy or a human demonstration.
+They should be recorded as `imitation.TrajectoryWithRew` objects and saved with the `serialize.save` method (see  [`imitation` library documentation](https://imitation.readthedocs.io/en/latest/main-concepts/trajectories.html#storing-loading-trajectories)) and stored as files.
+You can afterward load them with the following code line:
+
+```
+sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH)
+```
+
+Afterward, you can start training your agent on the environment.
+This can be done in one line of code:
+
+```
+agent.train(episode_sequence=sequence, training_environments=environments, total_timesteps=N_TRAINING_TIMESTEPS)
+```
+
+The training environments are used by the imitation learning algorithms in different ways.
+Some of them only use it for the observation and action space information, while others use it for iteratively checking and improving the imitation policy.
+
+### Evaluation
 
 Once you trained the agent, you can evaluate the agent policy on the environment and get the average accumulated reward (and standard deviation) as evaluation metric.
 This evaluation method is implemented in the [evaluate function of the agent](src/rl_framework/agent/base_agent.py) and called with one line of code:
@@ -93,34 +111,14 @@ This evaluation method is implemented in the [evaluate function of the agent](sr
 agent.evaluate(evaluation_environment=environment, n_eval_episodes=100, deterministic=False)
 ```
 
-### Uploading and downloading models from the HuggingFace Hub
+### Uploading and downloading models from a experiment registry
 
-Once you trained the agent, you can upload the agent model to the HuggingFace Hub in order to share and compare your agent to others. You can also download yours or other agents from the same HuggingFace Hub and use them for solving environments or re-training.
-The object which allows for this functionality is `HuggingFaceConnector`, which can be found in the [connection collection package](src/rl_framework/util/saving_and_loading/connector).
+Once you trained the agent, you can upload the agent model to an experiment registry (HuggingFace Hub or ClearML) in order to share and compare your agent to others. You can also download yours or other agents from the same service and use them for solving environments or re-training.
+The object which allows for this functionality is `HuggingFaceConnector` and `ClearMLConnector`, which can be found in the [connection collection package](src/rl_framework/util/connector).
 
-### Example
+### Examples
 
-In [this example script](exploration/train_sb3_agent.py) you can see all of the above steps unified.
-
-For a quick impression in this README, find a minimal training and evaluation example here:
-
-```
-# Create environment(s); multiple environments for parallel training
-environments = [GymEnvironmentWrapper(ENV_ID) for _ in range(PARALLEL_ENVIRONMENTS)]
-
-# Create new agent
-agent = StableBaselinesAgent(
-    algorithm=StableBaselinesAlgorithm.PPO,
-    algorithm_parameters={
-        "policy": "MlpPolicy"
-    }
-)
-# Train agent
-agent.train(environments=environments, total_timesteps=100000)
-
-# Evaluate the model
-mean_reward, std_reward = agent.evaluate(evaluation_environment=environments[0])
-```
+In [this RL example script](exploration/train_rl_agent.py) and in [this IL example script](exploration/train_il_agent.py) you can see all of the above steps unified.
 
 ## Development
 
@@ -163,7 +161,7 @@ To run the tests with coverage information, please use
 pytest tests --cov=src --cov-report=html --cov-report=term
 ```
 
-and have a look at the `htmlcov` folder, after the tests are done.
+Have a look at the `htmlcov` folder, after the tests are done.
 
 ### Distribution Package
 
@@ -173,7 +171,7 @@ To build a distribution package (wheel), please use
 python setup.py bdist_wheel
 ```
 
-this will clean up the build folder and then run the `bdist_wheel` command.
+This will clean up the build folder and then run the `bdist_wheel` command.
 
 ### Contributions
 
