@@ -13,7 +13,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector, LoggingCallback, SavingCallback
+from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
 
 
 class StableBaselinesAgent(RLAgent):
@@ -57,7 +57,7 @@ class StableBaselinesAgent(RLAgent):
     def train(
         self,
         total_timesteps: int,
-        connector: Connector,
+        connector: Optional[Connector] = None,
         training_environments: List[gym.Env] = None,
         *args,
         **kwargs,
@@ -82,6 +82,9 @@ class StableBaselinesAgent(RLAgent):
 
         if not training_environments:
             raise ValueError("No training environments have been provided to the train-method.")
+
+        if not connector:
+            connector = DummyConnector()
 
         training_environments = [Monitor(env) for env in training_environments]
         environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
