@@ -8,7 +8,7 @@ from rl_framework.agent.reinforcement.custom_algorithms import (
     QLearning,
 )
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector
+from rl_framework.util import Connector, DummyConnector
 
 
 class CustomAgent(RLAgent):
@@ -43,7 +43,7 @@ class CustomAgent(RLAgent):
     def train(
         self,
         total_timesteps: int,
-        connector: Connector,
+        connector: Optional[Connector] = None,
         training_environments: List[gym.Env] = None,
         *args,
         **kwargs,
@@ -64,6 +64,9 @@ class CustomAgent(RLAgent):
 
         if not training_environments:
             raise ValueError("No training environments have been provided to the train-method.")
+
+        if not connector:
+            connector = DummyConnector()
 
         self.algorithm.train(
             connector=connector,

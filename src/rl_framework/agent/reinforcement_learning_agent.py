@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 
 import gymnasium as gym
 
@@ -12,9 +12,20 @@ class RLAgent(Agent, ABC):
     def train(
         self,
         total_timesteps: int,
-        connector: Connector,
+        connector: Optional[Connector],
         training_environments: List[gym.Env],
         *args,
         **kwargs,
     ):
+        """
+        Method starting training for reinforcement learning agents.
+
+        Args:
+            total_timesteps: Amount of interaction timesteps to train the agent on.
+            connector: Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
+                on training time. Calls need to be declared manually in the code.
+                If no connector is provided, callbacks will not be executed.
+            training_environments: List of gym interface environments on which the agent should be trained on.
+
+        """
         raise NotImplementedError

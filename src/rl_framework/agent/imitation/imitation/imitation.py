@@ -25,7 +25,7 @@ from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import 
     SQILAlgorithmWrapper,
 )
 from rl_framework.agent.imitation_learning_agent import ILAgent
-from rl_framework.util import Connector, LoggingCallback, SavingCallback
+from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,
@@ -70,7 +70,7 @@ class ImitationAgent(ILAgent):
     def train(
         self,
         total_timesteps: int,
-        connector: Connector,
+        connector: Optional[Connector] = None,
         episode_sequence: EpisodeSequence = None,
         training_environments: List[gym.Env] = None,
         *args,
@@ -98,6 +98,9 @@ class ImitationAgent(ILAgent):
 
         if not episode_sequence:
             raise ValueError("No transitions have been provided to the train-method.")
+
+        if not connector:
+            connector = DummyConnector()
 
         trajectories = episode_sequence.to_imitation_episodes()
 
