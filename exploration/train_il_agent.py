@@ -3,7 +3,7 @@ import os
 import gymnasium as gym
 import numpy as np
 from clearml import Task
-from imitation.algorithms.adversarial.gail import GAIL
+from imitation.algorithms.bc import BC
 from imitation.data import rollout, serialize
 from imitation.data.wrappers import RolloutInfoWrapper
 from imitation.policies.serialize import load_policy
@@ -53,7 +53,7 @@ def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_pa
 
 PARALLEL_ENVIRONMENTS = 8
 DOWNLOAD_EXISTING_AGENT = False
-TRAJECTORIES_PATH = "../data/test_rollouts"
+TRAJECTORIES_PATH = "../data/cartpole_rollout"
 
 N_TRAINING_TIMESTEPS = 200000
 N_EVALUATION_EPISODES = 10
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     )
 
     # Create new agent
-    agent = ImitationAgent(algorithm_class=GAIL, algorithm_parameters={})
+    agent = ImitationAgent(algorithm_class=BC, algorithm_parameters={})
 
     if DOWNLOAD_EXISTING_AGENT:
         # Download existing agent from repository
