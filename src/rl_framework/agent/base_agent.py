@@ -80,7 +80,7 @@ class Agent(ABC):
     def load_from_file(self, file_path: Path, algorithm_parameters: Optional[Dict], *args, **kwargs) -> None:
         raise NotImplementedError
 
-    def upload(self, connector: Connector, video_recording_environment: Optional[gym.Env]) -> None:
+    def upload(self, connector: Connector, video_recording_environment: Optional[gym.Env] = None) -> None:
         """
         Evaluate and upload the decision-making agent to the connector.
             Additional option: Generate a video of the agent interacting with the environment.
