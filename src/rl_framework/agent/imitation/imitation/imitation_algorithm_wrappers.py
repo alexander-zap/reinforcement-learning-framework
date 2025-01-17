@@ -5,14 +5,14 @@ import tempfile
 from abc import ABC, abstractmethod
 from itertools import tee
 from pathlib import Path
-from typing import Generator, Iterable
+from typing import Generator, Iterable, Mapping
 
 import numpy as np
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
-from imitation.algorithms.bc import BC, RolloutStatsComputer
+from imitation.algorithms.bc import BC, BCTrainingMetrics
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
 from imitation.data.types import TrajectoryWithRew, Transitions
@@ -114,7 +114,38 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         on_batch_end_functions = []
 
         for callback in callback_list.callbacks:
-            if isinstance(callback, SavingCallback):
+            if isinstance(callback, LoggingCallback):
+                logging_callback = copy.copy(callback)
+
+                # Wrapped log_batch function to additionally log values into the connector
+                def log_batch_with_connector(
+                    batch_num: int,
+                    batch_size: int,
+                    num_samples_so_far: int,
+                    training_metrics: BCTrainingMetrics,
+                    rollout_stats: Mapping[str, float],
+                ):
+                    # Call the original log_batch function
+                    original_log_batch(batch_num, batch_size, num_samples_so_far, training_metrics, rollout_stats)
+
+                    # Log the recorded values into the connector additionally
+                    for k, v in training_metrics.__dict__.items():
+                        if v is not None:
+                            logging_callback.connector.log_value_with_timestep(num_samples_so_far, float(v), f"bc/{k}")
+
+                    for k, v in rollout_stats.items():
+                        if "return" in k and "monitor" not in k and v is not None:
+                            logging_callback.connector.log_value_with_timestep(
+                                num_samples_so_far,
+                                float(v),
+                                "rollout/" + k,
+                            )
+
+                # Replace the original `log_batch` function with the new one
+                original_log_batch = algorithm._bc_logger.log_batch
+                algorithm._bc_logger.log_batch = log_batch_with_connector
+
+            elif isinstance(callback, SavingCallback):
                 saving_callback = copy.copy(callback)
 
                 def save(batch_number):
@@ -123,23 +154,6 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
                 on_batch_end_functions.append(save)
 
-            elif isinstance(callback, LoggingCallback):
-                logging_callback = copy.copy(callback)
-                logging_interval = 100
-                compute_rollout_stats = RolloutStatsComputer(
-                    self.venv,
-                    1,
-                )
-
-                def log(batch_number):
-                    if on_batch_end_counter[log] % logging_interval == 0:
-                        rollout_stats = compute_rollout_stats(algorithm.policy, algorithm.rng)
-                        logging_callback.connector.log_value_with_timestep(
-                            algorithm.batch_size * batch_number, rollout_stats["return_mean"], "Episode reward"
-                        )
-
-                on_batch_end_functions.append(log)
-
         on_batch_end_counter = {func: 0 for func in on_batch_end_functions}
 
         def on_batch_end():
@@ -147,7 +161,11 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                 on_batch_end_counter[func] += 1
                 func(on_batch_end_counter[func])
 
-        algorithm.train(n_batches=math.ceil(total_timesteps / algorithm.batch_size), on_batch_end=on_batch_end)
+        algorithm.train(
+            n_batches=math.ceil(total_timesteps / algorithm.batch_size),
+            on_batch_end=on_batch_end,
+            log_rollouts_venv=self.venv,
+        )
 
     def save_algorithm(self, algorithm: DemonstrationAlgorithm, folder_path: Path):
         pass  # only policy saving is required for this algorithm
