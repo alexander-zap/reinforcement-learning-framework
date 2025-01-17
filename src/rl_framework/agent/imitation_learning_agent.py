@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from rl_framework.agent import Agent
 from rl_framework.agent.imitation.episode_sequence import EpisodeSequence
@@ -10,7 +11,7 @@ class ILAgent(Agent, ABC):
     def train(
         self,
         total_timesteps: int,
-        connector: Connector,
+        connector: Optional[Connector],
         episode_sequence: EpisodeSequence,
         *args,
         **kwargs,
@@ -19,9 +20,10 @@ class ILAgent(Agent, ABC):
         Method starting training for imitation learning agents.
 
         Args:
-            total_timesteps (int): Amount of (recorded) timesteps to train the agent on.
+            total_timesteps: Amount of (recorded) timesteps to train the agent on.
             connector: Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
+                If no connector is provided, callbacks will not be executed.
             episode_sequence: List of episodes on which the agent should be trained on.
                 Each episode consists of a sequence, which has the following format:
                 [
