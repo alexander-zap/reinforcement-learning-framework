@@ -98,6 +98,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         super().__init__()
         self.venv = None
         self.validation_transitions: Optional[Transitions] = None
+        self.log_interval = 500
         self.rollout_interval = None
         self.rollout_episodes = 10
 
@@ -122,6 +123,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
             # Rest of the `trajectories` generator can be used for training with `n - n_validation` episodes left
             validation_trajectories = list(itertools.islice(trajectories, int(validation_fraction * len(trajectories))))
             self.validation_transitions = rollout.flatten_trajectories(validation_trajectories)
+        self.log_interval = parameters.pop("log_interval", self.log_interval)
         self.rollout_interval = parameters.pop("rollout_interval", self.rollout_interval)
         self.rollout_episodes = parameters.pop("rollout_episodes", self.rollout_episodes)
         algorithm = BC(demonstrations=trajectories, **parameters)
@@ -163,7 +165,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
                 def log(batch_number):
                     # Use validation data to compute loss metrics and log it to connector
-                    if self.validation_transitions is not None:
+                    if self.validation_transitions is not None and batch_number % self.log_interval == 0:
                         obs_tensor = util.safe_to_tensor(self.validation_transitions.obs)
                         acts = util.safe_to_tensor(self.validation_transitions.acts, device=algorithm.policy.device)
                         validation_metrics = algorithm.loss_calculator(algorithm.policy, obs_tensor, acts)
@@ -204,6 +206,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         algorithm.train(
             n_batches=math.ceil(total_timesteps / algorithm.batch_size),
             on_batch_end=on_batch_end,
+            log_interval=self.log_interval,
         )
 
     def save_algorithm(self, algorithm: DemonstrationAlgorithm, folder_path: Path):
