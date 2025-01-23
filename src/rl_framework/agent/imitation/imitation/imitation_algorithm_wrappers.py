@@ -13,7 +13,7 @@ import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
-from imitation.algorithms.bc import BC, BCTrainingMetrics
+from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
 from imitation.data import rollout
@@ -98,6 +98,8 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         super().__init__()
         self.venv = None
         self.validation_transitions: Optional[Transitions] = None
+        self.rollout_interval = None
+        self.rollout_episodes = 10
 
     def build_algorithm(
         self,
@@ -120,6 +122,8 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
             # Rest of the `trajectories` generator can be used for training with `n - n_validation` episodes left
             validation_trajectories = list(itertools.islice(trajectories, int(validation_fraction * len(trajectories))))
             self.validation_transitions = rollout.flatten_trajectories(validation_trajectories)
+        self.rollout_interval = parameters.pop("rollout_interval", self.rollout_interval)
+        self.rollout_episodes = parameters.pop("rollout_episodes", self.rollout_episodes)
         algorithm = BC(demonstrations=trajectories, **parameters)
         return algorithm
 
@@ -148,14 +152,17 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                                 num_samples_so_far, float(v), f"training/{k}"
                             )
 
-                    for k, v in rollout_stats.items():
-                        if "return" in k and "monitor" not in k and v is not None:
-                            logging_callback.connector.log_value_with_timestep(
-                                num_samples_so_far,
-                                float(v),
-                                "rollout/" + k,
-                            )
+                # Replace the original `log_batch` function with the new one
+                original_log_batch = algorithm._bc_logger.log_batch
+                algorithm._bc_logger.log_batch = log_batch_with_connector
 
+                compute_rollout_stats = RolloutStatsComputer(
+                    self.venv,
+                    self.rollout_episodes,
+                )
+
+                def log(batch_number):
+                    # Use validation data to compute loss metrics and log it to connector
                     if self.validation_transitions is not None:
                         obs_tensor = util.safe_to_tensor(self.validation_transitions.obs)
                         acts = util.safe_to_tensor(self.validation_transitions.acts, device=algorithm.policy.device)
@@ -163,12 +170,20 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                         for k, v in validation_metrics.__dict__.items():
                             if v is not None:
                                 logging_callback.connector.log_value_with_timestep(
-                                    num_samples_so_far, float(v), f"validation/{k}"
+                                    algorithm.batch_size * batch_number, float(v), f"validation/{k}"
                                 )
 
-                # Replace the original `log_batch` function with the new one
-                original_log_batch = algorithm._bc_logger.log_batch
-                algorithm._bc_logger.log_batch = log_batch_with_connector
+                    if self.rollout_interval and batch_number % self.rollout_interval == 0:
+                        rollout_stats = compute_rollout_stats(algorithm.policy, np.random.default_rng(0))
+                        for k, v in rollout_stats.items():
+                            if "return" in k and "monitor" not in k and v is not None:
+                                logging_callback.connector.log_value_with_timestep(
+                                    algorithm.batch_size * batch_number,
+                                    float(v),
+                                    "rollout/" + k,
+                                )
+
+                on_batch_end_functions.append(log)
 
             elif isinstance(callback, SavingCallback):
                 saving_callback = copy.copy(callback)
@@ -189,7 +204,6 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         algorithm.train(
             n_batches=math.ceil(total_timesteps / algorithm.batch_size),
             on_batch_end=on_batch_end,
-            log_rollouts_venv=self.venv,
         )
 
     def save_algorithm(self, algorithm: DemonstrationAlgorithm, folder_path: Path):
