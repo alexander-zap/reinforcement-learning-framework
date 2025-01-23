@@ -77,7 +77,7 @@ if __name__ == "__main__":
     )
 
     # Create new agent
-    agent = ImitationAgent(algorithm_class=BC, algorithm_parameters={})
+    agent = ImitationAgent(algorithm_class=BC, algorithm_parameters={"validation_fraction": 0.1})
 
     if DOWNLOAD_EXISTING_AGENT:
         # Download existing agent from repository

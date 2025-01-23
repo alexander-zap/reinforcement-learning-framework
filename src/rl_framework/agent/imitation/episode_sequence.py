@@ -8,6 +8,8 @@ import imitation
 import numpy as np
 from imitation.data import serialize
 
+from rl_framework.util import SizedGenerator
+
 GenericEpisode = List[Tuple[object, object, object, float, bool, bool, dict]]
 
 
@@ -134,34 +136,44 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
         trajectories: Sequence[imitation.data.types.TrajectoryWithRew] = list(self.to_imitation_episodes())
         serialize.save(file_path, trajectories)
 
-    def to_imitation_episodes(self) -> Generator[imitation.data.types.TrajectoryWithRew, None, None]:
+    def to_imitation_episodes(self) -> SizedGenerator[imitation.data.types.TrajectoryWithRew]:
         self._episode_generator, episode_generator_copy = tee(self._episode_generator)
 
-        for generic_episode in episode_generator_copy:
-            observations, actions, next_observations, rewards, terminations, truncations, infos = (
-                np.array(x) for x in list(zip(*generic_episode))
-            )
-            all_observations = np.vstack([copy.deepcopy(observations), copy.deepcopy(next_observations[-1])])
-            episode_trajectory = imitation.data.types.TrajectoryWithRew(
-                obs=all_observations, acts=actions, rews=rewards, infos=infos, terminal=terminations[-1]
-            )
-            yield episode_trajectory
+        def generate_imitation_episodes():
+            for generic_episode in episode_generator_copy:
+                observations, actions, next_observations, rewards, terminations, truncations, infos = (
+                    np.array(x) for x in list(zip(*generic_episode))
+                )
+                all_observations = np.vstack([copy.deepcopy(observations), copy.deepcopy(next_observations[-1])])
+                episode_trajectory = imitation.data.types.TrajectoryWithRew(
+                    obs=all_observations, acts=actions, rews=rewards, infos=infos, terminal=terminations[-1]
+                )
+                yield episode_trajectory
 
-    def to_d3rlpy_episodes(self) -> Generator[d3rlpy.dataset.components.Episode, None, None]:
+        return SizedGenerator(generate_imitation_episodes(), len(self))
+
+    def to_d3rlpy_episodes(self) -> SizedGenerator[d3rlpy.dataset.components.Episode]:
         self._episode_generator, episode_generator_copy = tee(self._episode_generator)
 
-        for generic_episode in episode_generator_copy:
-            observations, actions, next_observations, rewards, terminations, truncations, infos = (
-                np.array(x) for x in list(zip(*generic_episode))
-            )
-            episode = d3rlpy.dataset.components.Episode(
-                observations=observations,
-                actions=actions,
-                rewards=rewards,
-                terminated=terminations[-1],
-            )
-            yield episode
+        def generate_d3rlpy_episodes():
+            for generic_episode in episode_generator_copy:
+                observations, actions, next_observations, rewards, terminations, truncations, infos = (
+                    np.array(x) for x in list(zip(*generic_episode))
+                )
+                episode = d3rlpy.dataset.components.Episode(
+                    observations=observations,
+                    actions=actions,
+                    rewards=rewards,
+                    terminated=terminations[-1],
+                )
+                yield episode
 
-    def to_generic_episodes(self) -> Generator[GenericEpisode, None, None]:
+        return SizedGenerator(generate_d3rlpy_episodes(), len(self))
+
+    def to_generic_episodes(self) -> SizedGenerator[GenericEpisode]:
         self._episode_generator, episode_generator_copy = tee(self._episode_generator)
-        return episode_generator_copy
+
+        def generate_generic_episodes():
+            return episode_generator_copy
+
+        return SizedGenerator(generate_generic_episodes(), len(self))

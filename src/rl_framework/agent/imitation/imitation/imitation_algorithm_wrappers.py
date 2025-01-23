@@ -1,11 +1,12 @@
 import copy
+import itertools
 import logging
 import math
 import tempfile
 from abc import ABC, abstractmethod
 from itertools import tee
 from pathlib import Path
-from typing import Generator, Iterable, Mapping
+from typing import Iterable, Mapping, Optional
 
 import numpy as np
 import torch
@@ -15,8 +16,10 @@ from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC, BCTrainingMetrics
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
+from imitation.data import rollout
 from imitation.data.types import TrajectoryWithRew, Transitions
 from imitation.rewards.reward_nets import BasicRewardNet
+from imitation.util import util
 from imitation.util.networks import RunningNorm
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.base_class import BasePolicy
@@ -25,7 +28,12 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import MlpPolicy
 
-from rl_framework.util import LoggingCallback, SavingCallback, add_callbacks_to_callback
+from rl_framework.util import (
+    LoggingCallback,
+    SavingCallback,
+    SizedGenerator,
+    add_callbacks_to_callback,
+)
 
 FILE_NAME_POLICY = "policy"
 FILE_NAME_SB3_ALGORITHM = "algorithm.zip"
@@ -41,7 +49,7 @@ class AlgorithmWrapper(ABC):
         self,
         algorithm_parameters: dict,
         total_timesteps: int,
-        trajectories: Generator[TrajectoryWithRew, None, None],
+        trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> DemonstrationAlgorithm:
         raise NotImplementedError
@@ -89,12 +97,13 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
     def __init__(self):
         super().__init__()
         self.venv = None
+        self.validation_transitions: Optional[Transitions] = None
 
     def build_algorithm(
         self,
         algorithm_parameters: dict,
         total_timesteps: int,
-        trajectories: Generator[TrajectoryWithRew, None, None],
+        trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> BC:
         self.venv = vectorized_environment
@@ -107,6 +116,10 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
             logging.warning("BC algorithm does not support passing of the parameter `allow_variable_horizon`.")
+        if (validation_fraction := parameters.pop("validation_fraction", None)) is not None:
+            # Rest of the `trajectories` generator can be used for training with `n - n_validation` episodes left
+            validation_trajectories = list(itertools.islice(trajectories, int(validation_fraction * len(trajectories))))
+            self.validation_transitions = rollout.flatten_trajectories(validation_trajectories)
         algorithm = BC(demonstrations=trajectories, **parameters)
         return algorithm
 
@@ -131,7 +144,9 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                     # Log the recorded values into the connector additionally
                     for k, v in training_metrics.__dict__.items():
                         if v is not None:
-                            logging_callback.connector.log_value_with_timestep(num_samples_so_far, float(v), f"bc/{k}")
+                            logging_callback.connector.log_value_with_timestep(
+                                num_samples_so_far, float(v), f"training/{k}"
+                            )
 
                     for k, v in rollout_stats.items():
                         if "return" in k and "monitor" not in k and v is not None:
@@ -140,6 +155,16 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                                 float(v),
                                 "rollout/" + k,
                             )
+
+                    if self.validation_transitions is not None:
+                        obs_tensor = util.safe_to_tensor(self.validation_transitions.obs)
+                        acts = util.safe_to_tensor(self.validation_transitions.acts, device=algorithm.policy.device)
+                        validation_metrics = algorithm.loss_calculator(algorithm.policy, obs_tensor, acts)
+                        for k, v in validation_metrics.__dict__.items():
+                            if v is not None:
+                                logging_callback.connector.log_value_with_timestep(
+                                    num_samples_so_far, float(v), f"validation/{k}"
+                                )
 
                 # Replace the original `log_batch` function with the new one
                 original_log_batch = algorithm._bc_logger.log_batch
@@ -180,7 +205,7 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         self,
         algorithm_parameters: dict,
         total_timesteps: int,
-        trajectories: Generator[TrajectoryWithRew, None, None],
+        trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> GAIL:
         parameters = {
@@ -227,7 +252,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         self,
         algorithm_parameters: dict,
         total_timesteps: int,
-        trajectories: Generator[TrajectoryWithRew, None, None],
+        trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> AIRL:
         parameters = {
@@ -274,7 +299,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         self,
         algorithm_parameters: dict,
         total_timesteps: int,
-        trajectories: Generator[TrajectoryWithRew, None, None],
+        trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> DensityAlgorithm:
         parameters = {
@@ -314,7 +339,7 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         self,
         algorithm_parameters: dict,
         total_timesteps: int,
-        trajectories: Generator[TrajectoryWithRew, None, None],
+        trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> SQIL:
         parameters = {
