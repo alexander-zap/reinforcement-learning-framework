@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Type
 
 import gymnasium as gym
 import numpy as np
+import torch.nn
 from tqdm import tqdm
 
 from rl_framework.util import Connector
@@ -16,7 +17,23 @@ class Agent(ABC):
         return NotImplementedError
 
     @abstractmethod
-    def __init__(self, algorithm_class: Type, algorithm_parameters: Optional[Dict], *args, **kwargs):
+    def __init__(
+        self,
+        algorithm_class: Type,
+        algorithm_parameters: Optional[Dict],
+        features_extractor: Optional[torch.nn.Module],
+        *args,
+        **kwargs,
+    ):
+        """
+        Initialize an agent.
+
+        Args:
+            algorithm_class: Reinforcement or imitation learning class to be used for training the agent.
+            algorithm_parameters: Parameters for the specified algorithm class.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
+        """
         raise NotImplementedError
 
     def evaluate(

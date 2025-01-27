@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
+import torch.nn
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -48,7 +49,8 @@ class ImitationAgent(ILAgent):
     def __init__(
         self,
         algorithm_class: Type[DemonstrationAlgorithm] = BC,
-        algorithm_parameters: Dict = None,
+        algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[torch.nn.Module] = None,
     ):
         """
         Initialize an agent which will trained on one of imitation algorithms.
@@ -61,9 +63,12 @@ class ImitationAgent(ILAgent):
                     common params.
                 See individual docs (e.g., https://imitation.readthedocs.io/en/latest/algorithms/bc.html)
                 for algorithm-specific params.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
         self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[algorithm_class]()
         self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+        self.features_extractor = features_extractor
         self.algorithm = None
         self.algorithm_policy = None
 
@@ -114,7 +119,11 @@ class ImitationAgent(ILAgent):
 
         if not self.algorithm:
             self.algorithm = self.algorithm_wrapper.build_algorithm(
-                self.algorithm_parameters, total_timesteps, trajectories, vectorized_environment
+                self.algorithm_parameters,
+                total_timesteps,
+                trajectories,
+                vectorized_environment,
+                self.features_extractor,
             )
         else:
             self.algorithm.set_demonstrations(trajectories)

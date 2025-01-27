@@ -33,6 +33,7 @@ from rl_framework.util import (
     SavingCallback,
     SizedGenerator,
     add_callbacks_to_callback,
+    get_sb3_policy_kwargs_for_features_extractor,
 )
 
 FILE_NAME_POLICY = "policy"
@@ -51,6 +52,7 @@ class AlgorithmWrapper(ABC):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[torch.nn.Module] = None,
     ) -> DemonstrationAlgorithm:
         raise NotImplementedError
 
@@ -108,13 +110,23 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[torch.nn.Module] = None,
     ) -> BC:
         self.venv = vectorized_environment
         parameters = {
             "observation_space": vectorized_environment.observation_space,
             "action_space": vectorized_environment.action_space,
             "rng": np.random.default_rng(0),
-            "policy": self.loaded_parameters.get("policy", None),
+            "policy": self.loaded_parameters.get(
+                "policy",
+                ActorCriticPolicy(
+                    observation_space=self.venv.observation_space,
+                    action_space=self.venv.action_space,
+                    net_arch=[32, 32],
+                    lr_schedule=lambda _: torch.finfo(torch.float32).max,
+                    **get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                ),
+            ),
         }
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
@@ -224,6 +236,7 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[torch.nn.Module] = None,
     ) -> GAIL:
         parameters = {
             "venv": vectorized_environment,
@@ -231,8 +244,15 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
             # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(env=vectorized_environment, policy=MlpPolicy, tensorboard_log=tempfile.mkdtemp()),
+                PPO(
+                    env=vectorized_environment,
+                    policy=MlpPolicy,
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                    tensorboard_log=tempfile.mkdtemp(),
+                ),
             ),
+            # FIXME: This probably will not work with Dict as observation_space.
+            #  Might require extension of BasicRewardNet to use features_extractor as well.
             "reward_net": self.loaded_parameters.get(
                 "reward_net",
                 BasicRewardNet(
@@ -271,6 +291,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[torch.nn.Module] = None,
     ) -> AIRL:
         parameters = {
             "venv": vectorized_environment,
@@ -278,8 +299,15 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
             # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(env=vectorized_environment, policy=MlpPolicy, tensorboard_log=tempfile.mkdtemp()),
+                PPO(
+                    env=vectorized_environment,
+                    policy=MlpPolicy,
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                    tensorboard_log=tempfile.mkdtemp(),
+                ),
             ),
+            # FIXME: This probably will not work with Dict as observation_space.
+            #  Might require extension of BasicRewardNet to use features_extractor as well.
             "reward_net": self.loaded_parameters.get(
                 "reward_net",
                 BasicRewardNet(
@@ -318,6 +346,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[torch.nn.Module] = None,
     ) -> DensityAlgorithm:
         parameters = {
             "venv": vectorized_environment,
@@ -329,6 +358,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
                 PPO(
                     env=vectorized_environment,
                     policy=ActorCriticPolicy,
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor),
                 ),
             ),
         }
@@ -358,12 +388,16 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[torch.nn.Module] = None,
     ) -> SQIL:
         parameters = {
             "venv": vectorized_environment,
             "policy": "MlpPolicy",
             # FIXME: Hard-coded DQN as default policy training algorithm
             "rl_algo_class": DQN,
+            "rl_kwargs": {
+                "policy_kwargs": get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+            },
         }
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:

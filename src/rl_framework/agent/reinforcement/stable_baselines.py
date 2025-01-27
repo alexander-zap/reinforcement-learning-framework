@@ -1,4 +1,5 @@
 import tempfile
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Type
@@ -6,6 +7,7 @@ from typing import Dict, List, Optional, Type
 import gymnasium as gym
 import numpy as np
 import stable_baselines3
+import torch.nn
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
@@ -13,7 +15,13 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    LoggingCallback,
+    SavingCallback,
+    get_sb3_policy_kwargs_for_features_extractor,
+)
 
 
 class StableBaselinesAgent(RLAgent):
@@ -29,6 +37,7 @@ class StableBaselinesAgent(RLAgent):
         self,
         algorithm_class: Type[BaseAlgorithm] = stable_baselines3.PPO,
         algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[torch.nn.Module] = None,
     ):
         """
         Initialize an agent which will trained on one of Stable-Baselines3 algorithms.
@@ -40,10 +49,14 @@ class StableBaselinesAgent(RLAgent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
         self.algorithm_class: Type[BaseAlgorithm] = algorithm_class
 
         self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+
+        self.features_extractor = features_extractor
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -93,7 +106,12 @@ class StableBaselinesAgent(RLAgent):
         vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         if self.algorithm_needs_initialization:
-            self.algorithm = self.algorithm_class(env=vectorized_environment, **self.algorithm_parameters)
+            parameters = defaultdict(dict, {**self.algorithm_parameters})
+            if self.features_extractor:
+                parameters["policy_kwargs"].update(
+                    get_sb3_policy_kwargs_for_features_extractor(self.features_extractor)
+                )
+            self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
             self.algorithm_needs_initialization = False
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:

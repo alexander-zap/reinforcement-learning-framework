@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
+import torch.nn
 
 from rl_framework.agent.reinforcement.custom_algorithms import (
     CustomAlgorithm,
@@ -24,6 +25,7 @@ class CustomAgent(RLAgent):
         self,
         algorithm_class: Type[CustomAlgorithm] = QLearning,
         algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[torch.nn.Module] = None,
     ):
         """
         Initialize an agent which will trained on one of custom implemented algorithms.
@@ -33,6 +35,8 @@ class CustomAgent(RLAgent):
                 Specifies the algorithm for RL training.
                 Defaults to Q-Learning.
             algorithm_parameters (Dict): Parameters / keyword arguments for the specified Algorithm class.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
 
         if algorithm_parameters is None:
