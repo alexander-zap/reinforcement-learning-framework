@@ -44,6 +44,9 @@ class CustomAgent(RLAgent):
 
         self.algorithm = algorithm_class(**algorithm_parameters)
 
+        # FIXME: Add functionality to pass features_extractor to the custom algorithm.
+        self.features_extractor = features_extractor
+
     def train(
         self,
         total_timesteps: int,
