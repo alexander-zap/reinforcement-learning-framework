@@ -26,13 +26,7 @@ from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import 
     SQILAlgorithmWrapper,
 )
 from rl_framework.agent.imitation_learning_agent import ILAgent
-from rl_framework.util import (
-    Connector,
-    DummyConnector,
-    LoggingCallback,
-    SavingCallback,
-    encode_observations_with_features_extractor,
-)
+from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,
@@ -159,9 +153,6 @@ class ImitationAgent(ILAgent):
 
         if not self.algorithm_policy:
             raise ValueError("Cannot predict action for uninitialized agent. Start a training first to initialize.")
-
-        if self.features_extractor:
-            observation = encode_observations_with_features_extractor([observation], self.features_extractor)[0]
 
         # SB3 model expects multiple observations as input and will output an array of actions as output
         (

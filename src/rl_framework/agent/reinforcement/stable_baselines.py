@@ -20,7 +20,6 @@ from rl_framework.util import (
     DummyConnector,
     LoggingCallback,
     SavingCallback,
-    encode_observations_with_features_extractor,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -143,9 +142,6 @@ class StableBaselinesAgent(RLAgent):
         """
 
         # SB3 model expects multiple observations as input and will output an array of actions as output
-        if self.features_extractor:
-            observation = encode_observations_with_features_extractor([observation], self.features_extractor)[0]
-
         (
             action,
             _,
