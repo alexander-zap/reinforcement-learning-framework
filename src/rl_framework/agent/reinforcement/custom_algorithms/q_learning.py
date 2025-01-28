@@ -7,12 +7,13 @@ from typing import Dict, List, Optional
 
 import gymnasium as gym
 import numpy as np
+import torch.nn
 from tqdm import tqdm
 
 from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
     CustomAlgorithm,
 )
-from rl_framework.util import Connector
+from rl_framework.util import Connector, encode_observations_with_features_extractor
 
 
 class QLearning(CustomAlgorithm):
@@ -33,6 +34,7 @@ class QLearning(CustomAlgorithm):
         epsilon: float = 1.0,
         epsilon_min: float = 0.05,
         randomize_q_table: bool = True,
+        features_extractor: Optional[torch.nn.Module] = None,
     ):
         """
         Initialize an Q-Learning agent which will be trained.
@@ -42,6 +44,7 @@ class QLearning(CustomAlgorithm):
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.n_actions = n_actions
+        self.features_extractor = features_extractor
 
         if randomize_q_table:
             self.q_table = np.random.random_sample((n_observations, n_actions)) * 0.1
@@ -65,6 +68,13 @@ class QLearning(CustomAlgorithm):
             reward (float): Reward for executing action at in state St
 
         """
+        if self.features_extractor:
+            # [0][0] since we expect a single discretized value for Q-Learning
+            prev_observation = encode_observations_with_features_extractor([prev_observation], self.features_extractor)[
+                0
+            ][0]
+            observation = encode_observations_with_features_extractor([observation], self.features_extractor)[0][0]
+
         q_old = self._q_table[prev_observation, prev_action]
         q_new = (1 - self.alpha) * q_old + self.alpha * (reward + self.gamma * np.max(self._q_table[observation]))
         self._q_table[prev_observation, prev_action] = q_new
@@ -81,6 +91,9 @@ class QLearning(CustomAlgorithm):
         Returns: action (int): Action to take according to policy.
 
         """
+        if self.features_extractor:
+            # [0][0] since we expect a single discretized value for Q-Learning
+            observation = encode_observations_with_features_extractor([observation], self.features_extractor)[0][0]
 
         return np.argmax(self._q_table[observation])
 

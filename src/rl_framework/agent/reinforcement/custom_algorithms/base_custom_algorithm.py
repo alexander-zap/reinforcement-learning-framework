@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
+from typing import Optional
+
+import torch.nn
 
 
 class CustomAlgorithm(ABC):
     @abstractmethod
-    def __init__(self, *args, **kwargs):
+    def __init__(self, features_extractor: Optional[torch.nn.Module], *args, **kwargs):
         raise NotImplementedError
 
     @abstractmethod
