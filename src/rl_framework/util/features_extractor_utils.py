@@ -1,6 +1,17 @@
+from typing import Any
+
 import gymnasium as gym
+import numpy as np
 import torch.nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
+
+def encode_observations_with_features_extractor(
+    observations: list[Any], features_extractor: torch.nn.Module
+) -> np.ndarray:
+    features = features_extractor(torch.as_tensor(np.array(observations))).detach().numpy()
+    assert len(features) == len(observations)
+    return features
 
 
 def get_sb3_policy_kwargs_for_features_extractor(features_extractor: torch.nn.Module):

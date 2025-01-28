@@ -10,8 +10,9 @@ from .connector import (
     HuggingFaceUploadConfig,
     UploadConfig,
 )
-from .features_extractor_wrapper import (
+from .features_extractor_utils import (
     StableBaselinesFeaturesExtractor,
+    encode_observations_with_features_extractor,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 from .training_callbacks import (
