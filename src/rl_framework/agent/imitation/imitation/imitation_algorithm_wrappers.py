@@ -29,6 +29,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import MlpPolicy
 
 from rl_framework.util import (
+    FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
     SizedGenerator,
@@ -52,7 +53,7 @@ class AlgorithmWrapper(ABC):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> DemonstrationAlgorithm:
         raise NotImplementedError
 
@@ -110,7 +111,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> BC:
         self.venv = vectorized_environment
         parameters = {
@@ -124,7 +125,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                     action_space=self.venv.action_space,
                     net_arch=[32, 32],
                     lr_schedule=lambda _: torch.finfo(torch.float32).max,
-                    **get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                    **(get_sb3_policy_kwargs_for_features_extractor(features_extractor) if features_extractor else {}),
                 ),
             ),
         }
@@ -236,7 +237,7 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> GAIL:
         parameters = {
             "venv": vectorized_environment,
@@ -247,7 +248,9 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
                 PPO(
                     env=vectorized_environment,
                     policy=MlpPolicy,
-                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                    if features_extractor
+                    else None,
                     tensorboard_log=tempfile.mkdtemp(),
                 ),
             ),
@@ -291,7 +294,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> AIRL:
         parameters = {
             "venv": vectorized_environment,
@@ -302,7 +305,9 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
                 PPO(
                     env=vectorized_environment,
                     policy=MlpPolicy,
-                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                    if features_extractor
+                    else None,
                     tensorboard_log=tempfile.mkdtemp(),
                 ),
             ),
@@ -346,7 +351,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> DensityAlgorithm:
         parameters = {
             "venv": vectorized_environment,
@@ -358,7 +363,9 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
                 PPO(
                     env=vectorized_environment,
                     policy=ActorCriticPolicy,
-                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                    if features_extractor
+                    else None,
                 ),
             ),
         }
@@ -388,7 +395,7 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> SQIL:
         parameters = {
             "venv": vectorized_environment,
@@ -396,7 +403,9 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
             # FIXME: Hard-coded DQN as default policy training algorithm
             "rl_algo_class": DQN,
             "rl_kwargs": {
-                "policy_kwargs": get_sb3_policy_kwargs_for_features_extractor(features_extractor),
+                "policy_kwargs": get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                if features_extractor
+                else None,
             },
         }
         parameters.update(**algorithm_parameters)

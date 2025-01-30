@@ -2,14 +2,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
-import torch.nn
 
 from rl_framework.agent.reinforcement.custom_algorithms import (
     CustomAlgorithm,
     QLearning,
 )
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector, DummyConnector
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
 class CustomAgent(RLAgent):
@@ -25,7 +29,7 @@ class CustomAgent(RLAgent):
         self,
         algorithm_class: Type[CustomAlgorithm] = QLearning,
         algorithm_parameters: Optional[Dict] = None,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of custom implemented algorithms.
@@ -39,10 +43,9 @@ class CustomAgent(RLAgent):
                     used before the action/value prediction network.
         """
 
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
-        self.algorithm = algorithm_class(**algorithm_parameters, features_extractor=features_extractor)
+        self.algorithm = self.algorithm_class(**self.algorithm_parameters, features_extractor=self.features_extractor)
 
     def train(
         self,
@@ -71,6 +74,11 @@ class CustomAgent(RLAgent):
 
         if not connector:
             connector = DummyConnector()
+
+        training_environments = [
+            wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+            for env in training_environments
+        ]
 
         self.algorithm.train(
             connector=connector,

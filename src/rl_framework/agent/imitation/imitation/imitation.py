@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
-import torch.nn
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
+from imitation.data.types import TrajectoryWithRew
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -26,7 +26,15 @@ from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import 
     SQILAlgorithmWrapper,
 )
 from rl_framework.agent.imitation_learning_agent import ILAgent
-from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    LoggingCallback,
+    SavingCallback,
+    SizedGenerator,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,
@@ -50,7 +58,7 @@ class ImitationAgent(ILAgent):
         self,
         algorithm_class: Type[DemonstrationAlgorithm] = BC,
         algorithm_parameters: Optional[Dict] = None,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of imitation algorithms.
@@ -66,9 +74,9 @@ class ImitationAgent(ILAgent):
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
-        self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[algorithm_class]()
-        self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
-        self.features_extractor = features_extractor
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
+        self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[self.algorithm_class]()
+        self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.algorithm = None
         self.algorithm_policy = None
 
@@ -107,12 +115,30 @@ class ImitationAgent(ILAgent):
         if not connector:
             connector = DummyConnector()
 
-        trajectories = episode_sequence.to_imitation_episodes()
+        trajectories: SizedGenerator[TrajectoryWithRew] = episode_sequence.to_imitation_episodes()
+
+        if self.features_extractor:
+
+            def preprocess_imitation_episodes(trajectories):
+                for trajectory in trajectories:
+                    yield TrajectoryWithRew(
+                        obs=self.features_extractor.preprocess(trajectory.obs),
+                        acts=trajectory.acts,
+                        rews=trajectory.rews,
+                        infos=trajectory.infos,
+                        terminal=trajectory.terminal,
+                    )
+
+            trajectories = SizedGenerator(preprocess_imitation_episodes(trajectories), size=trajectories.size)
 
         assert len(training_environments) > 0, (
             "All imitation algorithms require an environment to be passed. "
             "Some for parameter definition (e.g., BC), some for active interaction (e.g., SQIL)."
         )
+        training_environments = [
+            wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+            for env in training_environments
+        ]
         training_environments = [Monitor(env) for env in training_environments]
         environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
         vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
@@ -228,9 +254,6 @@ class ImitationAgent(ILAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
-
         if "allow_variable_horizon" not in algorithm_parameters:
             algorithm_parameters["allow_variable_horizon"] = True
 

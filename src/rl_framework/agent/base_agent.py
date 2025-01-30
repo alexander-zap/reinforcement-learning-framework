@@ -4,10 +4,13 @@ from typing import Dict, List, Optional, Tuple, Type
 
 import gymnasium as gym
 import numpy as np
-import torch.nn
 from tqdm import tqdm
 
-from rl_framework.util import Connector
+from rl_framework.util import (
+    Connector,
+    FeaturesExtractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
 class Agent(ABC):
@@ -16,12 +19,11 @@ class Agent(ABC):
     def algorithm(self):
         return NotImplementedError
 
-    @abstractmethod
     def __init__(
         self,
         algorithm_class: Type,
         algorithm_parameters: Optional[Dict],
-        features_extractor: Optional[torch.nn.Module],
+        features_extractor: Optional[FeaturesExtractor],
         *args,
         **kwargs,
     ):
@@ -34,7 +36,9 @@ class Agent(ABC):
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
-        raise NotImplementedError
+        self.algorithm_class = algorithm_class
+        self.algorithm_parameters = algorithm_parameters if algorithm_parameters else {}
+        self.features_extractor = features_extractor
 
     def evaluate(
         self,
@@ -53,6 +57,10 @@ class Agent(ABC):
                 No seed is used if not provided or fewer seeds are provided then n_eval_episodes.
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
+
+        evaluation_environment = wrap_environment_with_features_extractor_preprocessor(
+            evaluation_environment, self.features_extractor
+        )
 
         if seeds is None:
             seeds = []

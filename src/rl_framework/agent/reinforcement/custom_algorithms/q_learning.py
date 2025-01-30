@@ -7,13 +7,16 @@ from typing import Dict, List, Optional
 
 import gymnasium as gym
 import numpy as np
-import torch.nn
 from tqdm import tqdm
 
 from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
     CustomAlgorithm,
 )
-from rl_framework.util import Connector, encode_observations_with_features_extractor
+from rl_framework.util import (
+    Connector,
+    FeaturesExtractor,
+    encode_observations_with_features_extractor,
+)
 
 
 class QLearning(CustomAlgorithm):
@@ -34,7 +37,7 @@ class QLearning(CustomAlgorithm):
         epsilon: float = 1.0,
         epsilon_min: float = 0.05,
         randomize_q_table: bool = True,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an Q-Learning agent which will be trained.

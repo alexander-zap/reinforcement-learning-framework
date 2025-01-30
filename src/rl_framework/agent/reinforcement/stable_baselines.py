@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Type
 import gymnasium as gym
 import numpy as np
 import stable_baselines3
-import torch.nn
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
@@ -18,9 +17,11 @@ from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
     get_sb3_policy_kwargs_for_features_extractor,
+    wrap_environment_with_features_extractor_preprocessor,
 )
 
 
@@ -37,7 +38,7 @@ class StableBaselinesAgent(RLAgent):
         self,
         algorithm_class: Type[BaseAlgorithm] = stable_baselines3.PPO,
         algorithm_parameters: Optional[Dict] = None,
-        features_extractor: Optional[torch.nn.Module] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of Stable-Baselines3 algorithms.
@@ -52,11 +53,9 @@ class StableBaselinesAgent(RLAgent):
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
-        self.algorithm_class: Type[BaseAlgorithm] = algorithm_class
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
-        self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
-
-        self.features_extractor = features_extractor
+        self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -99,6 +98,10 @@ class StableBaselinesAgent(RLAgent):
         if not connector:
             connector = DummyConnector()
 
+        training_environments = [
+            wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+            for env in training_environments
+        ]
         training_environments = [Monitor(env) for env in training_environments]
         environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
 
@@ -187,9 +190,6 @@ class StableBaselinesAgent(RLAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
-
         if "policy" not in algorithm_parameters:
             algorithm_parameters.update({"policy": "MlpPolicy"})
 
