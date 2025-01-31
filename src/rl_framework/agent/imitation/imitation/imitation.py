@@ -135,10 +135,13 @@ class ImitationAgent(ILAgent):
             "All imitation algorithms require an environment to be passed. "
             "Some for parameter definition (e.g., BC), some for active interaction (e.g., SQIL)."
         )
-        training_environments = [
-            wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
-            for env in training_environments
-        ]
+
+        if self.features_extractor:
+            training_environments = [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in training_environments
+            ]
+
         training_environments = [Monitor(env) for env in training_environments]
         environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
         vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)

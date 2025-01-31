@@ -58,9 +58,10 @@ class Agent(ABC):
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
 
-        evaluation_environment = wrap_environment_with_features_extractor_preprocessor(
-            evaluation_environment, self.features_extractor
-        )
+        if self.features_extractor:
+            evaluation_environment = wrap_environment_with_features_extractor_preprocessor(
+                evaluation_environment, self.features_extractor
+            )
 
         if seeds is None:
             seeds = []
