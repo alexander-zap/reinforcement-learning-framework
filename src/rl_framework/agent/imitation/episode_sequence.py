@@ -1,6 +1,6 @@
 import itertools
 from itertools import tee
-from typing import Generator, Iterable, List, Sequence, Sized, Tuple
+from typing import Generator, Iterable, List, Sequence, Sized, Tuple, cast
 
 import d3rlpy
 import imitation
@@ -120,7 +120,7 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
                 yield episode
 
         episode_sequence = EpisodeSequence()
-        trajectories = serialize.load_with_rewards(file_path)
+        trajectories = cast(Sequence[imitation.data.types.TrajectoryWithRew], serialize.load(file_path))
         episode_sequence._episode_generator = generate_episodes(trajectories)
         episode_sequence._len = len(trajectories)
         return episode_sequence
