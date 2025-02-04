@@ -10,7 +10,7 @@ from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
-from imitation.data.types import TrajectoryWithRew
+from imitation.data.types import DictObs, TrajectoryWithRew
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -120,9 +120,15 @@ class ImitationAgent(ILAgent):
         if self.features_extractor:
 
             def preprocess_imitation_episodes(trajectories):
+                def preprocess_observations(observations):
+                    preprocessed_observations = self.features_extractor.preprocess(observations)
+                    if isinstance(preprocessed_observations[0], dict):
+                        preprocessed_observations = DictObs.from_obs_list(preprocessed_observations.tolist())
+                    return preprocessed_observations
+
                 for trajectory in trajectories:
                     yield TrajectoryWithRew(
-                        obs=self.features_extractor.preprocess(trajectory.obs),
+                        obs=preprocess_observations(trajectory.obs),
                         acts=trajectory.acts,
                         rews=trajectory.rews,
                         infos=trajectory.infos,
