@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
-import numpy as np
 import stable_baselines3
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
@@ -141,19 +140,20 @@ class StableBaselinesAgent(RLAgent):
             observation (object): Observation of the environment
             deterministic (bool): Whether the action should be determined in a deterministic or stochastic way.
 
-        Returns: action (int): Action to take according to policy.
+        Returns: action: Action to take according to policy.
 
         """
 
-        # SB3 model expects multiple observations as input and will output an array of actions as output
         (
             action,
             _,
         ) = self.algorithm.predict(
-            np.array([observation]),
+            observation,
             deterministic=deterministic,
         )
-        return action[0]
+        if not action.shape:
+            action = action.item()
+        return action
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
