@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
-from imitation.algorithms.base import DemonstrationAlgorithm
+from imitation.algorithms.base import AnyTransitions, DemonstrationAlgorithm
 from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
@@ -34,6 +34,7 @@ from rl_framework.util import (
     SavingCallback,
     SizedGenerator,
     add_callbacks_to_callback,
+    create_memory_efficient_transition_batcher,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -104,6 +105,11 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         self.log_interval = 500
         self.rollout_interval = None
         self.rollout_episodes = 10
+
+        def patched_set_demonstrations(self, demonstrations: AnyTransitions) -> None:
+            self._demo_data_loader = create_memory_efficient_transition_batcher(demonstrations, self.minibatch_size)
+
+        BC.set_demonstrations = patched_set_demonstrations
 
     def build_algorithm(
         self,
