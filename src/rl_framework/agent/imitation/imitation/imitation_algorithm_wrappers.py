@@ -8,6 +8,7 @@ from itertools import tee
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
 
+import gymnasium
 import numpy as np
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
@@ -403,6 +404,12 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> SQIL:
+        # FIXME: SQILReplayBuffer inherits from sb3.ReplayBuffer which doesn't support dict observations.
+        #  Maybe it can be patched to inherit from sb3.DictReplayBuffer.
+        assert not isinstance(
+            vectorized_environment.observation_space, gymnasium.spaces.Dict
+        ), "SQILReplayBuffer does not support Dict observation spaces."
+
         parameters = {
             "venv": vectorized_environment,
             "policy": "MlpPolicy",
