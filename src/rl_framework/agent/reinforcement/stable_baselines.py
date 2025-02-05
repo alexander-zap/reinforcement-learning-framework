@@ -1,10 +1,10 @@
 import tempfile
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
-import numpy as np
 import stable_baselines3
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
@@ -13,7 +13,15 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    LoggingCallback,
+    SavingCallback,
+    get_sb3_policy_kwargs_for_features_extractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
 class StableBaselinesAgent(RLAgent):
@@ -29,6 +37,7 @@ class StableBaselinesAgent(RLAgent):
         self,
         algorithm_class: Type[BaseAlgorithm] = stable_baselines3.PPO,
         algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of Stable-Baselines3 algorithms.
@@ -40,10 +49,12 @@ class StableBaselinesAgent(RLAgent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
-        self.algorithm_class: Type[BaseAlgorithm] = algorithm_class
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
-        self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+        self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -86,6 +97,11 @@ class StableBaselinesAgent(RLAgent):
         if not connector:
             connector = DummyConnector()
 
+        if self.features_extractor:
+            training_environments = [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in training_environments
+            ]
         training_environments = [Monitor(env) for env in training_environments]
         environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
 
@@ -93,7 +109,12 @@ class StableBaselinesAgent(RLAgent):
         vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         if self.algorithm_needs_initialization:
-            self.algorithm = self.algorithm_class(env=vectorized_environment, **self.algorithm_parameters)
+            parameters = defaultdict(dict, {**self.algorithm_parameters})
+            if self.features_extractor:
+                parameters["policy_kwargs"].update(
+                    get_sb3_policy_kwargs_for_features_extractor(self.features_extractor)
+                )
+            self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
             self.algorithm_needs_initialization = False
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:
@@ -119,19 +140,20 @@ class StableBaselinesAgent(RLAgent):
             observation (object): Observation of the environment
             deterministic (bool): Whether the action should be determined in a deterministic or stochastic way.
 
-        Returns: action (int): Action to take according to policy.
+        Returns: action: Action to take according to policy.
 
         """
 
-        # SB3 model expects multiple observations as input and will output an array of actions as output
         (
             action,
             _,
         ) = self.algorithm.predict(
-            np.array([observation]),
+            observation,
             deterministic=deterministic,
         )
-        return action[0]
+        if not action.shape:
+            action = action.item()
+        return action
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
@@ -169,9 +191,6 @@ class StableBaselinesAgent(RLAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
-
         if "policy" not in algorithm_parameters:
             algorithm_parameters.update({"policy": "MlpPolicy"})
 

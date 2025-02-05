@@ -8,7 +8,12 @@ from rl_framework.agent.reinforcement.custom_algorithms import (
     QLearning,
 )
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
-from rl_framework.util import Connector, DummyConnector
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
 class CustomAgent(RLAgent):
@@ -24,6 +29,7 @@ class CustomAgent(RLAgent):
         self,
         algorithm_class: Type[CustomAlgorithm] = QLearning,
         algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of custom implemented algorithms.
@@ -33,12 +39,13 @@ class CustomAgent(RLAgent):
                 Specifies the algorithm for RL training.
                 Defaults to Q-Learning.
             algorithm_parameters (Dict): Parameters / keyword arguments for the specified Algorithm class.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
 
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
-        self.algorithm = algorithm_class(**algorithm_parameters)
+        self.algorithm = self.algorithm_class(**self.algorithm_parameters, features_extractor=self.features_extractor)
 
     def train(
         self,
@@ -67,6 +74,12 @@ class CustomAgent(RLAgent):
 
         if not connector:
             connector = DummyConnector()
+
+        if self.features_extractor:
+            training_environments = [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in training_environments
+            ]
 
         self.algorithm.train(
             connector=connector,

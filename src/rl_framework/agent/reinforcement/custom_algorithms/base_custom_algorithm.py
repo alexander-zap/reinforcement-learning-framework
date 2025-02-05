@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
+from typing import Optional
+
+from rl_framework.util import FeaturesExtractor
 
 
 class CustomAlgorithm(ABC):
     @abstractmethod
-    def __init__(self, *args, **kwargs):
+    def __init__(self, features_extractor: Optional[FeaturesExtractor], *args, **kwargs):
         raise NotImplementedError
 
     @abstractmethod

@@ -1,7 +1,6 @@
-import copy
 import itertools
 from itertools import tee
-from typing import Generator, Iterable, List, Sequence, Sized, Tuple
+from typing import Generator, Iterable, List, Sequence, Sized, Tuple, cast
 
 import d3rlpy
 import imitation
@@ -121,7 +120,7 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
                 yield episode
 
         episode_sequence = EpisodeSequence()
-        trajectories = serialize.load_with_rewards(file_path)
+        trajectories = cast(Sequence[imitation.data.types.TrajectoryWithRew], serialize.load(file_path))
         episode_sequence._episode_generator = generate_episodes(trajectories)
         episode_sequence._len = len(trajectories)
         return episode_sequence
@@ -144,7 +143,11 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
                 observations, actions, next_observations, rewards, terminations, truncations, infos = (
                     np.array(x) for x in list(zip(*generic_episode))
                 )
-                all_observations = np.vstack([copy.deepcopy(observations), copy.deepcopy(next_observations[-1])])
+                observations = np.expand_dims(observations, axis=1) if observations.ndim == 1 else observations
+                next_observations = (
+                    np.expand_dims(next_observations, axis=1) if next_observations.ndim == 1 else next_observations
+                )
+                all_observations = np.vstack([observations, next_observations[-1:]])
                 episode_trajectory = imitation.data.types.TrajectoryWithRew(
                     obs=all_observations, acts=actions, rews=rewards, infos=infos, terminal=terminations[-1]
                 )

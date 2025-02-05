@@ -10,6 +10,7 @@ from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
+from imitation.data.types import DictObs, TrajectoryWithRew
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -25,7 +26,15 @@ from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import 
     SQILAlgorithmWrapper,
 )
 from rl_framework.agent.imitation_learning_agent import ILAgent
-from rl_framework.util import Connector, DummyConnector, LoggingCallback, SavingCallback
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    LoggingCallback,
+    SavingCallback,
+    SizedGenerator,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,
@@ -48,7 +57,8 @@ class ImitationAgent(ILAgent):
     def __init__(
         self,
         algorithm_class: Type[DemonstrationAlgorithm] = BC,
-        algorithm_parameters: Dict = None,
+        algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of imitation algorithms.
@@ -61,9 +71,12 @@ class ImitationAgent(ILAgent):
                     common params.
                 See individual docs (e.g., https://imitation.readthedocs.io/en/latest/algorithms/bc.html)
                 for algorithm-specific params.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
-        self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[algorithm_class]()
-        self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
+        self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[self.algorithm_class]()
+        self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.algorithm = None
         self.algorithm_policy = None
 
@@ -102,19 +115,50 @@ class ImitationAgent(ILAgent):
         if not connector:
             connector = DummyConnector()
 
-        trajectories = episode_sequence.to_imitation_episodes()
+        trajectories: SizedGenerator[TrajectoryWithRew] = episode_sequence.to_imitation_episodes()
+
+        if self.features_extractor:
+
+            def preprocess_imitation_episodes(trajectories):
+                def preprocess_observations(observations):
+                    preprocessed_observations = self.features_extractor.preprocess(observations)
+                    if isinstance(preprocessed_observations[0], dict):
+                        preprocessed_observations = DictObs.from_obs_list(preprocessed_observations.tolist())
+                    return preprocessed_observations
+
+                for trajectory in trajectories:
+                    yield TrajectoryWithRew(
+                        obs=preprocess_observations(trajectory.obs),
+                        acts=trajectory.acts,
+                        rews=trajectory.rews,
+                        infos=trajectory.infos,
+                        terminal=trajectory.terminal,
+                    )
+
+            trajectories = SizedGenerator(preprocess_imitation_episodes(trajectories), size=trajectories.size)
 
         assert len(training_environments) > 0, (
             "All imitation algorithms require an environment to be passed. "
             "Some for parameter definition (e.g., BC), some for active interaction (e.g., SQIL)."
         )
+
+        if self.features_extractor:
+            training_environments = [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in training_environments
+            ]
+
         training_environments = [Monitor(env) for env in training_environments]
         environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
         vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         if not self.algorithm:
             self.algorithm = self.algorithm_wrapper.build_algorithm(
-                self.algorithm_parameters, total_timesteps, trajectories, vectorized_environment
+                self.algorithm_parameters,
+                total_timesteps,
+                trajectories,
+                vectorized_environment,
+                self.features_extractor,
             )
         else:
             self.algorithm.set_demonstrations(trajectories)
@@ -219,9 +263,6 @@ class ImitationAgent(ILAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
-
         if "allow_variable_horizon" not in algorithm_parameters:
             algorithm_parameters["allow_variable_horizon"] = True
 

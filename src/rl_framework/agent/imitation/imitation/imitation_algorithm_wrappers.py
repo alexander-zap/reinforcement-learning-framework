@@ -13,7 +13,7 @@ import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
-from imitation.algorithms.bc import BC, BCTrainingMetrics
+from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
 from imitation.data import rollout
@@ -29,10 +29,12 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import MlpPolicy
 
 from rl_framework.util import (
+    FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
     SizedGenerator,
     add_callbacks_to_callback,
+    get_sb3_policy_kwargs_for_features_extractor,
 )
 
 FILE_NAME_POLICY = "policy"
@@ -51,6 +53,7 @@ class AlgorithmWrapper(ABC):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> DemonstrationAlgorithm:
         raise NotImplementedError
 
@@ -98,6 +101,9 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         super().__init__()
         self.venv = None
         self.validation_transitions: Optional[Transitions] = None
+        self.log_interval = 500
+        self.rollout_interval = None
+        self.rollout_episodes = 10
 
     def build_algorithm(
         self,
@@ -105,13 +111,23 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> BC:
         self.venv = vectorized_environment
         parameters = {
             "observation_space": vectorized_environment.observation_space,
             "action_space": vectorized_environment.action_space,
             "rng": np.random.default_rng(0),
-            "policy": self.loaded_parameters.get("policy", None),
+            "policy": self.loaded_parameters.get(
+                "policy",
+                ActorCriticPolicy(
+                    observation_space=self.venv.observation_space,
+                    action_space=self.venv.action_space,
+                    net_arch=[32, 32],
+                    lr_schedule=lambda _: torch.finfo(torch.float32).max,
+                    **(get_sb3_policy_kwargs_for_features_extractor(features_extractor) if features_extractor else {}),
+                ),
+            ),
         }
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
@@ -120,6 +136,9 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
             # Rest of the `trajectories` generator can be used for training with `n - n_validation` episodes left
             validation_trajectories = list(itertools.islice(trajectories, int(validation_fraction * len(trajectories))))
             self.validation_transitions = rollout.flatten_trajectories(validation_trajectories)
+        self.log_interval = parameters.pop("log_interval", self.log_interval)
+        self.rollout_interval = parameters.pop("rollout_interval", self.rollout_interval)
+        self.rollout_episodes = parameters.pop("rollout_episodes", self.rollout_episodes)
         algorithm = BC(demonstrations=trajectories, **parameters)
         return algorithm
 
@@ -148,27 +167,38 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                                 num_samples_so_far, float(v), f"training/{k}"
                             )
 
-                    for k, v in rollout_stats.items():
-                        if "return" in k and "monitor" not in k and v is not None:
-                            logging_callback.connector.log_value_with_timestep(
-                                num_samples_so_far,
-                                float(v),
-                                "rollout/" + k,
-                            )
+                # Replace the original `log_batch` function with the new one
+                original_log_batch = algorithm._bc_logger.log_batch
+                algorithm._bc_logger.log_batch = log_batch_with_connector
 
-                    if self.validation_transitions is not None:
+                compute_rollout_stats = RolloutStatsComputer(
+                    self.venv,
+                    self.rollout_episodes,
+                )
+
+                def log(batch_number):
+                    # Use validation data to compute loss metrics and log it to connector
+                    if self.validation_transitions is not None and batch_number % self.log_interval == 0:
                         obs_tensor = util.safe_to_tensor(self.validation_transitions.obs)
                         acts = util.safe_to_tensor(self.validation_transitions.acts, device=algorithm.policy.device)
                         validation_metrics = algorithm.loss_calculator(algorithm.policy, obs_tensor, acts)
                         for k, v in validation_metrics.__dict__.items():
                             if v is not None:
                                 logging_callback.connector.log_value_with_timestep(
-                                    num_samples_so_far, float(v), f"validation/{k}"
+                                    algorithm.batch_size * batch_number, float(v), f"validation/{k}"
                                 )
 
-                # Replace the original `log_batch` function with the new one
-                original_log_batch = algorithm._bc_logger.log_batch
-                algorithm._bc_logger.log_batch = log_batch_with_connector
+                    if self.rollout_interval and batch_number % self.rollout_interval == 0:
+                        rollout_stats = compute_rollout_stats(algorithm.policy, np.random.default_rng(0))
+                        for k, v in rollout_stats.items():
+                            if "return" in k and "monitor" not in k and v is not None:
+                                logging_callback.connector.log_value_with_timestep(
+                                    algorithm.batch_size * batch_number,
+                                    float(v),
+                                    "rollout/" + k,
+                                )
+
+                on_batch_end_functions.append(log)
 
             elif isinstance(callback, SavingCallback):
                 saving_callback = copy.copy(callback)
@@ -189,7 +219,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         algorithm.train(
             n_batches=math.ceil(total_timesteps / algorithm.batch_size),
             on_batch_end=on_batch_end,
-            log_rollouts_venv=self.venv,
+            log_interval=self.log_interval,
         )
 
     def save_algorithm(self, algorithm: DemonstrationAlgorithm, folder_path: Path):
@@ -207,6 +237,7 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> GAIL:
         parameters = {
             "venv": vectorized_environment,
@@ -214,8 +245,17 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
             # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(env=vectorized_environment, policy=MlpPolicy, tensorboard_log=tempfile.mkdtemp()),
+                PPO(
+                    env=vectorized_environment,
+                    policy=MlpPolicy,
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                    if features_extractor
+                    else None,
+                    tensorboard_log=tempfile.mkdtemp(),
+                ),
             ),
+            # FIXME: This probably will not work with Dict as observation_space.
+            #  Might require extension of BasicRewardNet to use features_extractor as well.
             "reward_net": self.loaded_parameters.get(
                 "reward_net",
                 BasicRewardNet(
@@ -254,6 +294,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> AIRL:
         parameters = {
             "venv": vectorized_environment,
@@ -261,8 +302,17 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
             # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(env=vectorized_environment, policy=MlpPolicy, tensorboard_log=tempfile.mkdtemp()),
+                PPO(
+                    env=vectorized_environment,
+                    policy=MlpPolicy,
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                    if features_extractor
+                    else None,
+                    tensorboard_log=tempfile.mkdtemp(),
+                ),
             ),
+            # FIXME: This probably will not work with Dict as observation_space.
+            #  Might require extension of BasicRewardNet to use features_extractor as well.
             "reward_net": self.loaded_parameters.get(
                 "reward_net",
                 BasicRewardNet(
@@ -301,6 +351,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> DensityAlgorithm:
         parameters = {
             "venv": vectorized_environment,
@@ -312,6 +363,9 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
                 PPO(
                     env=vectorized_environment,
                     policy=ActorCriticPolicy,
+                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                    if features_extractor
+                    else None,
                 ),
             ),
         }
@@ -341,12 +395,18 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> SQIL:
         parameters = {
             "venv": vectorized_environment,
             "policy": "MlpPolicy",
             # FIXME: Hard-coded DQN as default policy training algorithm
             "rl_algo_class": DQN,
+            "rl_kwargs": {
+                "policy_kwargs": get_sb3_policy_kwargs_for_features_extractor(features_extractor)
+                if features_extractor
+                else None,
+            },
         }
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
