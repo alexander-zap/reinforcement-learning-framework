@@ -1,31 +1,26 @@
-from itertools import tee
 from typing import Generator, Generic, Sized, TypeVar
 
 T = TypeVar("T")
 
 
 class SizedGenerator(Generator[T, None, None], Sized, Generic[T]):
-    def __init__(self, generator: Generator, size: int):
-        self.backup_generator = generator
-        self.backup_size = size
-
-        self.backup_generator, self.generator = tee(self.backup_generator)
-        self.size = size
+    def __init__(self, generator: Generator, size: int, looping: bool):
+        self.generator = generator
+        self.total_number_of_elements_in_generator = size
+        self.number_of_elements_in_current_generator_loop = size
+        self.looping = looping
 
     def __len__(self):
-        return self.size
+        return self.number_of_elements_in_current_generator_loop
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        try:
-            next_element = next(self.generator)
-        except StopIteration:
-            self.backup_generator, self.generator = tee(self.backup_generator)
-            self.size = self.backup_size
-            next_element = next(self.generator)
-        self.size -= 1
+        next_element = next(self.generator)
+        self.number_of_elements_in_current_generator_loop -= 1
+        if self.looping and self.number_of_elements_in_current_generator_loop == 0:
+            self.number_of_elements_in_current_generator_loop = self.total_number_of_elements_in_generator
         return next_element
 
     def send(self, value):
