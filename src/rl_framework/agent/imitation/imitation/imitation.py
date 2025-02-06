@@ -189,15 +189,16 @@ class ImitationAgent(ILAgent):
         if not self.algorithm_policy:
             raise ValueError("Cannot predict action for uninitialized agent. Start a training first to initialize.")
 
-        # SB3 model expects multiple observations as input and will output an array of actions as output
         (
             action,
             _,
         ) = self.algorithm_policy.predict(
-            [observation],
+            observation,
             deterministic=deterministic,
         )
-        return action[0]
+        if not action.shape:
+            action = action.item()
+        return action
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
