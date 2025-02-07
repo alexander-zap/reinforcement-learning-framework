@@ -186,7 +186,9 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                 def log(batch_number):
                     # Use validation data to compute loss metrics and log it to connector
                     if self.validation_transitions is not None and batch_number % self.log_interval == 0:
-                        obs_tensor = util.safe_to_tensor(self.validation_transitions.obs)
+                        obs_tensor = util.safe_to_tensor(
+                            self.validation_transitions.obs, device=algorithm.policy.device
+                        )
                         acts = util.safe_to_tensor(self.validation_transitions.acts, device=algorithm.policy.device)
                         validation_metrics = algorithm.loss_calculator(algorithm.policy, obs_tensor, acts)
                         for k, v in validation_metrics.__dict__.items():
