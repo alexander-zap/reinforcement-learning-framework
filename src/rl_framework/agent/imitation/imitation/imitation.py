@@ -135,7 +135,9 @@ class ImitationAgent(ILAgent):
                         terminal=trajectory.terminal,
                     )
 
-            trajectories = SizedGenerator(preprocess_imitation_episodes(trajectories), size=trajectories.size)
+            trajectories.generator = SizedGenerator(
+                preprocess_imitation_episodes(trajectories), size=len(trajectories), looping=trajectories.looping
+            )
 
         assert len(training_environments) > 0, (
             "All imitation algorithms require an environment to be passed. "
