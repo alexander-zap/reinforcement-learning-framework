@@ -83,9 +83,10 @@ class ImitationAgent(ILAgent):
     def train(
         self,
         total_timesteps: int,
+        episode_sequence: EpisodeSequence,
+        validation_episode_sequence: Optional[EpisodeSequence] = None,
         connector: Optional[Connector] = None,
-        episode_sequence: EpisodeSequence = None,
-        training_environments: List[gym.Env] = None,
+        training_environments: Optional[List[gym.Env]] = None,
         *args,
         **kwargs,
     ):
@@ -100,6 +101,7 @@ class ImitationAgent(ILAgent):
         Args:
             total_timesteps (int): Amount of (recorded) timesteps to train the agent on.
             episode_sequence (EpisodeSequence): List of episodes on which the agent should be trained on.
+            validation_episode_sequence (EpisodeSequence): List of episodes on which the agent should be validated on.
             training_environments (List): List of environments
                 Required for interaction or attribute extraction (e.g., action/observation space) for some algorithms
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
@@ -116,6 +118,9 @@ class ImitationAgent(ILAgent):
             connector = DummyConnector()
 
         trajectories: SizedGenerator[TrajectoryWithRew] = episode_sequence.to_imitation_episodes()
+        validation_trajectories: SizedGenerator[TrajectoryWithRew] = (
+            validation_episode_sequence.to_imitation_episodes() if validation_episode_sequence else None
+        )
 
         if self.features_extractor:
 
@@ -138,6 +143,11 @@ class ImitationAgent(ILAgent):
             trajectories.generator = SizedGenerator(
                 preprocess_imitation_episodes(trajectories), size=len(trajectories), looping=trajectories.looping
             )
+            validation_trajectories = SizedGenerator(
+                preprocess_imitation_episodes(validation_trajectories),
+                size=len(validation_trajectories),
+                looping=validation_trajectories.looping,
+            )
 
         assert len(training_environments) > 0, (
             "All imitation algorithms require an environment to be passed. "
@@ -156,17 +166,19 @@ class ImitationAgent(ILAgent):
 
         if not self.algorithm:
             self.algorithm = self.algorithm_wrapper.build_algorithm(
-                self.algorithm_parameters,
-                total_timesteps,
-                trajectories,
-                vectorized_environment,
-                self.features_extractor,
+                algorithm_parameters=self.algorithm_parameters,
+                total_timesteps=total_timesteps,
+                trajectories=trajectories,
+                vectorized_environment=vectorized_environment,
+                features_extractor=self.features_extractor,
             )
         else:
             self.algorithm.set_demonstrations(trajectories)
 
         callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
-        self.algorithm_wrapper.train(self.algorithm, total_timesteps, callback_list)
+        self.algorithm_wrapper.train(
+            self.algorithm, total_timesteps, callback_list, validation_trajectories=validation_trajectories
+        )
 
         self.algorithm_policy = self.algorithm.policy
 
