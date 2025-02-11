@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
-from imitation.algorithms.base import AnyTransitions, DemonstrationAlgorithm
+from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
@@ -106,7 +106,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         self.rollout_interval = None
         self.rollout_episodes = 10
 
-        def patched_set_demonstrations(self, demonstrations: AnyTransitions) -> None:
+        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
             self._demo_data_loader = create_memory_efficient_transition_batcher(demonstrations, self.minibatch_size)
 
         BC.set_demonstrations = patched_set_demonstrations
@@ -156,9 +156,7 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         on_batch_end_functions = []
 
         validation_transitions_batcher = (
-            iter(
-                create_memory_efficient_transition_batcher(validation_trajectories, len(validation_trajectories) * 100)
-            )
+            iter(create_memory_efficient_transition_batcher(validation_trajectories))
             if validation_trajectories
             else None
         )

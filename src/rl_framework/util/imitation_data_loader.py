@@ -1,12 +1,14 @@
-from typing import Iterable, List, Mapping, Union
+from typing import Iterable, List, Mapping, Optional, Union
 
 import numpy as np
 from imitation.data import types
 from imitation.data.types import DictObs, stack_maybe_dictobs
 
+from rl_framework.util.types import SizedGenerator
+
 
 def create_memory_efficient_transition_batcher(
-    trajectories: Iterable[types.Trajectory], batch_size: int
+    trajectories: SizedGenerator[types.TrajectoryWithRew], batch_size: Optional[int] = None
 ) -> Iterable[types.TransitionMapping]:
     """
         Memory-efficient data loader. Converts a series of trajectories into individual transition batches.
@@ -14,6 +16,7 @@ def create_memory_efficient_transition_batcher(
     Args:
         trajectories: iterable of trajectories
         batch_size: number of transitions the data loader should yield per batch
+            If not provided, it will return one batch with the length of all transitions of the provided trajectories.
 
     Yields:
         Batches of transitions in a dictionary format (with co-indexed elements per dictionary key)
@@ -25,6 +28,11 @@ def create_memory_efficient_transition_batcher(
             "infos": np.ndarray,
         }
     """
+    # number of trajectories in a generator before potential looping
+    n_unique_trajectories = len(trajectories)
+    assert n_unique_trajectories > batch_size if batch_size else True
+    processed_trajectories = 0
+
     trajectory_part_keys = ["obs", "next_obs", "acts", "dones", "infos"]
 
     trajectory_as_dict_collected: Mapping[str, Union[np.ndarray, DictObs]] = {key: None for key in trajectory_part_keys}
@@ -57,9 +65,11 @@ def create_memory_efficient_transition_batcher(
         trajectory_part_lengths = set(map(len, trajectory_as_dict_collected.values()))
         assert len(trajectory_part_lengths) == 1, f"expected one length, got {trajectory_part_lengths}"
 
-        if len(trajectory_as_dict_collected["dones"]) >= batch_size:
+        processed_trajectories += 1
+
+        if batch_size and len(trajectory_as_dict_collected["dones"]) >= batch_size:
             transitions = types.Transitions(**trajectory_as_dict_collected)
-            transitions_batches: List[List[types.Transitions]] = [
+            transitions_batches: List[types.Transitions] = [
                 transitions[i : i + batch_size] for i in range(0, len(transitions), batch_size)
             ]
 
@@ -80,3 +90,17 @@ def create_memory_efficient_transition_batcher(
                     "infos": batch.infos,
                 }
                 yield result
+            processed_trajectories = 0
+
+        if not batch_size and processed_trajectories >= n_unique_trajectories:
+            transitions = types.Transitions(**trajectory_as_dict_collected)
+            result = {
+                "obs": stack_maybe_dictobs([sample["obs"] for sample in transitions]),
+                "next_obs": stack_maybe_dictobs([sample["next_obs"] for sample in transitions]),
+                "acts": transitions.acts,
+                "dones": transitions.dones,
+                "infos": transitions.infos,
+            }
+            yield result
+            trajectory_as_dict_collected = {key: None for key in trajectory_part_keys}
+            processed_trajectories = 0
