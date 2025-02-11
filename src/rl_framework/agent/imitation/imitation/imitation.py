@@ -143,10 +143,14 @@ class ImitationAgent(ILAgent):
             trajectories = SizedGenerator(
                 preprocess_imitation_episodes(trajectories), size=len(trajectories), looping=trajectories.looping
             )
-            validation_trajectories = SizedGenerator(
-                preprocess_imitation_episodes(validation_trajectories),
-                size=len(validation_trajectories),
-                looping=validation_trajectories.looping,
+            validation_trajectories = (
+                SizedGenerator(
+                    preprocess_imitation_episodes(validation_trajectories),
+                    size=len(validation_trajectories),
+                    looping=validation_trajectories.looping,
+                )
+                if validation_trajectories
+                else None
             )
 
         assert len(training_environments) > 0, (
