@@ -140,7 +140,7 @@ class ImitationAgent(ILAgent):
                         terminal=trajectory.terminal,
                     )
 
-            trajectories.generator = SizedGenerator(
+            trajectories = SizedGenerator(
                 preprocess_imitation_episodes(trajectories), size=len(trajectories), looping=trajectories.looping
             )
             validation_trajectories = SizedGenerator(
