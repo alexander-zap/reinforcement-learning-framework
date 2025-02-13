@@ -1,5 +1,4 @@
 import copy
-import itertools
 import logging
 import math
 import tempfile
@@ -8,6 +7,7 @@ from itertools import tee
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
 
+import gymnasium
 import numpy as np
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
@@ -16,8 +16,7 @@ from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
-from imitation.data import rollout
-from imitation.data.types import TrajectoryWithRew, Transitions
+from imitation.data.types import TrajectoryWithRew, TransitionMapping, Transitions
 from imitation.rewards.reward_nets import BasicRewardNet
 from imitation.util import util
 from imitation.util.networks import RunningNorm
@@ -34,6 +33,7 @@ from rl_framework.util import (
     SavingCallback,
     SizedGenerator,
     add_callbacks_to_callback,
+    create_memory_efficient_transition_batcher,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -58,7 +58,9 @@ class AlgorithmWrapper(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def train(self, algorithm: DemonstrationAlgorithm, total_timesteps: int, callback_list: CallbackList):
+    def train(
+        self, algorithm: DemonstrationAlgorithm, total_timesteps: int, callback_list: CallbackList, *args, **kwargs
+    ):
         raise NotImplementedError
 
     @staticmethod
@@ -100,10 +102,14 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
     def __init__(self):
         super().__init__()
         self.venv = None
-        self.validation_transitions: Optional[Transitions] = None
         self.log_interval = 500
         self.rollout_interval = None
         self.rollout_episodes = 10
+
+        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
+            self._demo_data_loader = create_memory_efficient_transition_batcher(demonstrations, self.minibatch_size)
+
+        BC.set_demonstrations = patched_set_demonstrations
 
     def build_algorithm(
         self,
@@ -132,18 +138,28 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         parameters.update(**algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
             logging.warning("BC algorithm does not support passing of the parameter `allow_variable_horizon`.")
-        if (validation_fraction := parameters.pop("validation_fraction", None)) is not None:
-            # Rest of the `trajectories` generator can be used for training with `n - n_validation` episodes left
-            validation_trajectories = list(itertools.islice(trajectories, int(validation_fraction * len(trajectories))))
-            self.validation_transitions = rollout.flatten_trajectories(validation_trajectories)
         self.log_interval = parameters.pop("log_interval", self.log_interval)
         self.rollout_interval = parameters.pop("rollout_interval", self.rollout_interval)
         self.rollout_episodes = parameters.pop("rollout_episodes", self.rollout_episodes)
         algorithm = BC(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm: BC, total_timesteps: int, callback_list: CallbackList):
+    def train(
+        self,
+        algorithm: BC,
+        total_timesteps: int,
+        callback_list: CallbackList,
+        validation_trajectories: Optional[SizedGenerator[TrajectoryWithRew]] = None,
+        *args,
+        **kwargs,
+    ):
         on_batch_end_functions = []
+
+        validation_transitions_batcher = (
+            iter(create_memory_efficient_transition_batcher(validation_trajectories))
+            if validation_trajectories
+            else None
+        )
 
         for callback in callback_list.callbacks:
             if isinstance(callback, LoggingCallback):
@@ -178,9 +194,10 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
                 def log(batch_number):
                     # Use validation data to compute loss metrics and log it to connector
-                    if self.validation_transitions is not None and batch_number % self.log_interval == 0:
-                        obs_tensor = util.safe_to_tensor(self.validation_transitions.obs)
-                        acts = util.safe_to_tensor(self.validation_transitions.acts, device=algorithm.policy.device)
+                    if validation_transitions_batcher is not None and batch_number % self.log_interval == 0:
+                        validation_transitions: TransitionMapping = next(validation_transitions_batcher)
+                        obs_tensor = util.safe_to_tensor(validation_transitions["obs"], device=algorithm.policy.device)
+                        acts = util.safe_to_tensor(validation_transitions["acts"], device=algorithm.policy.device)
                         validation_metrics = algorithm.loss_calculator(algorithm.policy, obs_tensor, acts)
                         for k, v in validation_metrics.__dict__.items():
                             if v is not None:
@@ -272,7 +289,7 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         algorithm = GAIL(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm: GAIL, total_timesteps: int, callback_list: CallbackList):
+    def train(self, algorithm: GAIL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         add_callbacks_to_callback(callback_list, algorithm.gen_callback)
         algorithm.train(total_timesteps=total_timesteps)
 
@@ -329,7 +346,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         algorithm = AIRL(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm: AIRL, total_timesteps: int, callback_list: CallbackList):
+    def train(self, algorithm: AIRL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         add_callbacks_to_callback(callback_list, algorithm.gen_callback)
         algorithm.train(total_timesteps=total_timesteps)
 
@@ -373,7 +390,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         algorithm = DensityAlgorithm(demonstrations=trajectories, **parameters)
         return algorithm
 
-    def train(self, algorithm: DensityAlgorithm, total_timesteps: int, callback_list: CallbackList):
+    def train(self, algorithm: DensityAlgorithm, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         algorithm.train()
         # NOTE: All callbacks concerning reward calculation will use the density reward and not the environment reward
         add_callbacks_to_callback(callback_list, algorithm.wrapper_callback)
@@ -397,6 +414,12 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> SQIL:
+        # FIXME: SQILReplayBuffer inherits from sb3.ReplayBuffer which doesn't support dict observations.
+        #  Maybe it can be patched to inherit from sb3.DictReplayBuffer.
+        assert not isinstance(
+            vectorized_environment.observation_space, gymnasium.spaces.Dict
+        ), "SQILReplayBuffer does not support Dict observation spaces."
+
         parameters = {
             "venv": vectorized_environment,
             "policy": "MlpPolicy",
@@ -428,7 +451,7 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
             algorithm.rl_algo.replay_buffer.set_demonstrations(trajectories)
         return algorithm
 
-    def train(self, algorithm: SQIL, total_timesteps: int, callback_list: CallbackList):
+    def train(self, algorithm: SQIL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         algorithm.train(total_timesteps=total_timesteps, callback=callback_list)
 
     def save_algorithm(self, algorithm: SQIL, folder_path: Path):

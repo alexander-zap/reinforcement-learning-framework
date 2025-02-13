@@ -1,9 +1,19 @@
 import itertools
-from itertools import tee
-from typing import Generator, Iterable, List, Sequence, Sized, Tuple, cast
+from typing import (
+    Generator,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Sized,
+    Tuple,
+    Union,
+    cast,
+)
 
 import d3rlpy
 import imitation
+import imitation.data.types
 import numpy as np
 from imitation.data import serialize
 
@@ -29,6 +39,9 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
         ]
         Interpretation: Transition from obs to next_obs with action, receiving reward.
             Additional information returned about transition to next_obs: terminated, truncated and info.
+
+    NOTE: Please remember that any results of the format changing `to_` operation will be using the same generator.
+        Iterating over the resulting format-changed generators still consumes the internal generator of EpisodeSequence.
     """
 
     def __init__(self):
@@ -37,13 +50,13 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
 
         self._episode_generator: Generator[GenericEpisode, None, None] = empty()
         self._len = 0
+        self._looping = False
 
     def __len__(self):
         return self._len
 
     def __iter__(self):
-        self._episode_generator, episode_generator_copy = tee(self._episode_generator)
-        return episode_generator_copy
+        return self._episode_generator
 
     @staticmethod
     def from_episode_generator(
@@ -58,37 +71,78 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
             n_episodes (int): Amount of episodes the generator will generate (to limit infinite generators).
                 If amount of generated elements from generator are already known, pass it as "n_episodes".
 
+        NOTE: Loading an EpisodeSequence from a generator does not support looping.
+            If this behavior is wished, make sure the `episode_generator` itself is looping instead.
+
+        NOTE: Loading an EpisodeSequence from a generator does not support splitting.
+            If a split into multiple EpisodeSequences is wished, create two generators and load from both individually.
+
         Returns:
             episode_sequence: Representation of episode sequence (this class).
         """
         episode_sequence = EpisodeSequence()
         episode_sequence._episode_generator = itertools.islice(episode_generator, n_episodes)
         episode_sequence._len = n_episodes
+        episode_sequence._looping = False
         return episode_sequence
 
     @staticmethod
-    def from_episodes(episodes: Sequence[GenericEpisode]) -> "EpisodeSequence":
+    def from_episodes(
+        episodes: Sequence[GenericEpisode], loop: bool = False, split_by_fractions: Optional[List[float]] = None
+    ) -> Union["EpisodeSequence", List["EpisodeSequence"]]:
         """
         Initialize an EpisodeSequence based on a sequence of GenericEpisode objects.
 
         Args:
             episodes (Sequence[GenericEpisode]): Episodes in generic format.
+            loop (bool): Flag whether the generator should loop over the episodes repeatedly.
+            split_by_fractions (Optional): List of fraction positions by which the dataset should be split.
+                If provided, this method returns len(split_by_fractions) + 1 unique EpisodeSequences.
+                All elements of this list should be in ]0.0, 1.0[.
 
         Returns:
             episode_sequence: Representation of episode sequence (this class).
+                Returns multiple episode sequences (in a list) if `split_by_fractions` parameter is given.
         """
 
-        def generate_episodes(generic_episodes: Sequence[GenericEpisode]) -> Generator[GenericEpisode, None, None]:
-            for episode in generic_episodes:
-                yield episode
+        def generate_episodes(
+            owner_of_generator: EpisodeSequence, generic_episodes: Sequence[GenericEpisode], indices: List[int]
+        ) -> Generator[GenericEpisode, None, None]:
+            while True:
+                for index in indices:
+                    yield generic_episodes[index]
+                if not owner_of_generator._looping:
+                    break
 
-        episode_sequence = EpisodeSequence()
-        episode_sequence._episode_generator = generate_episodes(episodes)
-        episode_sequence._len = len(episodes)
-        return episode_sequence
+        def create_episode_sequence(indices: List[int]) -> EpisodeSequence:
+            episode_sequence = EpisodeSequence()
+            episode_sequence._episode_generator = generate_episodes(episode_sequence, episodes, indices)
+            episode_sequence._len = len(episodes)
+            episode_sequence._looping = loop
+            return episode_sequence
+
+        if split_by_fractions:
+            n_episodes = len(episodes)
+            assert all(isinstance(fraction, float) for fraction in split_by_fractions)
+            assert all(0.0 < fraction < 1.0 for fraction in split_by_fractions)
+            split_by_indices = [int(fraction * n_episodes) for fraction in split_by_fractions]
+            split_by_indices = sorted(split_by_indices)
+
+            episode_sequences = []
+            for start_index, end_index in zip([0] + split_by_indices, split_by_indices + [n_episodes]):
+                split_indices = list(range(start_index, end_index))
+                episode_sequence = create_episode_sequence(split_indices)
+                episode_sequences.append(episode_sequence)
+            return episode_sequences
+        else:
+            all_indices = list(range(len(episodes)))
+            episode_sequence = create_episode_sequence(all_indices)
+            return episode_sequence
 
     @staticmethod
-    def from_dataset(file_path: str) -> "EpisodeSequence":
+    def from_dataset(
+        file_path: str, loop: bool = False, split_by_fractions: Optional[List[float]] = None
+    ) -> Union["EpisodeSequence", List["EpisodeSequence"]]:
         """
         Initialize an EpisodeSequence based on provided huggingface dataset path.
 
@@ -98,32 +152,64 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
 
         Args:
             file_path (str): Path to huggingface dataset recording of episodes.
+            loop (bool): Flag whether the generator should loop over the dataset repeatedly.s
+            split_by_fractions (Optional): List of fraction positions by which the dataset should be split.
+                If provided, this method returns len(split_by_fractions) + 1 unique EpisodeSequences.
+                All elements of this list should be in ]0.0, 1.0[.
 
         Returns:
             episode_sequence: Representation of episode sequence (this class).
+                Returns multiple episode sequences (in a list) if `split_by_fractions` parameter is given.
         """
 
         def generate_episodes(
+            owner_of_generator: EpisodeSequence,
             imitation_trajectories: Sequence[imitation.data.types.TrajectoryWithRew],
+            indices: List[int],
         ) -> Generator[GenericEpisode, None, None]:
-            for trajectory in imitation_trajectories:
-                obs = trajectory.obs[:-1]
-                acts = trajectory.acts
-                rews = trajectory.rews
-                next_obs = trajectory.obs[1:]
-                terminations = np.zeros(len(trajectory.acts), dtype=bool)
-                truncations = np.zeros(len(trajectory.acts), dtype=bool)
-                terminations[-1] = trajectory.terminal
-                truncations[-1] = not trajectory.terminal
-                infos = np.array([{}] * len(trajectory)) if trajectory.infos is None else trajectory.infos
-                episode: GenericEpisode = list(zip(*[obs, acts, next_obs, rews, terminations, truncations, infos]))
-                yield episode
+            while True:
+                for index in indices:
+                    trajectory = imitation_trajectories[index]
+                    obs = trajectory.obs[:-1]
+                    acts = trajectory.acts
+                    rews = trajectory.rews
+                    next_obs = trajectory.obs[1:]
+                    terminations = np.zeros(len(trajectory.acts), dtype=bool)
+                    truncations = np.zeros(len(trajectory.acts), dtype=bool)
+                    terminations[-1] = trajectory.terminal
+                    truncations[-1] = not trajectory.terminal
+                    infos = np.array([{}] * len(trajectory)) if trajectory.infos is None else trajectory.infos
+                    episode: GenericEpisode = list(zip(*[obs, acts, next_obs, rews, terminations, truncations, infos]))
+                    yield episode
+                if not owner_of_generator._looping:
+                    break
 
-        episode_sequence = EpisodeSequence()
+        def create_episode_sequence(indices: List[int]) -> EpisodeSequence:
+            episode_sequence = EpisodeSequence()
+            episode_sequence._episode_generator = generate_episodes(episode_sequence, trajectories, indices)
+            episode_sequence._len = len(indices)
+            episode_sequence._looping = loop
+            return episode_sequence
+
         trajectories = cast(Sequence[imitation.data.types.TrajectoryWithRew], serialize.load(file_path))
-        episode_sequence._episode_generator = generate_episodes(trajectories)
-        episode_sequence._len = len(trajectories)
-        return episode_sequence
+
+        if split_by_fractions:
+            n_trajectories = len(trajectories)
+            assert all(isinstance(fraction, float) for fraction in split_by_fractions)
+            assert all(0.0 < fraction < 1.0 for fraction in split_by_fractions)
+            split_by_indices = [int(fraction * n_trajectories) for fraction in split_by_fractions]
+            split_by_indices = sorted(split_by_indices)
+
+            episode_sequences = []
+            for start_index, end_index in zip([0] + split_by_indices, split_by_indices + [n_trajectories]):
+                split_indices = list(range(start_index, end_index))
+                episode_sequence = create_episode_sequence(split_indices)
+                episode_sequences.append(episode_sequence)
+            return episode_sequences
+        else:
+            all_indices = list(range(len(trajectories)))
+            episode_sequence = create_episode_sequence(all_indices)
+            return episode_sequence
 
     def save(self, file_path):
         """
@@ -132,14 +218,13 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
         Args:
             file_path: File path and file name to save episode sequence to.
         """
+        self._looping = False
         trajectories: Sequence[imitation.data.types.TrajectoryWithRew] = list(self.to_imitation_episodes())
         serialize.save(file_path, trajectories)
 
     def to_imitation_episodes(self) -> SizedGenerator[imitation.data.types.TrajectoryWithRew]:
-        self._episode_generator, episode_generator_copy = tee(self._episode_generator)
-
         def generate_imitation_episodes():
-            for generic_episode in episode_generator_copy:
+            for generic_episode in self._episode_generator:
                 observations, actions, next_observations, rewards, terminations, truncations, infos = (
                     np.array(x) for x in list(zip(*generic_episode))
                 )
@@ -153,13 +238,11 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
                 )
                 yield episode_trajectory
 
-        return SizedGenerator(generate_imitation_episodes(), len(self))
+        return SizedGenerator(generate_imitation_episodes(), len(self), self._looping)
 
     def to_d3rlpy_episodes(self) -> SizedGenerator[d3rlpy.dataset.components.Episode]:
-        self._episode_generator, episode_generator_copy = tee(self._episode_generator)
-
         def generate_d3rlpy_episodes():
-            for generic_episode in episode_generator_copy:
+            for generic_episode in self._episode_generator:
                 observations, actions, next_observations, rewards, terminations, truncations, infos = (
                     np.array(x) for x in list(zip(*generic_episode))
                 )
@@ -171,12 +254,10 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
                 )
                 yield episode
 
-        return SizedGenerator(generate_d3rlpy_episodes(), len(self))
+        return SizedGenerator(generate_d3rlpy_episodes(), len(self), self._looping)
 
     def to_generic_episodes(self) -> SizedGenerator[GenericEpisode]:
-        self._episode_generator, episode_generator_copy = tee(self._episode_generator)
-
         def generate_generic_episodes():
-            return episode_generator_copy
+            return self._episode_generator
 
-        return SizedGenerator(generate_generic_episodes(), len(self))
+        return SizedGenerator(generate_generic_episodes(), len(self), self._looping)

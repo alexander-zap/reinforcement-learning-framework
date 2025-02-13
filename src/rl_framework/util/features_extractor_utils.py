@@ -9,8 +9,8 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
 class FeaturesExtractor(ABC, torch.nn.Module):
-    preprocessed_observation_space: gym.spaces.Space
-    output_dim: int
+    preprocessed_observation_space: gym.spaces.Space = None
+    output_dim: int = None
 
     def preprocess(self, observations) -> numpy.ndarray:
         """
