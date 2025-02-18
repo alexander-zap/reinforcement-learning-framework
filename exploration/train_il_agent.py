@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -53,7 +54,7 @@ def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_pa
 
 PARALLEL_ENVIRONMENTS = 8
 DOWNLOAD_EXISTING_AGENT = False
-TRAJECTORIES_PATH = "../data/cartpole_rollout"
+TRAJECTORIES_PATH = (Path(__file__).parent.parent / "data" / "cartpole_rollout").as_posix()
 
 N_TRAINING_TIMESTEPS = 200000
 N_EVALUATION_EPISODES = 10
@@ -77,7 +78,7 @@ if __name__ == "__main__":
     )
 
     # Create new agent
-    agent = ImitationAgent(algorithm_class=BC, algorithm_parameters={"validation_fraction": 0.1})
+    agent = ImitationAgent(algorithm_class=BC, algorithm_parameters={"minibatch_size": 16})
 
     if DOWNLOAD_EXISTING_AGENT:
         # Download existing agent from repository
@@ -88,7 +89,7 @@ if __name__ == "__main__":
         if not os.path.exists(TRAJECTORIES_PATH):
             create_and_save_trajectories_dataset(environments[0], N_TRAINING_TIMESTEPS, TRAJECTORIES_PATH)
 
-        sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH)
+        sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH, loop=True)
         agent.train(
             episode_sequence=sequence,
             training_environments=environments,
