@@ -70,13 +70,17 @@ class ImitationAgent(ILAgent):
                 See https://imitation.readthedocs.io/en/latest/_api/imitation.algorithms.base.html for details on
                     common params.
                 See individual docs (e.g., https://imitation.readthedocs.io/en/latest/algorithms/bc.html)
-                for algorithm-specific params.
+                    for algorithm-specific params.
+                See individual algorithm wrapper implementations (`build_algorithm` methods in the individual wrapper
+                    classes in ../imitation_algorithm_wrappers.py) for further self-implemented configurability.
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
-        self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[self.algorithm_class]()
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
+        self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[self.algorithm_class](
+            self.algorithm_parameters
+        )
         self.algorithm = None
         self.algorithm_policy = None
 
@@ -170,8 +174,6 @@ class ImitationAgent(ILAgent):
 
         if not self.algorithm:
             self.algorithm = self.algorithm_wrapper.build_algorithm(
-                algorithm_parameters=self.algorithm_parameters,
-                total_timesteps=total_timesteps,
                 trajectories=trajectories,
                 vectorized_environment=vectorized_environment,
                 features_extractor=self.features_extractor,
