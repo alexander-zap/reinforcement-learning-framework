@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
+from imitation.data import types
 from imitation.data.types import TrajectoryWithRew, TransitionMapping
 from imitation.util import util
 from stable_baselines3.common.callbacks import CallbackList
@@ -134,7 +135,10 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
                     # Use validation data to compute loss metrics and log it to connector
                     if validation_transitions_batcher is not None and batch_number % self.log_interval == 0:
                         validation_transitions: TransitionMapping = next(validation_transitions_batcher)
-                        obs_tensor = util.safe_to_tensor(validation_transitions["obs"], device=algorithm.policy.device)
+                        obs_tensor = types.map_maybe_dict(
+                            lambda x: util.safe_to_tensor(x, device=algorithm.policy.device),
+                            types.maybe_unwrap_dictobs(validation_transitions["obs"]),
+                        )
                         acts = util.safe_to_tensor(validation_transitions["acts"], device=algorithm.policy.device)
                         validation_metrics = algorithm.loss_calculator(algorithm.policy, obs_tensor, acts)
                         for k, v in validation_metrics.__dict__.items():
