@@ -18,8 +18,8 @@ from .algorithm_wrapper import FILE_NAME_SB3_ALGORITHM, AlgorithmWrapper
 
 
 class DensityAlgorithmWrapper(AlgorithmWrapper):
-    def __init__(self, algorithm_parameters):
-        super().__init__(algorithm_parameters)
+    def __init__(self, algorithm_parameters, features_extractor: Optional[FeaturesExtractor] = None):
+        super().__init__(algorithm_parameters, features_extractor)
 
         def temporary_switch_off_looping_demonstrations(func):
             def wrap(*args, **kwargs):
@@ -39,7 +39,6 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         self,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> DensityAlgorithm:
         """
         Build the DensityAlgorithm algorithm with the given parameters.
@@ -49,14 +48,12 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
             vectorized_environment: Vectorized environment (used to train the RL algorithm, but with a replaced reward
                 function based on log-likelihood of observed state-action pairs to a learned distribution of expert
                 demonstrations; distribution of expert demonstrations is learned by kernel density estimation).
-            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
-
         Returns:
             DensityAlgorithm: DensityAlgorithm algorithm object initialized with the given parameters.
 
         """
-        if features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
+        if self.features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
         parameters = {
             "venv": vectorized_environment,
             "rng": np.random.default_rng(0),
