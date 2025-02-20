@@ -73,13 +73,11 @@ class ImitationAgent(ILAgent):
                     for algorithm-specific params.
                 See individual algorithm wrapper implementations (`build_algorithm` methods in the individual wrapper
                     classes in ../imitation_algorithm_wrappers.py) for further self-implemented configurability.
-            features_extractor: When provided, specifies the observation processor to be
-                    used before the action/value prediction network.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[self.algorithm_class](
-            self.algorithm_parameters
+            self.algorithm_parameters, self.features_extractor
         )
         self.algorithm = None
         self.algorithm_policy = None
@@ -126,6 +124,11 @@ class ImitationAgent(ILAgent):
             validation_episode_sequence.to_imitation_episodes() if validation_episode_sequence else None
         )
 
+        assert len(training_environments) > 0, (
+            "All imitation algorithms require an environment to be passed. "
+            "Some for parameter definition (e.g., BC), some for active interaction (e.g., SQIL)."
+        )
+
         if self.features_extractor:
 
             def preprocess_imitation_episodes(trajectories):
@@ -157,12 +160,6 @@ class ImitationAgent(ILAgent):
                 else None
             )
 
-        assert len(training_environments) > 0, (
-            "All imitation algorithms require an environment to be passed. "
-            "Some for parameter definition (e.g., BC), some for active interaction (e.g., SQIL)."
-        )
-
-        if self.features_extractor:
             training_environments = [
                 wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
                 for env in training_environments
@@ -176,7 +173,6 @@ class ImitationAgent(ILAgent):
             self.algorithm = self.algorithm_wrapper.build_algorithm(
                 trajectories=trajectories,
                 vectorized_environment=vectorized_environment,
-                features_extractor=self.features_extractor,
             )
         else:
             self.algorithm.set_demonstrations(trajectories)
@@ -264,7 +260,7 @@ class ImitationAgent(ILAgent):
 
         folder_path = Path(str(file_path)[:-4])
         shutil.unpack_archive(file_path, folder_path, "zip")
-        self.algorithm_policy = self.algorithm_wrapper.load_from_file(folder_path)
+        self.algorithm_policy = self.algorithm_wrapper.load_from_file(folder_path, self.algorithm_parameters)
 
     @staticmethod
     def _add_required_default_parameters(algorithm_parameters: Optional[Dict]):

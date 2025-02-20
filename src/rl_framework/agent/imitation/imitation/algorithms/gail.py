@@ -27,8 +27,8 @@ from .algorithm_wrapper import (
 
 
 class GAILAlgorithmWrapper(AlgorithmWrapper):
-    def __init__(self, algorithm_parameters):
-        super().__init__(algorithm_parameters)
+    def __init__(self, algorithm_parameters, features_extractor: Optional[FeaturesExtractor] = None):
+        super().__init__(algorithm_parameters, features_extractor)
         self.venv = None
 
         def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
@@ -44,7 +44,6 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         self,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> GAIL:
         """
         Build the GAIL algorithm with the given parameters.
@@ -53,15 +52,13 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
             trajectories: Trajectories to train the imitation algorithm on.
             vectorized_environment: Vectorized environment (used to construct the reward function by predicting
                  similarity of policy rollouts and expert demonstrations with a continuously updated discriminator)
-            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
-
         Returns:
             GAIL: GAIL algorithm object initialized with the given parameters.
 
         """
         self.venv = vectorized_environment
-        if features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
+        if self.features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
         parameters = {
             "venv": vectorized_environment,
             "demo_batch_size": 1024,
