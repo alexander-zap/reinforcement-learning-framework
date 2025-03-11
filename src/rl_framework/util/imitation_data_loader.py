@@ -7,6 +7,13 @@ from imitation.data.types import DictObs, stack_maybe_dictobs
 from rl_framework.util.types import SizedGenerator
 
 
+def expand_if_flat(array: Union[np.ndarray, DictObs]):
+    if isinstance(array, DictObs):
+        return array
+    else:
+        return np.expand_dims(array, axis=1) if array.ndim == 1 else array
+
+
 def create_memory_efficient_transition_batcher(
     trajectories: SizedGenerator[types.TrajectoryWithRew], batch_size: Optional[int] = None
 ) -> Iterable[types.TransitionMapping]:
@@ -83,11 +90,11 @@ def create_memory_efficient_transition_batcher(
 
             for batch in transitions_batches:
                 result = {
-                    "obs": stack_maybe_dictobs([sample["obs"] for sample in batch]),
-                    "next_obs": stack_maybe_dictobs([sample["next_obs"] for sample in batch]),
-                    "acts": batch.acts,
-                    "dones": batch.dones,
-                    "infos": batch.infos,
+                    "obs": expand_if_flat(stack_maybe_dictobs([sample["obs"] for sample in batch])),
+                    "next_obs": expand_if_flat(stack_maybe_dictobs([sample["next_obs"] for sample in batch])),
+                    "acts": expand_if_flat(batch.acts),
+                    "dones": expand_if_flat(batch.dones),
+                    "infos": expand_if_flat(batch.infos),
                 }
                 yield result
             processed_trajectories = 0
@@ -95,11 +102,11 @@ def create_memory_efficient_transition_batcher(
         if not batch_size and processed_trajectories >= n_unique_trajectories:
             transitions = types.Transitions(**trajectory_as_dict_collected)
             result = {
-                "obs": stack_maybe_dictobs([sample["obs"] for sample in transitions]),
-                "next_obs": stack_maybe_dictobs([sample["next_obs"] for sample in transitions]),
-                "acts": transitions.acts,
-                "dones": transitions.dones,
-                "infos": transitions.infos,
+                "obs": expand_if_flat(stack_maybe_dictobs([sample["obs"] for sample in transitions])),
+                "next_obs": expand_if_flat(stack_maybe_dictobs([sample["next_obs"] for sample in transitions])),
+                "acts": expand_if_flat(transitions.acts),
+                "dones": expand_if_flat(transitions.dones),
+                "infos": expand_if_flat(transitions.infos),
             }
             yield result
             trajectory_as_dict_collected = {key: None for key in trajectory_part_keys}

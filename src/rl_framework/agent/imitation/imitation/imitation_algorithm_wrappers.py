@@ -3,9 +3,8 @@ import logging
 import math
 import tempfile
 from abc import ABC, abstractmethod
-from itertools import tee
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Mapping, Optional
 
 import gymnasium
 import numpy as np
@@ -15,17 +14,20 @@ from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
 from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.algorithms.density import DensityAlgorithm
-from imitation.algorithms.sqil import SQIL
+from imitation.algorithms.sqil import SQIL, SQILReplayBuffer
+from imitation.data import buffer
 from imitation.data.types import TrajectoryWithRew, TransitionMapping, Transitions
 from imitation.rewards.reward_nets import BasicRewardNet
 from imitation.util import util
 from imitation.util.networks import RunningNorm
-from stable_baselines3 import DQN, PPO
+from stable_baselines3 import DQN, PPO, SAC
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.type_aliases import ReplayBufferSamples
 from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.ppo import MlpPolicy
+from stable_baselines3.dqn.policies import DQNPolicy
+from stable_baselines3.sac.policies import SACPolicy
 
 from rl_framework.util import (
     FeaturesExtractor,
@@ -42,15 +44,55 @@ FILE_NAME_SB3_ALGORITHM = "algorithm.zip"
 FILE_NAME_REWARD_NET = "reward_net"
 
 
+POLICY_REGISTRY = {"ActorCriticPolicy": ActorCriticPolicy, "DQNPolicy": DQNPolicy, "SACPolicy": SACPolicy}
+
+RL_ALGO_REGISTRY = {"DQN": DQN, "SAC": SAC, "PPO": PPO}
+
+
 class AlgorithmWrapper(ABC):
-    def __init__(self):
+    def __init__(self, algorithm_parameters: dict):
+        """
+        algorithm_parameters: Algorithm parameters to be passed to Density algorithm of imitation library.
+                See Furthermore, the following parameters can additionally be provided for modification:
+                    - rl_algo_type: Type of reinforcement learning algorithm to use.
+                        Available types are defined in the RL_ALGO_REGISTRY. Default: PPO
+                    - rl_algo_kwargs: Additional keyword arguments to pass to the RL algorithm constructor.
+                    - policy_type: Type of policy to use for the RL algorithm.
+                        Available types are defined in the POLICY_REGISTRY. Default: ActorCriticPolicy
+                    - policy_kwargs: Additional keyword arguments to pass to the policy constructor.
+
+
+        Initialize the algorithm wrapper with the given parameters.
+
+        Args:
+            algorithm_parameters: Algorithm parameters to be passed to the respective algorithm of imitation library.
+                See following links to individual algorithm API:
+                - https://imitation.readthedocs.io/en/latest/_modules/imitation/algorithms/bc.html#BC
+                - https://imitation.readthedocs.io/en/latest/_modules/imitation/algorithms/adversarial/gail.html#GAIL
+                - https://imitation.readthedocs.io/en/latest/_modules/imitation/algorithms/adversarial/airl.html#AIRL
+                - https://imitation.readthedocs.io/en/latest/_modules/imitation/algorithms/density.html#DensityAlgorithm
+                - https://imitation.readthedocs.io/en/latest/_modules/imitation/algorithms/sqil.html#SQIL
+                Furthermore, the following parameters can additionally be provided for modification:
+                    - rl_algo_type: Type of reinforcement learning algorithm to use.
+                        Available types are defined in the RL_ALGO_REGISTRY. Default: PPO
+                        This argument is non-functional for BC.
+                    - rl_algo_kwargs: Additional keyword arguments to pass to the RL algorithm constructor.
+                        This argument is non-functional for BC.
+                    - policy_type: Type of policy to use for the RL algorithm.
+                        Available types are defined in the POLICY_REGISTRY. Default: ActorCriticPolicy
+                    - policy_kwargs: Additional keyword arguments to pass to the policy constructor.
+
+        """
         self.loaded_parameters: dict = {}
+        self.algorithm_parameters: dict = algorithm_parameters
+        self.rl_algo_class = RL_ALGO_REGISTRY.get(self.algorithm_parameters.pop("rl_algo_type", "PPO"))
+        self.rl_algo_kwargs = self.algorithm_parameters.pop("rl_algo_kwargs", {})
+        self.policy_class = POLICY_REGISTRY.get(self.algorithm_parameters.pop("policy_type", "ActorCriticPolicy"))
+        self.policy_kwargs = self.algorithm_parameters.pop("policy_kwargs", {})
 
     @abstractmethod
     def build_algorithm(
         self,
-        algorithm_parameters: dict,
-        total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
@@ -99,8 +141,8 @@ class AlgorithmWrapper(ABC):
 
 
 class BCAlgorithmWrapper(AlgorithmWrapper):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, algorithm_parameters):
+        super().__init__(algorithm_parameters)
         self.venv = None
         self.log_interval = 500
         self.rollout_interval = None
@@ -113,29 +155,40 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
     def build_algorithm(
         self,
-        algorithm_parameters: dict,
-        total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> BC:
+        """
+        Build the BC algorithm with the given parameters.
+
+        Args:
+            trajectories: Trajectories to train the imitation algorithm on.
+            vectorized_environment: Vectorized environment (used to extract observation and action space)
+            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
+
+        Returns:
+            BC: BC algorithm object initialized with the given parameters.
+
+        """
         self.venv = vectorized_environment
+        if features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
         parameters = {
             "observation_space": vectorized_environment.observation_space,
             "action_space": vectorized_environment.action_space,
             "rng": np.random.default_rng(0),
             "policy": self.loaded_parameters.get(
                 "policy",
-                ActorCriticPolicy(
+                self.policy_class(
                     observation_space=self.venv.observation_space,
                     action_space=self.venv.action_space,
-                    net_arch=[32, 32],
                     lr_schedule=lambda _: torch.finfo(torch.float32).max,
-                    **(get_sb3_policy_kwargs_for_features_extractor(features_extractor) if features_extractor else {}),
+                    **self.policy_kwargs,
                 ),
             ),
         }
-        parameters.update(**algorithm_parameters)
+        parameters.update(**self.algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
             logging.warning("BC algorithm does not support passing of the parameter `allow_variable_horizon`.")
         self.log_interval = parameters.pop("log_interval", self.log_interval)
@@ -248,27 +301,52 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
 
 
 class GAILAlgorithmWrapper(AlgorithmWrapper):
+    def __init__(self, algorithm_parameters):
+        super().__init__(algorithm_parameters)
+        self.venv = None
+
+        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
+            self._demo_data_loader = create_memory_efficient_transition_batcher(
+                demonstrations,
+                self.demo_batch_size,
+            )
+            self._endless_expert_iterator = self._demo_data_loader
+
+        GAIL.set_demonstrations = patched_set_demonstrations
+
     def build_algorithm(
         self,
-        algorithm_parameters: dict,
-        total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> GAIL:
+        """
+        Build the GAIL algorithm with the given parameters.
+
+        Args:
+            trajectories: Trajectories to train the imitation algorithm on.
+            vectorized_environment: Vectorized environment (used to construct the reward function by predicting
+                 similarity of policy rollouts and expert demonstrations with a continuously updated discriminator)
+            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
+
+        Returns:
+            GAIL: GAIL algorithm object initialized with the given parameters.
+
+        """
+        self.venv = vectorized_environment
+        if features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
         parameters = {
             "venv": vectorized_environment,
             "demo_batch_size": 1024,
-            # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(
+                self.rl_algo_class(
                     env=vectorized_environment,
-                    policy=MlpPolicy,
-                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
-                    if features_extractor
-                    else None,
+                    policy=self.policy_class,
+                    policy_kwargs=self.policy_kwargs,
                     tensorboard_log=tempfile.mkdtemp(),
+                    **self.rl_algo_kwargs,
                 ),
             ),
             # FIXME: This probably will not work with Dict as observation_space.
@@ -282,15 +360,17 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
                 ),
             ),
         }
-        parameters["gen_train_timesteps"] = min(
-            total_timesteps, parameters.get("gen_algo").n_steps * vectorized_environment.num_envs
-        )
-        parameters.update(**algorithm_parameters)
+        parameters.update(**self.algorithm_parameters)
         algorithm = GAIL(demonstrations=trajectories, **parameters)
         return algorithm
 
     def train(self, algorithm: GAIL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         add_callbacks_to_callback(callback_list, algorithm.gen_callback)
+        algorithm.gen_train_timesteps = min(algorithm.gen_train_timesteps, total_timesteps)
+        algorithm._gen_replay_buffer = buffer.ReplayBuffer(
+            algorithm.gen_train_timesteps,
+            self.venv,
+        )
         algorithm.train(total_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: GAIL, folder_path: Path):
@@ -298,34 +378,58 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         torch.save(algorithm._reward_net, folder_path / FILE_NAME_REWARD_NET)
 
     def load_algorithm(self, folder_path: Path):
-        # FIXME: Only works because gen_algo is hard-coded to PPO above
-        gen_algo = PPO.load(folder_path / FILE_NAME_SB3_ALGORITHM)
+        gen_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
         reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET)
         self.loaded_parameters.update({"gen_algo": gen_algo, "reward_net": reward_net})
 
 
 class AIRLAlgorithmWrapper(AlgorithmWrapper):
+    def __init__(self, algorithm_parameters):
+        super().__init__(algorithm_parameters)
+        self.venv = None
+
+        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
+            self._demo_data_loader = create_memory_efficient_transition_batcher(
+                demonstrations,
+                self.demo_batch_size,
+            )
+            self._endless_expert_iterator = self._demo_data_loader
+
+        AIRL.set_demonstrations = patched_set_demonstrations
+
     def build_algorithm(
         self,
-        algorithm_parameters: dict,
-        total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> AIRL:
+        """
+        Build the AIRL algorithm with the given parameters.
+
+        Args:
+            trajectories: Trajectories to train the imitation algorithm on.
+            vectorized_environment: Vectorized environment (used to construct the reward function by predicting
+                 similarity of policy rollouts and expert demonstrations with a continuously updated discriminator)
+            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
+
+        Returns:
+            AIRL: AIRL algorithm object initialized with the given parameters.
+
+        """
+        self.venv = vectorized_environment
+        if features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
         parameters = {
             "venv": vectorized_environment,
             "demo_batch_size": 1024,
-            # FIXME: Hard-coded PPO as default trajectory generation algorithm
             "gen_algo": self.loaded_parameters.get(
                 "gen_algo",
-                PPO(
+                self.rl_algo_class(
                     env=vectorized_environment,
-                    policy=MlpPolicy,
-                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
-                    if features_extractor
-                    else None,
+                    policy=self.policy_class,
+                    policy_kwargs=self.policy_kwargs,
                     tensorboard_log=tempfile.mkdtemp(),
+                    **self.rl_algo_kwargs,
                 ),
             ),
             # FIXME: This probably will not work with Dict as observation_space.
@@ -339,15 +443,17 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
                 ),
             ),
         }
-        parameters["gen_train_timesteps"]: min(
-            total_timesteps, parameters["gen_algo"].n_steps * vectorized_environment.num_envs
-        )
-        parameters.update(**algorithm_parameters)
+        parameters.update(**self.algorithm_parameters)
         algorithm = AIRL(demonstrations=trajectories, **parameters)
         return algorithm
 
     def train(self, algorithm: AIRL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         add_callbacks_to_callback(callback_list, algorithm.gen_callback)
+        algorithm.gen_train_timesteps = min(algorithm.gen_train_timesteps, total_timesteps)
+        algorithm._gen_replay_buffer = buffer.ReplayBuffer(
+            algorithm.gen_train_timesteps,
+            self.venv,
+        )
         algorithm.train(total_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: AIRL, folder_path: Path):
@@ -355,38 +461,65 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         torch.save(algorithm._reward_net, folder_path / FILE_NAME_REWARD_NET)
 
     def load_algorithm(self, folder_path: Path):
-        # FIXME: Only works because gen_algo is hard-coded to PPO above
-        gen_algo = PPO.load(folder_path / FILE_NAME_SB3_ALGORITHM)
+        gen_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
         reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET)
         self.loaded_parameters.update({"gen_algo": gen_algo, "reward_net": reward_net})
 
 
 class DensityAlgorithmWrapper(AlgorithmWrapper):
+    def __init__(self, algorithm_parameters):
+        super().__init__(algorithm_parameters)
+
+        def temporary_switch_off_looping_demonstrations(func):
+            def wrap(*args, **kwargs):
+                demonstrations: SizedGenerator = args[1]
+                demonstrations_were_looping = demonstrations.looping
+                demonstrations.looping = False
+                func(*args, **kwargs)
+                demonstrations.looping = demonstrations_were_looping
+
+            return wrap
+
+        DensityAlgorithm.set_demonstrations = temporary_switch_off_looping_demonstrations(
+            DensityAlgorithm.set_demonstrations
+        )
+
     def build_algorithm(
         self,
-        algorithm_parameters: dict,
-        total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> DensityAlgorithm:
+        """
+        Build the DensityAlgorithm algorithm with the given parameters.
+
+        Args:
+            trajectories: Trajectories to train the imitation algorithm on.
+            vectorized_environment: Vectorized environment (used to train the RL algorithm, but with a replaced reward
+                function based on log-likelihood of observed state-action pairs to a learned distribution of expert
+                demonstrations; distribution of expert demonstrations is learned by kernel density estimation).
+            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
+
+        Returns:
+            DensityAlgorithm: DensityAlgorithm algorithm object initialized with the given parameters.
+
+        """
+        if features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
         parameters = {
             "venv": vectorized_environment,
             "rng": np.random.default_rng(0),
-            # FIXME: Hard-coded PPO as default policy training algorithm
-            #  (to learn from adjusted reward function)
             "rl_algo": self.loaded_parameters.get(
                 "rl_algo",
-                PPO(
+                self.rl_algo_class(
                     env=vectorized_environment,
-                    policy=ActorCriticPolicy,
-                    policy_kwargs=get_sb3_policy_kwargs_for_features_extractor(features_extractor)
-                    if features_extractor
-                    else None,
+                    policy=self.policy_class,
+                    policy_kwargs=self.policy_kwargs,
+                    **self.rl_algo_kwargs,
                 ),
             ),
         }
-        parameters.update(**algorithm_parameters)
+        parameters.update(**self.algorithm_parameters)
         algorithm = DensityAlgorithm(demonstrations=trajectories, **parameters)
         return algorithm
 
@@ -400,50 +533,72 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         algorithm.rl_algo.save(folder_path / FILE_NAME_SB3_ALGORITHM)
 
     def load_algorithm(self, folder_path: Path):
-        # FIXME: Only works because rl_algo is hard-coded to PPO above
-        rl_algo = PPO.load(folder_path / FILE_NAME_SB3_ALGORITHM)
+        rl_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
         self.loaded_parameters.update({"rl_algo": rl_algo})
 
 
 class SQILAlgorithmWrapper(AlgorithmWrapper):
+    def __init__(self, algorithm_parameters):
+        super().__init__(algorithm_parameters)
+
+        batch_size = self.rl_algo_kwargs.get("batch_size", 256)
+
+        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
+            demo_data_loader = create_memory_efficient_transition_batcher(
+                demonstrations,
+                batch_size,
+            )
+            batched_transitions_mapping = next(demo_data_loader)
+            self.expert_buffer.sample = lambda x, y: ReplayBufferSamples(
+                observations=util.safe_to_tensor(batched_transitions_mapping["obs"]),
+                actions=util.safe_to_tensor(batched_transitions_mapping["acts"]),
+                rewards=util.safe_to_tensor(np.array([[1.0]] * batch_size, dtype=np.float32)),
+                next_observations=util.safe_to_tensor(batched_transitions_mapping["next_obs"]),
+                dones=util.safe_to_tensor(batched_transitions_mapping["dones"]),
+            )
+
+        SQIL.set_demonstrations = lambda x, y: None
+        SQILReplayBuffer.set_demonstrations = patched_set_demonstrations
+
     def build_algorithm(
         self,
-        algorithm_parameters: dict,
-        total_timesteps: int,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
         features_extractor: Optional[FeaturesExtractor] = None,
     ) -> SQIL:
+        """
+        Build the SQIL algorithm with the given parameters.
+
+        Args:
+            trajectories: Trajectories to train the imitation algorithm on.
+            vectorized_environment: Vectorized environment (used to train the RL algorithm, but half of the RL algorithm
+                memory keeps filled with expert demonstrations; also all rewards from the live environment are set to
+                0.0, while all rewards from the expert demonstrations are set to 1.0).
+            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
+
+        Returns:
+            SQIL: SQIL algorithm object initialized with the given parameters.
+
+        """
         # FIXME: SQILReplayBuffer inherits from sb3.ReplayBuffer which doesn't support dict observations.
         #  Maybe it can be patched to inherit from sb3.DictReplayBuffer.
         assert not isinstance(
             vectorized_environment.observation_space, gymnasium.spaces.Dict
         ), "SQILReplayBuffer does not support Dict observation spaces."
 
+        if features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
+
         parameters = {
             "venv": vectorized_environment,
-            "policy": "MlpPolicy",
-            # FIXME: Hard-coded DQN as default policy training algorithm
-            "rl_algo_class": DQN,
-            "rl_kwargs": {
-                "policy_kwargs": get_sb3_policy_kwargs_for_features_extractor(features_extractor)
-                if features_extractor
-                else None,
-            },
+            "policy": self.policy_class,
+            "rl_algo_class": self.rl_algo_class,
+            "rl_kwargs": {"policy_kwargs": self.policy_kwargs, **self.rl_algo_kwargs},
         }
-        parameters.update(**algorithm_parameters)
+        parameters.update(**self.algorithm_parameters)
         if parameters.pop("allow_variable_horizon", None) is not None:
             logging.warning("SQIL algorithm does not support passing of the parameter `allow_variable_horizon`.")
 
-        class MockedIterableFromGenerator(Iterable):
-            def __init__(self, generator):
-                self._generator = generator
-
-            def __iter__(self):
-                self._generator, generator_copy = tee(self._generator)
-                return generator_copy
-
-        trajectories = MockedIterableFromGenerator(trajectories)
         algorithm = SQIL(demonstrations=trajectories, **parameters)
         if "rl_algo" in self.loaded_parameters:
             algorithm.rl_algo = self.loaded_parameters.get("rl_algo")
@@ -458,8 +613,7 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         algorithm.rl_algo.save(folder_path / FILE_NAME_SB3_ALGORITHM, exclude=["replay_buffer_kwargs"])
 
     def load_algorithm(self, folder_path: Path):
-        # FIXME: Only works because rl_algo_class is hard-coded to DQN above
-        rl_algo = DQN.load(
+        rl_algo = self.rl_algo_class.load(
             folder_path / FILE_NAME_SB3_ALGORITHM,
             replay_buffer_kwargs={
                 "demonstrations": Transitions(
