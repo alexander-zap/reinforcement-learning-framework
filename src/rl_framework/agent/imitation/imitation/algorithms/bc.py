@@ -27,8 +27,8 @@ from .algorithm_wrapper import AlgorithmWrapper
 
 
 class BCAlgorithmWrapper(AlgorithmWrapper):
-    def __init__(self, algorithm_parameters):
-        super().__init__(algorithm_parameters)
+    def __init__(self, algorithm_parameters, features_extractor: Optional[FeaturesExtractor] = None):
+        super().__init__(algorithm_parameters, features_extractor)
         self.venv = None
         self.log_interval = 500
         self.rollout_interval = None
@@ -43,7 +43,6 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         self,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> BC:
         """
         Build the BC algorithm with the given parameters.
@@ -51,15 +50,13 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         Args:
             trajectories: Trajectories to train the imitation algorithm on.
             vectorized_environment: Vectorized environment (used to extract observation and action space)
-            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
-
         Returns:
             BC: BC algorithm object initialized with the given parameters.
 
         """
         self.venv = vectorized_environment
-        if features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
+        if self.features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
         parameters = {
             "observation_space": vectorized_environment.observation_space,
             "action_space": vectorized_environment.action_space,

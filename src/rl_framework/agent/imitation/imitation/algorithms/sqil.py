@@ -22,8 +22,8 @@ from .algorithm_wrapper import FILE_NAME_SB3_ALGORITHM, AlgorithmWrapper
 
 
 class SQILAlgorithmWrapper(AlgorithmWrapper):
-    def __init__(self, algorithm_parameters):
-        super().__init__(algorithm_parameters)
+    def __init__(self, algorithm_parameters, features_extractor: Optional[FeaturesExtractor] = None):
+        super().__init__(algorithm_parameters, features_extractor)
 
         batch_size = self.rl_algo_kwargs.get("batch_size", 256)
 
@@ -48,7 +48,6 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         self,
         trajectories: SizedGenerator[TrajectoryWithRew],
         vectorized_environment: VecEnv,
-        features_extractor: Optional[FeaturesExtractor] = None,
     ) -> SQIL:
         """
         Build the SQIL algorithm with the given parameters.
@@ -58,7 +57,6 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
             vectorized_environment: Vectorized environment (used to train the RL algorithm, but half of the RL algorithm
                 memory keeps filled with expert demonstrations; also all rewards from the live environment are set to
                 0.0, while all rewards from the expert demonstrations are set to 1.0).
-            features_extractor: Features extractor (preprocessing of observations to vectors, trainable).
 
         Returns:
             SQIL: SQIL algorithm object initialized with the given parameters.
@@ -70,8 +68,8 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
             vectorized_environment.observation_space, gymnasium.spaces.Dict
         ), "SQILReplayBuffer does not support Dict observation spaces."
 
-        if features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(features_extractor))
+        if self.features_extractor:
+            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
 
         parameters = {
             "venv": vectorized_environment,
