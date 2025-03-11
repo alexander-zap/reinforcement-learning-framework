@@ -17,7 +17,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from rl_framework.agent.imitation.episode_sequence import EpisodeSequence
-from rl_framework.agent.imitation.imitation.imitation_algorithm_wrappers import (
+from rl_framework.agent.imitation.imitation.algorithms import (
     AIRLAlgorithmWrapper,
     AlgorithmWrapper,
     BCAlgorithmWrapper,

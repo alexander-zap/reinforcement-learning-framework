@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "reinforcement-learning-framework"
-version = "0.7.1"
+version = "0.7.2"
 description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and utilities."
 homepage = "https://github.com/alexander-zap/reinforcement-learning-framework"
 authors = ["Alexander Zap"]
