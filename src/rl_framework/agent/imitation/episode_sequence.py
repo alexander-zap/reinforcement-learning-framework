@@ -17,7 +17,9 @@ import imitation.data.types
 import numpy as np
 from imitation.data import serialize
 
-from rl_framework.util import SizedGenerator
+from rl_framework.util import SizedGenerator, patch_datasets
+
+patch_datasets()
 
 GenericEpisode = List[Tuple[object, object, object, float, bool, bool, dict]]
 

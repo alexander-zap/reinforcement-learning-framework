@@ -24,4 +24,5 @@ from .training_callbacks import (
     add_callbacks_to_callback,
 )
 from .types import SizedGenerator
+from .util import patch_datasets
 from .video_recording import record_video
