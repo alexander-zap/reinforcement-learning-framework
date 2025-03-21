@@ -24,5 +24,5 @@ from .sb3_training_callbacks import (
     add_callbacks_to_callback,
 )
 from .types import SizedGenerator
-from .util import patch_datasets
+from .util import patch_d3rlpy, patch_datasets
 from .video_recording import record_video
