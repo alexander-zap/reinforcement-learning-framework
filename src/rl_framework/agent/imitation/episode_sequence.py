@@ -248,6 +248,8 @@ class EpisodeSequence(Iterable[GenericEpisode], Sized):
                 observations, actions, next_observations, rewards, terminations, truncations, infos = (
                     np.array(x) for x in list(zip(*generic_episode))
                 )
+                rewards = np.expand_dims(rewards, axis=1)
+                actions = np.expand_dims(actions, axis=1) if actions.ndim == 1 else actions
                 episode = d3rlpy.dataset.components.Episode(
                     observations=observations,
                     actions=actions,
