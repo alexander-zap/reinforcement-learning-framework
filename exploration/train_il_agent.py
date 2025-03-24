@@ -53,6 +53,7 @@ def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_pa
 PARALLEL_ENVIRONMENTS = 8
 DOWNLOAD_EXISTING_AGENT = False
 TRAJECTORIES_PATH = (Path(__file__).parent.parent / "data" / "cartpole_rollout").as_posix()
+VALIDATION_TRAJECTORIES_PATH = (Path(__file__).parent.parent / "data" / "cartpole_rollout").as_posix()
 
 OFFLINE_RL = True
 N_TRAINING_TIMESTEPS = 200000
@@ -91,9 +92,16 @@ if __name__ == "__main__":
         if not os.path.exists(TRAJECTORIES_PATH):
             create_and_save_trajectories_dataset(environments[0], N_TRAINING_TIMESTEPS, TRAJECTORIES_PATH)
 
+        if not os.path.exists(VALIDATION_TRAJECTORIES_PATH):
+            create_and_save_trajectories_dataset(
+                environments[0], N_TRAINING_TIMESTEPS * 0.1, VALIDATION_TRAJECTORIES_PATH
+            )
+
         sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH, loop=True)
+        validation_sequence = EpisodeSequence.from_dataset(VALIDATION_TRAJECTORIES_PATH, loop=True)
         agent.train(
             episode_sequence=sequence,
+            validation_episode_sequence=validation_sequence,
             training_environments=environments,
             total_timesteps=N_TRAINING_TIMESTEPS,
             connector=connector,
