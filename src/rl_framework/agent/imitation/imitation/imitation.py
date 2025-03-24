@@ -104,8 +104,8 @@ class ImitationAgent(ILAgent):
             total_timesteps (int): Amount of (recorded) timesteps to train the agent on.
             episode_sequence (EpisodeSequence): List of episodes on which the agent should be trained on.
             validation_episode_sequence (EpisodeSequence): List of episodes on which the agent should be validated on.
-            training_environments (List): List of environments
-                Required for interaction or attribute extraction (e.g., action/observation space) for some algorithms
+            training_environments (List): List of environments with gym interface.
+                Required for interaction or attribute extraction (e.g., action/observation space) for some algorithms.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
         """
