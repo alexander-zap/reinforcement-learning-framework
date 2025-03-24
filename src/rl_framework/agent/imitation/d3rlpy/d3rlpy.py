@@ -1,12 +1,14 @@
 import io
+import math
 import pickle
 from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Type, Union
 
-import d3rlpy
+import d3rlpy.dataset
 import gymnasium as gym
 import numpy as np
+from d3rlpy import LoggingStrategy
 from d3rlpy.algos import (
     AWAC,
     BC,
@@ -146,12 +148,14 @@ class ConnectorAdapter(LoggerAdapter):
         pass
 
     def write_metric(self, epoch: int, step: int, name: str, value: float) -> None:
-        self.connector.log_value_with_timestep(step, value, name)
+        absolute_step = step * self.agent.algorithm._config.batch_size
+        self.connector.log_value_with_timestep(absolute_step, value, name)
 
     def after_write_metric(self, epoch: int, step: int) -> None:
         pass
 
     def save_model(self, epoch, algo) -> None:
+        # NOTE: `epoch` is actually `batch_number` when this is called from the algorithm's train method.
         self.connector.upload(agent=self.agent, checkpoint_id=epoch)
 
     def close(self) -> None:
@@ -384,10 +388,14 @@ class D3RLPYAgent(ILAgent):
             )
             evaluators.update({"td_error": d3rlpy.metrics.TDErrorEvaluator(validation_buffer.episodes)})
 
+        n_batches = math.ceil(total_timesteps / self.algorithm._config.batch_size)
+
         self.algorithm.fit(
             replay_buffer,
-            n_steps=total_timesteps,
-            n_steps_per_epoch=min(total_timesteps, 10000),
+            n_steps=n_batches,
+            n_steps_per_epoch=min(n_batches, math.ceil(50000 / self.algorithm._config.batch_size)),
+            logging_steps=math.ceil(10000 / self.algorithm._config.batch_size),
+            logging_strategy=LoggingStrategy.STEPS,
             logger_adapter=ConnectorAdapterFactory(connector, self),
             save_interval=1,
             evaluators=evaluators,
