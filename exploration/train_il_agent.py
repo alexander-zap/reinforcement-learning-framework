@@ -34,6 +34,7 @@ def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_pa
             env_name="CartPole-v1",
             venv=venv,
         )
+        policy.to("cpu")
         return policy
 
     environment_return_functions = [lambda: RolloutInfoWrapper(Monitor(env))]
