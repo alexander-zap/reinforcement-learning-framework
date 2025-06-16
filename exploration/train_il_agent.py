@@ -98,8 +98,8 @@ if __name__ == "__main__":
                 environments[0], N_TRAINING_TIMESTEPS * 0.1, VALIDATION_TRAJECTORIES_PATH
             )
 
-        sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH, loop=True)
-        validation_sequence = EpisodeSequence.from_dataset(VALIDATION_TRAJECTORIES_PATH, loop=True)
+        sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH)
+        validation_sequence = EpisodeSequence.from_dataset(VALIDATION_TRAJECTORIES_PATH)
         agent.train(
             episode_sequence=sequence,
             validation_episode_sequence=validation_sequence,

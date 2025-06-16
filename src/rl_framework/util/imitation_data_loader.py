@@ -51,7 +51,7 @@ def create_memory_efficient_transition_batcher(
         dones = np.zeros(len(traj.acts), dtype=bool)
         dones[-1] = traj.terminal
 
-        infos = np.array([{}] * len(traj)) if traj.infos is None else traj.infos
+        infos = np.array([{}] * len(traj)) if traj.infos is None else np.array(traj.infos)
 
         trajectory_as_dict = {
             "obs": traj.obs[:-1],
