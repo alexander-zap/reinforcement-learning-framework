@@ -1,4 +1,5 @@
 import io
+import logging
 import math
 import pickle
 from functools import partial
@@ -8,6 +9,8 @@ from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Type, Union
 import d3rlpy.dataset
 import gymnasium as gym
 import numpy as np
+import pettingzoo
+import supersuit as ss
 from d3rlpy import LoggingStrategy
 from d3rlpy.algos import (
     AWAC,
@@ -305,7 +308,7 @@ class D3RLPYAgent(ILAgent):
         episode_sequence: EpisodeSequence,
         validation_episode_sequence: Optional[EpisodeSequence] = None,
         connector: Optional[Connector] = None,
-        training_environments: Optional[List[gym.Env]] = None,
+        training_environments: Optional[List[Union[gym.Env, pettingzoo.ParallelEnv]]] = None,
         *args,
         **kwargs,
     ):
@@ -321,7 +324,7 @@ class D3RLPYAgent(ILAgent):
             total_timesteps (int): Amount of (recorded) timesteps to train the agent on.
             episode_sequence (EpisodeSequence): List of episodes on which the agent should be trained on.
             validation_episode_sequence (EpisodeSequence): List of episodes on which the agent should be validated on.
-            training_environments (List): List of environments with gym interface.
+            training_environments (List): List of environments with gym (or pettingzoo) interface.
                 Required for callbacks and logging. The environments are used for intermediate rollouts.
                 Also required for attribute extraction (e.g., action/observation space).
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
@@ -373,9 +376,28 @@ class D3RLPYAgent(ILAgent):
                 for env in training_environments
             ]
 
-        training_environments = [Monitor(env) for env in training_environments]
-        environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
-        vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+        if isinstance(training_environments[0], pettingzoo.ParallelEnv):
+
+            def pettingzoo_environment_to_vectorized_environment(pettingzoo_environment: pettingzoo.ParallelEnv):
+                env = ss.black_death_v3(pettingzoo_environment)
+                env = ss.pettingzoo_env_to_vec_env_v1(env)
+                env = ss.concat_vec_envs_v1(env, 1, num_cpus=1, base_class="stable_baselines3")
+                return env
+
+            if len(training_environments) > 1:
+                logging.warning(
+                    f"Offline Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
+                    f"training on multiple multi-agent environments in parallel. Continuing with one environment as "
+                    f"training environment."
+                )
+
+            vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
+        else:
+            training_environments = [Monitor(env) for env in training_environments]
+            environment_return_functions = [
+                partial(make_env, env_index) for env_index in range(len(training_environments))
+            ]
+            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         replay_buffer = GeneratorReplayBuffer(episode_generator=trajectories, env=training_environments[0])
 

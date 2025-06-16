@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Union
 
 import gymnasium as gym
 import numpy
 import numpy as np
+import pettingzoo
 import torch.nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
@@ -41,9 +42,9 @@ def encode_observations_with_features_extractor(
 
 
 def wrap_environment_with_features_extractor_preprocessor(
-    environment: gym.Env, features_extractor: FeaturesExtractor
-) -> gym.Env:
-    class FeaturesExtractorPreprocessingWrapper(gym.ObservationWrapper):
+    environment: Union[gym.Env, pettingzoo.ParallelEnv], features_extractor: FeaturesExtractor
+) -> Union[gym.Env, pettingzoo.ParallelEnv]:
+    class FeaturesExtractorPreprocessingGymWrapper(gym.ObservationWrapper):
         def __init__(self, env, features_extractor: FeaturesExtractor):
             super().__init__(env)
             self.features_extractor = features_extractor
@@ -56,7 +57,36 @@ def wrap_environment_with_features_extractor_preprocessor(
         def observation(self, observation):
             return self.features_extractor.preprocess(np.array([observation]))[0]
 
-    wrapped_environment = FeaturesExtractorPreprocessingWrapper(environment, features_extractor)
+    class FeaturesExtractorPreprocessingPettingzooWrapper(pettingzoo.ParallelEnv):
+        def __init__(self, env, features_extractor: FeaturesExtractor):
+            # https://stackoverflow.com/a/1445289
+            self.__class__ = type(env.__class__.__name__, (self.__class__, env.__class__), {})
+            self.__dict__ = env.__dict__
+
+            self.env = env
+
+            self.observation_spaces = {
+                agent: (
+                    features_extractor.preprocessed_observation_space
+                    if features_extractor.preprocessed_observation_space is not None
+                    else env.observation_space
+                )
+                for agent in env.agents
+            }
+            self.features_extractor = features_extractor
+
+        def step(self, actions: dict):
+            observations, rewards, terminations, truncations, infos = self.env.step(actions)
+            processed_observations = {
+                agent: self.features_extractor.preprocess(np.array([observation]))[0]
+                for agent, observation in observations
+            }
+            return processed_observations, rewards, terminations, truncations, infos
+
+    if isinstance(environment, pettingzoo.ParallelEnv):
+        wrapped_environment = FeaturesExtractorPreprocessingPettingzooWrapper(environment, features_extractor)
+    else:
+        wrapped_environment = FeaturesExtractorPreprocessingGymWrapper(environment, features_extractor)
     return wrapped_environment
 
 

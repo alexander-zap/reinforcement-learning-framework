@@ -85,7 +85,8 @@ class StableBaselinesAgent(RLAgent):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gymnasium.Env]): List of environments on which the agent should be trained on.
+            training_environments (List[gymnasium.Env, pettingzoo.ParallelEnv]):
+                List of environments on which the agent should be trained on.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
@@ -109,7 +110,8 @@ class StableBaselinesAgent(RLAgent):
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
 
             def pettingzoo_environment_to_vectorized_environment(pettingzoo_environment: pettingzoo.ParallelEnv):
-                env = ss.pettingzoo_env_to_vec_env_v1(pettingzoo_environment)
+                env = ss.black_death_v3(pettingzoo_environment)
+                env = ss.pettingzoo_env_to_vec_env_v1(env)
                 env = ss.concat_vec_envs_v1(env, 1, num_cpus=1, base_class="stable_baselines3")
                 return env
 

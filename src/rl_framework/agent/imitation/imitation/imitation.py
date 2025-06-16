@@ -1,9 +1,12 @@
+import logging
 import shutil
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Type, Union
 
 import gymnasium as gym
+import pettingzoo
+import supersuit as ss
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -88,7 +91,7 @@ class ImitationAgent(ILAgent):
         episode_sequence: EpisodeSequence,
         validation_episode_sequence: Optional[EpisodeSequence] = None,
         connector: Optional[Connector] = None,
-        training_environments: Optional[List[gym.Env]] = None,
+        training_environments: Optional[List[Union[gym.Env, pettingzoo.ParallelEnv]]] = None,
         *args,
         **kwargs,
     ):
@@ -104,7 +107,7 @@ class ImitationAgent(ILAgent):
             total_timesteps (int): Amount of (recorded) timesteps to train the agent on.
             episode_sequence (EpisodeSequence): List of episodes on which the agent should be trained on.
             validation_episode_sequence (EpisodeSequence): List of episodes on which the agent should be validated on.
-            training_environments (List): List of environments with gym interface.
+            training_environments (List): List of environments with gym (or pettingzoo) interface.
                 Required for interaction or attribute extraction (e.g., action/observation space) for some algorithms.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
@@ -165,9 +168,28 @@ class ImitationAgent(ILAgent):
                 for env in training_environments
             ]
 
-        training_environments = [Monitor(env) for env in training_environments]
-        environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
-        vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+        if isinstance(training_environments[0], pettingzoo.ParallelEnv):
+
+            def pettingzoo_environment_to_vectorized_environment(pettingzoo_environment: pettingzoo.ParallelEnv):
+                env = ss.black_death_v3(pettingzoo_environment)
+                env = ss.pettingzoo_env_to_vec_env_v1(env)
+                env = ss.concat_vec_envs_v1(env, 1, num_cpus=1, base_class="stable_baselines3")
+                return env
+
+            if len(training_environments) > 1:
+                logging.warning(
+                    f"Imitation Learning algorithm {self.__class__.__qualname__} does not support "
+                    f"training on multiple multi-agent environments in parallel. Continuing with one environment as "
+                    f"training environment."
+                )
+
+            vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
+        else:
+            training_environments = [Monitor(env) for env in training_environments]
+            environment_return_functions = [
+                partial(make_env, env_index) for env_index in range(len(training_environments))
+            ]
+            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         if not self.algorithm:
             self.algorithm = self.algorithm_wrapper.build_algorithm(

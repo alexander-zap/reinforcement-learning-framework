@@ -3,7 +3,7 @@ import os
 import pickle
 import random
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -104,7 +104,7 @@ class QLearning(CustomAlgorithm):
     def train(
         self,
         connector: Connector,
-        training_environments: List[gym.Env],
+        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
         total_timesteps: int,
         *args,
         **kwargs,

@@ -1,7 +1,8 @@
 from pathlib import Path
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Type, Union
 
 import gymnasium as gym
+import pettingzoo
 
 from rl_framework.agent.reinforcement.custom_algorithms import (
     CustomAlgorithm,
@@ -51,7 +52,7 @@ class CustomAgent(RLAgent):
         self,
         total_timesteps: int,
         connector: Optional[Connector] = None,
-        training_environments: List[gym.Env] = None,
+        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]] = None,
         *args,
         **kwargs,
     ):
