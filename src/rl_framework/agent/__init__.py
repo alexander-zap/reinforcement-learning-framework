@@ -1,4 +1,5 @@
-from .async_stable_baselines import AsyncStableBaselinesAgent
 from .base_agent import Agent
-from .custom_agent import CustomAgent, CustomAlgorithm
-from .stable_baselines import StableBaselinesAgent
+from .imitation import ImitationAgent
+from .imitation_learning_agent import ILAgent
+from .reinforcement import AsyncStableBaselinesAgent, CustomAgent, StableBaselinesAgent
+from .reinforcement_learning_agent import RLAgent

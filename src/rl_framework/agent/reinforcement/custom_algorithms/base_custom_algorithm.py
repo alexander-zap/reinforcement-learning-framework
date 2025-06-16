@@ -1,13 +1,16 @@
 from abc import ABC, abstractmethod
+from typing import Optional
+
+from rl_framework.util import FeaturesExtractor
 
 
 class CustomAlgorithm(ABC):
     @abstractmethod
-    def __init__(self, *args, **kwargs):
+    def __init__(self, features_extractor: Optional[FeaturesExtractor], *args, **kwargs):
         raise NotImplementedError
 
     @abstractmethod
-    def train(self, training_environments, total_timesteps, connector, *args, **kwargs):
+    def train(self, connector, training_environments, total_timesteps, *args, **kwargs):
         raise NotImplementedError
 
     @abstractmethod

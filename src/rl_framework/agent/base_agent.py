@@ -1,13 +1,17 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import gymnasium as gym
 import numpy as np
 import pettingzoo
 from tqdm import tqdm
 
-from rl_framework.util.saving_and_loading import Connector
+from rl_framework.util import (
+    Connector,
+    FeaturesExtractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
 class Agent(ABC):
@@ -16,20 +20,26 @@ class Agent(ABC):
     def algorithm(self):
         return NotImplementedError
 
-    @abstractmethod
-    def __init__(self, algorithm, algorithm_parameters: Dict, *args, **kwargs):
-        raise NotImplementedError
-
-    @abstractmethod
-    def train(
+    def __init__(
         self,
-        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
-        total_timesteps: int,
-        connector: Connector,
+        algorithm_class: Type,
+        algorithm_parameters: Optional[Dict],
+        features_extractor: Optional[FeaturesExtractor],
         *args,
         **kwargs,
     ):
-        raise NotImplementedError
+        """
+        Initialize an agent.
+
+        Args:
+            algorithm_class: Reinforcement or imitation learning class to be used for training the agent.
+            algorithm_parameters: Parameters for the specified algorithm class.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
+        """
+        self.algorithm_class = algorithm_class
+        self.algorithm_parameters = algorithm_parameters if algorithm_parameters else {}
+        self.features_extractor = features_extractor
 
     def evaluate(
         self,
@@ -37,7 +47,7 @@ class Agent(ABC):
         n_eval_episodes: int,
         seeds: Optional[List[int]] = None,
         deterministic: bool = False,
-    ) -> Tuple:
+    ) -> Tuple[float, float]:
         """
         Evaluate the agent for ``n_eval_episodes`` episodes and returns average reward and std of reward.
 
@@ -48,6 +58,11 @@ class Agent(ABC):
                 No seed is used if not provided or fewer seeds are provided then n_eval_episodes.
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
+
+        if self.features_extractor:
+            evaluation_environment = wrap_environment_with_features_extractor_preprocessor(
+                evaluation_environment, self.features_extractor
+            )
 
         if seeds is None:
             seeds = []
@@ -122,23 +137,19 @@ class Agent(ABC):
     def load_from_file(self, file_path: Path, algorithm_parameters: Optional[Dict], *args, **kwargs) -> None:
         raise NotImplementedError
 
-    def upload(
-        self,
-        connector: Connector,
-        evaluation_environment: gym.Env,
-        variable_values_to_log: Dict,
-    ) -> None:
+    def upload(self, connector: Connector, video_recording_environment: Optional[gym.Env] = None) -> None:
         """
-        Evaluate and upload the decision-making agent (and its .algorithm attribute) to the connector.
+        Evaluate and upload the decision-making agent to the connector.
             Additional option: Generate a video of the agent interacting with the environment.
 
         Args:
-            connector: Connector for uploading.
-            evaluation_environment: Environment used for final evaluation and clip creation before upload.
-            variable_values_to_log (Dict): Variable name and values to be uploaded and logged, e.g. evaluation metrics.
+            connector (Connector): Connector for uploading.
+            video_recording_environment (gym.Env): Environment used for clip creation before upload.
+                Optional. If not provided, no video will be recorded.
         """
         connector.upload(
-            agent=self, evaluation_environment=evaluation_environment, variable_values_to_log=variable_values_to_log
+            agent=self,
+            video_recording_environment=video_recording_environment,
         )
 
     def download(

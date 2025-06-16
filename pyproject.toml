@@ -1,19 +1,38 @@
 [tool.poetry]
-name = "rl-framework"
-version = "0.5.1"
-description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and environments. Also this is the main place to start your journey with Reinforcement Learning and learn from tutorials and examples."
+name = "reinforcement-learning-framework"
+version = "0.7.2"
+description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and utilities."
+homepage = "https://github.com/alexander-zap/reinforcement-learning-framework"
 authors = ["Alexander Zap"]
-license = "Proprietary"
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+license = "MIT License"
 packages = [
     { include = "rl_framework", from = "src" },
 ]
 include = ["src/rl_framework/res/*"]
+keywords = [
+    "reinforcement learning",
+    "rl",
+    "imitation learning"
+]
+readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
 numpy = "^1.26.3"
 protobuf = "~3.20"
-gymnasium = "^0.28.1"
+gymnasium = "^0.29"
 stable-baselines3 = {extras = ["extra"], version = "^2.2"}
 tqdm = "^4.66"
 huggingface_hub = "^0.19"
@@ -22,19 +41,24 @@ moviepy = "^1.0.3"
 clearml = "^1.14.1"
 dm-env-rpc = "^1.1.6"
 pettingzoo = "^1.24.3"
-async-gym-agents = {git = "https://github.com/Luke100000/async-gym-agents"}
+imitation = "^1.0.0"
+pyarrow-hotfix = "^0.6"
+d3rlpy = "^2.6"
+async-gym-agents = "^0.1.1"
 supersuit = "^3.9.3"
+torch = "~2.5.1"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.2"
+pytest-cov = "^4.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^23.11"
 pre-commit = "^3.5"
-pytest = "^7.2"
-pytest-cov = "^4.0"
-jupyterlab = "^4.0"
-ruff = "^0.1.6"
+ruff = "^0.8.3"
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
@@ -103,3 +127,12 @@ exclude = '''
   | dist
 )/
 '''
+
+[tool.yamlfix]
+line_length = 89
+preserve_quotes = false
+quote_basic_values = false
+quote_representation = "'"
+section_whitelines = 1
+sequence_style = "block_style"
+whitelines = 1

@@ -2,8 +2,8 @@ import gymnasium as gym
 import stable_baselines3
 from clearml import Task
 
-from rl_framework.agent import CustomAgent, StableBaselinesAgent
-from rl_framework.agent.custom_algorithms import QLearning
+from rl_framework.agent.reinforcement import CustomAgent, StableBaselinesAgent
+from rl_framework.agent.reinforcement.custom_algorithms import QLearning
 from rl_framework.util import (
     ClearMLConnector,
     ClearMLDownloadConfig,
@@ -26,10 +26,11 @@ if __name__ == "__main__":
     # Create connector
     task = Task.init(project_name="synthetic-player")
     upload_connector_config = ClearMLUploadConfig(
-        file_name="agent.pkl",
+        upload=True,
+        file_name="agent.zip",
         video_length=0,
     )
-    download_connector_config = ClearMLDownloadConfig(model_id="", file_name="", download=False)
+    download_connector_config = ClearMLDownloadConfig(model_id="", file_name="", download=DOWNLOAD_EXISTING_AGENT)
     connector = ClearMLConnector(
         task=task, upload_config=upload_connector_config, download_config=download_connector_config
     )
@@ -73,9 +74,8 @@ if __name__ == "__main__":
     )
     print(f"mean_reward={mean_reward:.2f} +/- {std_reward:.2f}")
 
+    connector.log_value(mean_reward, "mean_reward")
+    connector.log_value(std_reward, "std_reward")
+
     # Upload the model
-    agent.upload(
-        connector=connector,
-        evaluation_environment=environments[0],
-        variable_values_to_log={"mean_reward": mean_reward, "std_reward": std_reward},
-    )
+    agent.upload(connector=connector, video_recording_environment=environments[0])

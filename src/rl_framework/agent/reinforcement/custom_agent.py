@@ -2,47 +2,56 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
-import pettingzoo
 
-from rl_framework.agent import Agent
-from rl_framework.agent.custom_algorithms import CustomAlgorithm, QLearning
-from rl_framework.util import Connector
+from rl_framework.agent.reinforcement.custom_algorithms import (
+    CustomAlgorithm,
+    QLearning,
+)
+from rl_framework.agent.reinforcement_learning_agent import RLAgent
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
-class CustomAgent(Agent):
+class CustomAgent(RLAgent):
     @property
-    def algorithm(self):
+    def algorithm(self) -> CustomAlgorithm:
         return self._algorithm
 
     @algorithm.setter
-    def algorithm(self, value):
+    def algorithm(self, value: CustomAlgorithm):
         self._algorithm = value
 
     def __init__(
         self,
         algorithm_class: Type[CustomAlgorithm] = QLearning,
-        algorithm_parameters: Dict = None,
+        algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of custom implemented algorithms.
 
         Args:
-            algorithm_class (Type[Algorithm]): Class of custom implemented Algorithm.
+            algorithm_class (Type[CustomAlgorithm]): Class of custom implemented Algorithm.
                 Specifies the algorithm for RL training.
                 Defaults to Q-Learning.
             algorithm_parameters (Dict): Parameters / keyword arguments for the specified Algorithm class.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
 
-        if algorithm_parameters is None:
-            algorithm_parameters = {}
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
-        self.algorithm = algorithm_class(**algorithm_parameters)
+        self.algorithm = self.algorithm_class(**self.algorithm_parameters, features_extractor=self.features_extractor)
 
     def train(
         self,
-        training_environments: List[gym.Env, pettingzoo.ParallelEnv],
         total_timesteps: int,
         connector: Optional[Connector] = None,
+        training_environments: List[gym.Env] = None,
         *args,
         **kwargs,
     ):
@@ -60,10 +69,22 @@ class CustomAgent(Agent):
                 Calls need to be declared manually in the code.
         """
 
+        if not training_environments:
+            raise ValueError("No training environments have been provided to the train-method.")
+
+        if not connector:
+            connector = DummyConnector()
+
+        if self.features_extractor:
+            training_environments = [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in training_environments
+            ]
+
         self.algorithm.train(
+            connector=connector,
             training_environments=training_environments,
             total_timesteps=total_timesteps,
-            connector=connector,
             *args,
             **kwargs,
         )

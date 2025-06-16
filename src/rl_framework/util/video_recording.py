@@ -9,14 +9,14 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecVideoRecord
 
 
 def record_video(
-    agent, evaluation_environment, file_path: Path, fps: int = 1, video_length=1000, sb3_replay: bool = True
+    agent, video_recording_environment, file_path: Path, fps: int = 1, video_length=1000, sb3_replay: bool = True
 ):
     """
     Generate a replay video of the agent.
 
     Args:
         agent (Agent): Agent to record video for.
-        evaluation_environment (Environment): Environment used for evaluation and clip creation.
+        video_recording_environment (Environment): Environment used for clip creation.
         file_path (Path): Path where video should be saved to.
         fps (int): How many frame per seconds to record the video replay.
         video_length (int): How many time steps of the agent should be recorded
@@ -27,14 +27,14 @@ def record_video(
 
     if sb3_replay:
         # Create a Stable-baselines3 vector environment (VecEnv)
-        if not isinstance(evaluation_environment, VecEnv):
-            evaluation_environment = DummyVecEnv([lambda: evaluation_environment])
+        if not isinstance(video_recording_environment, VecEnv):
+            video_recording_environment = DummyVecEnv([lambda: video_recording_environment])
 
         # This is another temporary directory for video outputs (replay video file will be copied to repository path).
         # Copying is required, since SB3 creates other files which we don't want in the repo.
         with tempfile.TemporaryDirectory() as tmpdirname:
             env = VecVideoRecorder(
-                evaluation_environment,
+                video_recording_environment,
                 tmpdirname,
                 record_video_trigger=lambda x: x == 0,
                 video_length=video_length,
@@ -54,7 +54,7 @@ def record_video(
                 env.close()
 
                 # Convert the video with x264 codec
-                inp = env.video_recorder.path
+                inp = env.video_path
                 out = file_path
                 os.system(f"ffmpeg -y -i {inp} -vcodec h264 {out}")
 
@@ -66,8 +66,8 @@ def record_video(
         images = []
         while len(images) < video_length:
             done = False
-            observation, _ = evaluation_environment.reset()
-            img = evaluation_environment.render()
+            observation, _ = video_recording_environment.reset()
+            img = video_recording_environment.render()
             images.append(img)
             while not done:
                 action = agent.choose_action(observation)
@@ -77,8 +77,8 @@ def record_video(
                     terminated,
                     truncated,
                     info,
-                ) = evaluation_environment.step(action)
+                ) = video_recording_environment.step(action)
                 done = terminated or truncated
-                img = evaluation_environment.render()
+                img = video_recording_environment.render()
                 images.append(img)
         imageio.mimsave(file_path, [np.array(img) for i, img in enumerate(images)], fps=fps)

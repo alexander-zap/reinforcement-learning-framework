@@ -10,8 +10,14 @@ import numpy as np
 import pettingzoo
 from tqdm import tqdm
 
-from rl_framework.agent.custom_algorithms.base_custom_algorithm import CustomAlgorithm
-from rl_framework.util import Connector
+from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
+    CustomAlgorithm,
+)
+from rl_framework.util import (
+    Connector,
+    FeaturesExtractor,
+    encode_observations_with_features_extractor,
+)
 
 
 class QLearning(CustomAlgorithm):
@@ -32,6 +38,7 @@ class QLearning(CustomAlgorithm):
         epsilon: float = 1.0,
         epsilon_min: float = 0.05,
         randomize_q_table: bool = True,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an Q-Learning agent which will be trained.
@@ -41,6 +48,7 @@ class QLearning(CustomAlgorithm):
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.n_actions = n_actions
+        self.features_extractor = features_extractor
 
         if randomize_q_table:
             self.q_table = np.random.random_sample((n_observations, n_actions)) * 0.1
@@ -64,6 +72,13 @@ class QLearning(CustomAlgorithm):
             reward (float): Reward for executing action at in state St
 
         """
+        if self.features_extractor:
+            # [0][0] since we expect a single discretized value for Q-Learning
+            prev_observation = encode_observations_with_features_extractor([prev_observation], self.features_extractor)[
+                0
+            ][0]
+            observation = encode_observations_with_features_extractor([observation], self.features_extractor)[0][0]
+
         q_old = self._q_table[prev_observation, prev_action]
         q_new = (1 - self.alpha) * q_old + self.alpha * (reward + self.gamma * np.max(self._q_table[observation]))
         self._q_table[prev_observation, prev_action] = q_new
@@ -80,14 +95,17 @@ class QLearning(CustomAlgorithm):
         Returns: action (int): Action to take according to policy.
 
         """
+        if self.features_extractor:
+            # [0][0] since we expect a single discretized value for Q-Learning
+            observation = encode_observations_with_features_extractor([observation], self.features_extractor)[0][0]
 
         return np.argmax(self._q_table[observation])
 
     def train(
         self,
-        training_environments: List[gym.Env, pettingzoo.ParallelEnv],
+        connector: Connector,
+        training_environments: List[gym.Env],
         total_timesteps: int,
-        connector: Optional[Connector] = None,
         *args,
         **kwargs,
     ):
@@ -171,7 +189,7 @@ class QLearning(CustomAlgorithm):
                 episode_reward += reward
                 # TODO: Replay sampling strategy is currently hard-coded as on-line.
                 #   Instead: Pass replay sampling strategy from outside (as Memory-class).
-                self._update_q_table(prev_observation, prev_action, observation, reward)
+                self._update_q_table(prev_observation, prev_action, observation, float(reward))
 
                 prev_observation = observation
                 prev_action = action
@@ -188,8 +206,8 @@ class QLearning(CustomAlgorithm):
                     )
 
                     if connector:
-                        connector.log_value(current_timestep, episode_reward, "Episode reward")
-                        connector.log_value(current_timestep, self.epsilon, "Epsilon")
+                        connector.log_value_with_timestep(current_timestep, episode_reward, "Episode reward")
+                        connector.log_value_with_timestep(current_timestep, self.epsilon, "Epsilon")
 
         tqdm_progress_bar.close()
 

@@ -1,25 +1,33 @@
 import logging
 import tempfile
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
 import gymnasium
-import numpy as np
 import pettingzoo
 import stable_baselines3
 import supersuit as ss
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
-from rl_framework.agent.base_agent import Agent
-from rl_framework.util import Connector
+from rl_framework.agent.reinforcement_learning_agent import RLAgent
+from rl_framework.util import (
+    Connector,
+    DummyConnector,
+    FeaturesExtractor,
+    LoggingCallback,
+    SavingCallback,
+    get_sb3_policy_kwargs_for_features_extractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
 
 
-class StableBaselinesAgent(Agent):
+class StableBaselinesAgent(RLAgent):
     @property
     def algorithm(self) -> BaseAlgorithm:
         return self._algorithm
@@ -31,7 +39,8 @@ class StableBaselinesAgent(Agent):
     def __init__(
         self,
         algorithm_class: Type[BaseAlgorithm] = stable_baselines3.PPO,
-        algorithm_parameters: Dict = None,
+        algorithm_parameters: Optional[Dict] = None,
+        features_extractor: Optional[FeaturesExtractor] = None,
     ):
         """
         Initialize an agent which will trained on one of Stable-Baselines3 algorithms.
@@ -43,10 +52,12 @@ class StableBaselinesAgent(Agent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
+            features_extractor: When provided, specifies the observation processor to be
+                    used before the action/value prediction network.
         """
-        self.algorithm_class: Type[BaseAlgorithm] = algorithm_class
+        super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
-        self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+        self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -59,9 +70,9 @@ class StableBaselinesAgent(Agent):
 
     def train(
         self,
-        training_environments: List[Union[gymnasium.Env, pettingzoo.ParallelEnv]],
         total_timesteps: int = 100000,
         connector: Optional[Connector] = None,
+        training_environments: List[Union[gymnasium.Env, pettingzoo.ParallelEnv]] = None,
         *args,
         **kwargs,
     ):
@@ -80,67 +91,20 @@ class StableBaselinesAgent(Agent):
                 on training time. Calls need to be declared manually in the code.
         """
 
-        class LoggingCallback(BaseCallback):
-            """
-            A custom callback that logs episode rewards after every done episode.
-            """
-
-            def __init__(self, verbose=0):
-                """
-                Args:
-                    verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
-                """
-                super().__init__(verbose)
-                self.episode_reward = np.zeros(len(training_environments))
-
-            def _on_step(self) -> bool:
-                """
-                This method will be called by the model after each call to `env.step()`.
-                If the callback returns False, training is aborted early.
-                """
-                self.episode_reward += self.locals["rewards"]
-                done_indices = np.where(self.locals["dones"] == True)[0]
-                if done_indices.size != 0:
-                    for done_index in done_indices:
-                        if not self.locals["infos"][done_index].get("discard", False):
-                            connector.log_value(self.num_timesteps, self.episode_reward[done_index], "Episode reward")
-                            self.episode_reward[done_index] = 0
-
-                return True
-
-        class SavingCallback(BaseCallback):
-            """
-            A custom callback which uploads the agent to the connector after every `checkpoint_frequency` steps.
-            """
-
-            def __init__(self, agent, checkpoint_frequency=50000, verbose=0):
-                """
-                Args:
-                    checkpoint_frequency: After how many steps a checkpoint should be saved to the connector.
-                    verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
-                """
-                super().__init__(verbose)
-                self.agent = agent
-                self.checkpoint_frequency = checkpoint_frequency
-                self.next_upload = self.checkpoint_frequency
-
-            def _on_step(self) -> bool:
-                """
-                This method will be called by the model after each call to `env.step()`.
-                If the callback returns False, training is aborted early.
-                """
-                if self.num_timesteps > self.next_upload:
-                    connector.upload(
-                        agent=self.agent,
-                        evaluation_environment=training_environments[0],
-                        checkpoint_id=self.num_timesteps,
-                    )
-                    self.next_upload = self.num_timesteps + self.checkpoint_frequency
-
-                return True
-
         def make_env(index: int):
             return training_environments[index]
+
+        if not training_environments:
+            raise ValueError("No training environments have been provided to the train-method.")
+
+        if not connector:
+            connector = DummyConnector()
+
+        if self.features_extractor:
+            training_environments = [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in training_environments
+            ]
 
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
 
@@ -167,7 +131,12 @@ class StableBaselinesAgent(Agent):
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         if self.algorithm_needs_initialization:
-            self.algorithm = self.algorithm_class(env=vectorized_environment, **self.algorithm_parameters)
+            parameters = defaultdict(dict, {**self.algorithm_parameters})
+            if self.features_extractor:
+                parameters["policy_kwargs"].update(
+                    get_sb3_policy_kwargs_for_features_extractor(self.features_extractor)
+                )
+            self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
             self.algorithm_needs_initialization = False
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:
@@ -177,7 +146,7 @@ class StableBaselinesAgent(Agent):
                     path=tmp_path, env=vectorized_environment, custom_objects=self.algorithm_parameters
                 )
 
-        callback_list = CallbackList([SavingCallback(self), LoggingCallback()])
+        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
 
         vectorized_environment.close()
@@ -193,22 +162,23 @@ class StableBaselinesAgent(Agent):
             observation (object): Observation of the environment
             deterministic (bool): Whether the action should be determined in a deterministic or stochastic way.
 
-        Returns: action (int): Action to take according to policy.
+        Returns: action: Action to take according to policy.
 
         """
 
-        # SB3 model expects multiple observations as input and will output an array of actions as output
         (
             action,
             _,
         ) = self.algorithm.predict(
-            [observation],
+            observation,
             deterministic=deterministic,
         )
-        return action[0]
+        if not action.shape:
+            action = action.item()
+        return action
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
-        """Save the agent to a folder (for later loading).
+        """Save the agent to a file (for later loading).
 
         Args:
             file_path (Path): The file where the agent should be saved to (SB3 expects a file name ending with .zip).
@@ -221,10 +191,11 @@ class StableBaselinesAgent(Agent):
         Args:
             file_path (Path): The model filename (file ending with .zip).
             algorithm_parameters: Parameters to be set for the loaded algorithm.
+                Providing None leads to keeping the previously set parameters.
         """
         if algorithm_parameters:
             self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
-        self.algorithm = self.algorithm_class.load(path=file_path, env=None, custom_objects=self.algorithm_parameters)
+        self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
         self.algorithm_needs_initialization = False
 
     @staticmethod
@@ -242,8 +213,8 @@ class StableBaselinesAgent(Agent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
-        if algorithm_parameters is None:
-            algorithm_parameters = {"policy": "MlpPolicy"}
+        if "policy" not in algorithm_parameters:
+            algorithm_parameters.update({"policy": "MlpPolicy"})
 
         # Existing tensorboard log paths can be used (e.g., for continuing training of downloaded agents).
         # If not provided, tensorboard will be logged to newly created temp dir.
