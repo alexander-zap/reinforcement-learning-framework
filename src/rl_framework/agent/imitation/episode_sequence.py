@@ -120,9 +120,6 @@ class EpisodeSequence(Sequence[T], Generic[T]):
     def __len__(self):
         return len(self._episodes)
 
-    def __iter__(self):
-        return iter(self._episodes)
-
     def __getitem__(self, index) -> T:
         raise self._episodes[index]
 
@@ -227,28 +224,38 @@ class EpisodeSequence(Sequence[T], Generic[T]):
     # FIXME: Since EpisodeSequence is now memory-efficient, using SizedGenerator does not make sense anymore.
     #   => Adjust agents to take EpisodeSequence instead of SizedGenerator.
 
-    def to_imitation_episodes(self) -> SizedGenerator[imitation.data.types.TrajectoryWithRew]:
-        def generate_imitation_episodes():
-            while True:
-                for episode in self._episodes:
-                    yield episode
+    def generate_episodes(self):
+        while True:
+            for episode in self:
+                yield episode
 
-        return SizedGenerator(generate_imitation_episodes(), len(self), True)
+    def to_imitation_episodes(self) -> SizedGenerator[imitation.data.types.TrajectoryWithRew]:
+        return SizedGenerator(self.generate_episodes(), len(self), True)
 
     def to_d3rlpy_episodes(self) -> SizedGenerator[d3rlpy.dataset.components.Episode]:
-        def generate_d3rlpy_episodes():
-            while True:
-                for episode in self._episodes:
-                    yield generate_d3rlpy_episode_from_generic_episode(
-                        generate_generic_episode_from_imitation_trajectory(episode)
-                    )
+        class WrappedEpisodeSequence(EpisodeSequence):
+            def __init__(self, episodes: Sequence[imitation.data.types.TrajectoryWithRew]):
+                super().__init__()
+                self._episodes = episodes
 
-        return SizedGenerator(generate_d3rlpy_episodes(), len(self), True)
+            def __getitem__(self, index):
+                e = self._episodes[index]
+                generic_episode = generate_generic_episode_from_imitation_trajectory(e)
+                return generate_d3rlpy_episode_from_generic_episode(generic_episode)
+
+        episode_sequence = WrappedEpisodeSequence(self._episodes)
+        return SizedGenerator(episode_sequence.generate_episodes(), len(episode_sequence), True)
 
     def to_generic_episodes(self) -> SizedGenerator[GenericEpisode]:
-        def generate_generic_episodes():
-            while True:
-                for episode in self._episodes:
-                    yield generate_generic_episode_from_imitation_trajectory(episode)
+        class WrappedEpisodeSequence(EpisodeSequence):
+            def __init__(self, episodes: Sequence[imitation.data.types.TrajectoryWithRew]):
+                super().__init__()
+                self._episodes = episodes
 
-        return SizedGenerator(generate_generic_episodes(), len(self), True)
+            def __getitem__(self, index):
+                e = self._episodes[index]
+                generic_episode = generate_generic_episode_from_imitation_trajectory(e)
+                return generic_episode
+
+        episode_sequence = WrappedEpisodeSequence(self._episodes)
+        return SizedGenerator(episode_sequence.generate_episodes(), len(episode_sequence), True)
