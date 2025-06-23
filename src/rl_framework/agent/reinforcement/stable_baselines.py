@@ -1,19 +1,20 @@
-import logging
 import tempfile
 from collections import defaultdict
 from functools import partial
+from os import cpu_count
 from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
 import gymnasium
 import pettingzoo
 import stable_baselines3
-import supersuit as ss
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env.base_vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, VecMonitor
+from supersuit.vector import MakeCPUAsyncConstructor, MarkovVectorEnv
+from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
 
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
@@ -92,8 +93,8 @@ class StableBaselinesAgent(RLAgent):
                 on training time. Calls need to be declared manually in the code.
         """
 
-        def make_env(index: int):
-            return training_environments[index]
+        def make_env(env_list: list, index: int):
+            return env_list[index]
 
         if not training_environments:
             raise ValueError("No training environments have been provided to the train-method.")
@@ -108,25 +109,24 @@ class StableBaselinesAgent(RLAgent):
             ]
 
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
+            vector_envs = []
+            for pettingzoo_environment in training_environments:
+                vector_env = MarkovVectorEnv(pettingzoo_environment, black_death=True)
+                vector_envs.append(vector_env)
 
-            def pettingzoo_environment_to_vectorized_environment(pettingzoo_environment: pettingzoo.ParallelEnv):
-                env = ss.black_death_v3(pettingzoo_environment)
-                env = ss.pettingzoo_env_to_vec_env_v1(env)
-                env = ss.concat_vec_envs_v1(env, 1, num_cpus=1, base_class="stable_baselines3")
-                return env
+            environment_return_functions = [
+                partial(make_env, vector_envs, env_index) for env_index in range(len(vector_envs))
+            ]
 
-            if len(training_environments) > 1:
-                logging.warning(
-                    f"Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
-                    f"training on multiple multi-agent environments in parallel. Continuing with one environment as "
-                    f"training environment."
-                )
-
-            vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
+            vectorized_environment = MakeCPUAsyncConstructor(min(cpu_count(), len(environment_return_functions)))(
+                environment_return_functions, vector_envs[0].observation_space, vector_envs[0].action_space
+            )
+            vectorized_environment = SB3VecEnvWrapper(vectorized_environment)
+            vectorized_environment = VecMonitor(vectorized_environment)
         else:
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
-                partial(make_env, env_index) for env_index in range(len(training_environments))
+                partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
             ]
 
             # noinspection PyCallingNonCallable
