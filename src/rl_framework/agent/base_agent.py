@@ -121,9 +121,9 @@ class Agent(ABC):
                         episode_rewards.append(episode_reward)
                         break
 
-            mean_reward = np.mean(episode_rewards)
-            std_reward = np.std(episode_rewards)
-            return mean_reward, std_reward
+        mean_reward = np.mean(episode_rewards)
+        std_reward = np.std(episode_rewards)
+        return mean_reward, std_reward
 
     @abstractmethod
     def choose_action(self, observation: object, deterministic: bool, *args, **kwargs):
