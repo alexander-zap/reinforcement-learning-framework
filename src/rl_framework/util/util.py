@@ -1,5 +1,7 @@
 import d3rlpy.torch_utility
 import datasets.filesystems
+import torch as th
+from imitation.util import util
 
 
 # Monkey-patch the function since it fails to detect local file as tuple protocol
@@ -30,3 +32,12 @@ def patch_d3rlpy():
         raise ValueError(f"invalid device={device}")
 
     d3rlpy.torch_utility.map_location = map_location
+
+
+def patch_imitation_safe_to_tensor():
+    def patched_safe_to_tensor(array, **kwargs):
+        array = old_safe_to_tensor(array, **kwargs)
+        return th.as_tensor(array, **kwargs)
+
+    old_safe_to_tensor = util.safe_to_tensor
+    util.safe_to_tensor = patched_safe_to_tensor

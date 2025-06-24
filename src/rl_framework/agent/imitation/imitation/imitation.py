@@ -16,7 +16,10 @@ from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
-from rl_framework.agent.imitation.episode_sequence import EpisodeSequence
+from rl_framework.agent.imitation.episode_sequence import (
+    EpisodeSequence,
+    WrappedEpisodeSequence,
+)
 from rl_framework.agent.imitation.imitation.algorithms import (
     AIRLAlgorithmWrapper,
     AlgorithmWrapper,
@@ -32,9 +35,11 @@ from rl_framework.util import (
     FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
-    SizedGenerator,
+    patch_imitation_safe_to_tensor,
     wrap_environment_with_features_extractor_preprocessor,
 )
+
+patch_imitation_safe_to_tensor()
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,
@@ -119,8 +124,8 @@ class ImitationAgent(ILAgent):
         if not connector:
             connector = DummyConnector()
 
-        trajectories: SizedGenerator[TrajectoryWithRew] = episode_sequence.to_imitation_episodes()
-        validation_trajectories: SizedGenerator[TrajectoryWithRew] = (
+        trajectories: EpisodeSequence[TrajectoryWithRew] = episode_sequence.to_imitation_episodes()
+        validation_trajectories: EpisodeSequence[TrajectoryWithRew] = (
             validation_episode_sequence.to_imitation_episodes() if validation_episode_sequence else None
         )
 
@@ -131,31 +136,28 @@ class ImitationAgent(ILAgent):
 
         if self.features_extractor:
 
-            def preprocess_imitation_episodes(trajectories):
+            def preprocess_observations_with_features_extractor(trajectory: TrajectoryWithRew) -> TrajectoryWithRew:
+                """
+                Convert a TrajectoryWithRew to a TrajectoryWithRew with preprocessed observations.
+                """
+
                 def preprocess_observations(observations):
                     preprocessed_observations = self.features_extractor.preprocess(observations)
                     if isinstance(preprocessed_observations[0], dict):
                         preprocessed_observations = DictObs.from_obs_list(preprocessed_observations.tolist())
                     return preprocessed_observations
 
-                for trajectory in trajectories:
-                    yield TrajectoryWithRew(
-                        obs=preprocess_observations(trajectory.obs),
-                        acts=trajectory.acts,
-                        rews=trajectory.rews,
-                        infos=trajectory.infos,
-                        terminal=trajectory.terminal,
-                    )
-
-            trajectories = SizedGenerator(
-                preprocess_imitation_episodes(trajectories), size=len(trajectories), looping=trajectories.looping
-            )
-            validation_trajectories = (
-                SizedGenerator(
-                    preprocess_imitation_episodes(validation_trajectories),
-                    size=len(validation_trajectories),
-                    looping=validation_trajectories.looping,
+                return TrajectoryWithRew(
+                    obs=preprocess_observations(trajectory.obs),
+                    acts=trajectory.acts,
+                    rews=trajectory.rews,
+                    infos=trajectory.infos,
+                    terminal=trajectory.terminal,
                 )
+
+            trajectories = WrappedEpisodeSequence(trajectories, preprocess_observations_with_features_extractor)
+            validation_trajectories = (
+                WrappedEpisodeSequence(validation_trajectories, preprocess_observations_with_features_extractor)
                 if validation_trajectories
                 else None
             )

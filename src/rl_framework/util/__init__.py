@@ -17,12 +17,11 @@ from .features_extractor_utils import (
     get_sb3_policy_kwargs_for_features_extractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
-from .imitation_data_loader import create_memory_efficient_transition_batcher
 from .sb3_training_callbacks import (
     LoggingCallback,
     SavingCallback,
     add_callbacks_to_callback,
 )
 from .types import SizedGenerator
-from .util import patch_d3rlpy, patch_datasets
+from .util import patch_d3rlpy, patch_datasets, patch_imitation_safe_to_tensor
 from .video_recording import record_video

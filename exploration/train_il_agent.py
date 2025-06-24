@@ -82,7 +82,10 @@ if __name__ == "__main__":
     if OFFLINE_RL:
         agent = D3RLPYAgent(algorithm_class=d3rlpy.algos.DQN, algorithm_parameters={"device": "cuda", "batch_size": 64})
     else:
-        agent = ImitationAgent(algorithm_class=imitation.algorithms.bc.BC, algorithm_parameters={"minibatch_size": 16})
+        agent = ImitationAgent(
+            algorithm_class=imitation.algorithms.bc.BC,
+            algorithm_parameters={"minibatch_size": 16, "rl_algo_type": "PPO", "policy_type": "ActorCriticPolicy"},
+        )
 
     if DOWNLOAD_EXISTING_AGENT:
         # Download existing agent from repository
