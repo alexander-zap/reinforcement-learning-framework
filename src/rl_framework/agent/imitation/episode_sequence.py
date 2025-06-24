@@ -1,5 +1,5 @@
 import uuid
-from typing import Generator, Generic, List, Sequence, Tuple, TypeVar, cast
+from typing import Callable, Generator, Generic, List, Sequence, Tuple, TypeVar, cast
 
 import d3rlpy
 import datasets
@@ -13,94 +13,18 @@ from imitation.data.huggingface_utils import (
     trajectories_to_dict,
 )
 
-from rl_framework.util import SizedGenerator, patch_datasets
+from rl_framework.util import patch_datasets
 
 patch_datasets()
 
 GenericEpisode = List[Tuple[object, object, object, float, bool, bool, dict]]
 
-T = TypeVar("T")
-IN = TypeVar("IN")
-OUT = TypeVar("OUT")
 
-"""
-
-to_sequence(converter: Converter[T]) -> EpisodeSequence[T]
-
-ReadConverter[T] (z.b. from_dataset wäre das TrajectoryWithReward)
-WriteConverter[T] (z.b.: db3ddingsi)
-
-If ReadConverter == WriteConverter: skip
-else: WriteConverter(ReadConverter)
-
-
-"""
-
-# CONVERTER_REGISTRY = {
-#     "GENERIC": GenericEpisodeConverter,
-#     "IMITATION": ImitationConverter,
-#     "D3RLPY": D3RLPYConverter
-# }
-#
-#
-# class Converter(Generic[IN, OUT]):
-#     def __init__(self, converter: str):
-#         self.converter = CONVERTER_REGISTRY[converter]()
-#
-#     def __call__(self, episode: IN) -> OUT:
-#         return self.converter(episode)
-
-
-def generate_generic_episode_from_imitation_trajectory(
-    trajectory: imitation.data.types.TrajectoryWithRew,
-) -> GenericEpisode:
-    obs = trajectory.obs[:-1]
-    acts = trajectory.acts
-    rews = trajectory.rews
-    next_obs = trajectory.obs[1:]
-    terminations = np.zeros(len(trajectory.acts), dtype=bool)
-    truncations = np.zeros(len(trajectory.acts), dtype=bool)
-    terminations[-1] = trajectory.terminal
-    truncations[-1] = not trajectory.terminal
-    infos = np.array([{}] * len(trajectory)) if trajectory.infos is None else trajectory.infos
-    episode: GenericEpisode = list(zip(*[obs, acts, next_obs, rews, terminations, truncations, infos]))
-    return episode
-
-
-def generate_imitation_trajectory_from_generic_episode(
-    generic_episode: GenericEpisode,
-) -> imitation.data.types.TrajectoryWithRew:
-    observations, actions, next_observations, rewards, terminations, truncations, infos = (
-        np.array(x) for x in list(zip(*generic_episode))
-    )
-    observations = np.expand_dims(observations, axis=1) if observations.ndim == 1 else observations
-    next_observations = np.expand_dims(next_observations, axis=1) if next_observations.ndim == 1 else next_observations
-    all_observations = np.vstack([observations, next_observations[-1:]])
-    episode_trajectory = imitation.data.types.TrajectoryWithRew(
-        obs=all_observations, acts=actions, rews=rewards, infos=infos, terminal=terminations[-1]
-    )
-    return episode_trajectory
-
-
-def generate_d3rlpy_episode_from_generic_episode(generic_episode: GenericEpisode) -> d3rlpy.dataset.components.Episode:
-    observations, actions, next_observations, rewards, terminations, truncations, infos = (
-        np.array(x) for x in list(zip(*generic_episode))
-    )
-    rewards = np.expand_dims(rewards, axis=1)
-    actions = np.expand_dims(actions, axis=1) if actions.ndim == 1 else actions
-    episode = d3rlpy.dataset.components.Episode(
-        observations=observations,
-        actions=actions,
-        rewards=rewards,
-        terminated=terminations[-1],
-    )
-    return episode
-
-
-class EpisodeSequence(Sequence[T], Generic[T]):
+class EpisodeSequence(Sequence):
     """
     Class to load, transform and access episodes, optimized for memory efficiency.
         - Using HuggingFace datasets for memory-efficient data management (using arrow datasets under the hood)
+        - Using imitation.data.TrajectoryWithRew as the internal episode format (and as the format to load from)
         - Using converters for format changing transformations
 
     Each episode consists of a sequence, which has the following format:
@@ -120,15 +44,11 @@ class EpisodeSequence(Sequence[T], Generic[T]):
     def __len__(self):
         return len(self._episodes)
 
-    def __iter__(self):
-        return iter(self._episodes)
-
-    def __getitem__(self, index) -> T:
-        raise self._episodes[index]
+    def __getitem__(self, index) -> imitation.data.types.TrajectoryWithRew:
+        return self._episodes[index]
 
     @staticmethod
     def from_episode_generator(
-        # FIXME: Type should be T
         episode_generator: Generator[imitation.data.types.TrajectoryWithRew, None, None],
         n_episodes: int,
     ) -> "EpisodeSequence":
@@ -136,7 +56,7 @@ class EpisodeSequence(Sequence[T], Generic[T]):
         Initialize an EpisodeSequence based on a provided episode generator.
 
         Args:
-            episode_generator (Generator): Custom episode generator generating episodes of type T.
+            episode_generator (Generator): Custom episode generator generating episodes of type TrajectoryWithRew.
             n_episodes (int): Amount of episodes the generator will generate (to limit infinite generators).
 
         Returns:
@@ -177,7 +97,7 @@ class EpisodeSequence(Sequence[T], Generic[T]):
         Initialize an EpisodeSequence based on a sequence of episode objects.
 
         Args:
-            episodes (Sequence): Sequence of episodes of type T.
+            episodes (Sequence): Sequence of episodes of type TrajectoryWithRew.
 
         Returns:
             episode_sequence: Representation of episode sequence (this class).
@@ -224,31 +144,99 @@ class EpisodeSequence(Sequence[T], Generic[T]):
         """
         serialize.save(file_path, self._episodes)
 
-    # FIXME: Since EpisodeSequence is now memory-efficient, using SizedGenerator does not make sense anymore.
-    #   => Adjust agents to take EpisodeSequence instead of SizedGenerator.
+    def to_imitation_episodes(self) -> "EpisodeSequence[imitation.data.types.TrajectoryWithRew]":
+        return self
 
-    def to_imitation_episodes(self) -> SizedGenerator[imitation.data.types.TrajectoryWithRew]:
-        def generate_imitation_episodes():
-            while True:
-                for episode in self._episodes:
-                    yield episode
+    def to_d3rlpy_episodes(self) -> "WrappedEpisodeSequence[d3rlpy.dataset.components.Episode]":
+        def generate_d3rlpy_episode_from_imitation_trajectory(
+            trajectory: imitation.data.types.TrajectoryWithRew,
+        ) -> d3rlpy.dataset.components.Episode:
+            observations = np.array(trajectory.obs[:-1])
 
-        return SizedGenerator(generate_imitation_episodes(), len(self), True)
+            rewards = np.expand_dims(np.array(trajectory.rews), axis=1)
 
-    def to_d3rlpy_episodes(self) -> SizedGenerator[d3rlpy.dataset.components.Episode]:
-        def generate_d3rlpy_episodes():
-            while True:
-                for episode in self._episodes:
-                    yield generate_d3rlpy_episode_from_generic_episode(
-                        generate_generic_episode_from_imitation_trajectory(episode)
-                    )
+            actions = np.array(trajectory.acts)
+            actions = np.expand_dims(actions, axis=1) if actions.ndim == 1 else actions
 
-        return SizedGenerator(generate_d3rlpy_episodes(), len(self), True)
+            d3rlpy_episode = d3rlpy.dataset.components.Episode(
+                observations=observations,
+                actions=actions,
+                rewards=rewards,
+                terminated=trajectory.terminal,
+            )
+            return d3rlpy_episode
 
-    def to_generic_episodes(self) -> SizedGenerator[GenericEpisode]:
-        def generate_generic_episodes():
-            while True:
-                for episode in self._episodes:
-                    yield generate_generic_episode_from_imitation_trajectory(episode)
+        episode_sequence = WrappedEpisodeSequence(
+            self._episodes, conversion_function=generate_d3rlpy_episode_from_imitation_trajectory
+        )
+        return episode_sequence
 
-        return SizedGenerator(generate_generic_episodes(), len(self), True)
+    def to_generic_episodes(self) -> "WrappedEpisodeSequence[GenericEpisode]":
+        def generate_generic_episode_from_imitation_trajectory(
+            trajectory: imitation.data.types.TrajectoryWithRew,
+        ) -> GenericEpisode:
+            obs = trajectory.obs[:-1]
+            acts = trajectory.acts
+            rews = trajectory.rews
+            next_obs = trajectory.obs[1:]
+            terminations = np.zeros(len(trajectory.acts), dtype=bool)
+            truncations = np.zeros(len(trajectory.acts), dtype=bool)
+            terminations[-1] = trajectory.terminal
+            truncations[-1] = not trajectory.terminal
+            infos = np.array([{}] * len(trajectory)) if trajectory.infos is None else trajectory.infos
+            episode: GenericEpisode = list(zip(*[obs, acts, next_obs, rews, terminations, truncations, infos]))
+            return episode
+
+        episode_sequence = WrappedEpisodeSequence(
+            self._episodes, conversion_function=generate_generic_episode_from_imitation_trajectory
+        )
+        return episode_sequence
+
+
+T = TypeVar("T")
+T_CHANGED = TypeVar("T_CHANGED")
+
+
+class WrappedEpisodeSequence(EpisodeSequence, Generic[T]):
+    """
+    Wrapper for EpisodeSequence to convert imitation episodes to various other formats,
+        while keeping the memory-efficient properties of EpisodeSequence
+        (using huggingface.datasets implementation with pyarrow datasets).
+
+    Functionality:
+        - Modify __getitem__ method to convert imitation episodes to any other format.
+    """
+
+    def __init__(
+        self,
+        episodes: Sequence[imitation.data.types.TrajectoryWithRew],
+        conversion_function: Callable[[imitation.data.types.TrajectoryWithRew], T],
+    ):
+        super().__init__()
+        self._episodes: Sequence[imitation.data.types.TrajectoryWithRew] = episodes
+        self._conversion_function = conversion_function
+
+    def __getitem__(self, index) -> T:
+        e = self._episodes[index]
+        return self._conversion_function(e)
+
+    def episode_sequence_from_additional_conversion(
+        self, additional_conversion_function: Callable[[T], T_CHANGED]
+    ) -> "WrappedEpisodeSequence[T_CHANGED]":
+        """
+        Wrap the current episode sequence with a new conversion function.
+
+        Args:
+            additional_conversion_function (Callable):
+                Function to convert episodes (of type T) to another format (type T_CHANGED).
+
+        Returns:
+            WrappedEpisodeSequence: New episode sequence with the specified conversion function on top.
+        """
+
+        def new_conversion_function(episode: imitation.data.types.TrajectoryWithRew) -> T_CHANGED:
+            episode_with_old_conversion: T = self._conversion_function(episode)
+            episode_with_new_conversion: T_CHANGED = additional_conversion_function(episode_with_old_conversion)
+            return episode_with_new_conversion
+
+        return WrappedEpisodeSequence(self._episodes, new_conversion_function)

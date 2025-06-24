@@ -4,7 +4,7 @@ import math
 import pickle
 from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Type, Union
+from typing import Any, Dict, List, Optional, Type
 
 import d3rlpy.dataset
 import gymnasium as gym
@@ -67,26 +67,21 @@ from d3rlpy.algos import (
     TD3PlusBCConfig,
 )
 from d3rlpy.base import LearnableBase, LearnableConfig, LearnableConfigWithShape
-from d3rlpy.dataset import (
-    BufferProtocol,
-    PartialTrajectory,
-    ReplayBuffer,
-    Transition,
-    dump,
-)
-from d3rlpy.logging import LOG, LoggerAdapter, LoggerAdapterFactory
-from d3rlpy.types import NDArray, Observation
+from d3rlpy.dataset import ReplayBuffer
+from d3rlpy.logging import LoggerAdapter, LoggerAdapterFactory
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
-from rl_framework.agent.imitation.episode_sequence import EpisodeSequence
+from rl_framework.agent.imitation.episode_sequence import (
+    EpisodeSequence,
+    WrappedEpisodeSequence,
+)
 from rl_framework.agent.imitation_learning_agent import Agent, ILAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
     FeaturesExtractor,
-    SizedGenerator,
     patch_d3rlpy,
     wrap_environment_with_features_extractor_preprocessor,
 )
@@ -165,111 +160,6 @@ class ConnectorAdapter(LoggerAdapter):
         pass
 
 
-class GeneratorReplayBuffer(ReplayBuffer):
-    """
-    This replay buffer is a memory-efficient buffer that is initialized with a generator of episodes.
-    The main down-side is that "random access" of transitions and trajectories is not random,
-    but comes in the order of episodes in the generator.
-    """
-
-    def __init__(
-        self,
-        episode_generator: Optional[SizedGenerator[d3rlpy.dataset.Episode]],
-        episodes: Optional[Sequence[d3rlpy.dataset.Episode]] = None,
-        env: Optional[gym.Env] = None,
-        *args,
-        **kwargs,
-    ):
-        if not env:
-            raise BufferError(
-                "Environment must be provided to the GeneratorReplayBuffer to determine "
-                "observation/action/reward properties."
-            )
-
-        self._transition_count_cached = None
-
-        if episode_generator:
-            self._episode_generator = episode_generator
-        elif episodes:
-
-            def generator_from_sequence(sequence):
-                for elem in sequence:
-                    yield elem
-
-            self._episode_generator = SizedGenerator(
-                generator_from_sequence(episodes), size=len(episodes), looping=True
-            )
-        else:
-            raise BufferError("Episodes must be provided to the GeneratorReplayBuffer (later appending not possible).")
-
-        self._current_episode: d3rlpy.dataset.Episode = next(self._episode_generator)
-        self._current_transition_index: int = 0
-
-        class NotImplementedBuffer(BufferProtocol):
-            pass
-
-        # self._buffer should never be used. Passing a non-implemented buffer to raise an error if usage is attempted.
-        super().__init__(*args, buffer=NotImplementedBuffer(), episodes=None, env=env, **kwargs)
-
-    def cycle_episode(self):
-        self._current_episode = next(self._episode_generator)
-        self._current_transition_index = 0
-
-    def cycle_transition(self):
-        self._current_transition_index += 1
-        if self._current_transition_index > self._current_episode.transition_count - 1:
-            self.cycle_episode()
-
-    def append(
-        self,
-        observation: Observation,
-        action: Union[int, NDArray],
-        reward: Union[float, NDArray],
-    ) -> None:
-        raise BufferError("This buffer should not be extended. It is read-only.")
-
-    def append_episode(self, episode: d3rlpy.dataset.Episode) -> None:
-        raise BufferError("This buffer should not be extended. It is read-only.")
-
-    def clip_episode(self, terminated: bool) -> None:
-        raise BufferError("This buffer should not be extended. It is read-only.")
-
-    def sample_transition(self) -> Transition:
-        transition = self._transition_picker(self._current_episode, self._current_transition_index)
-        self.cycle_transition()
-        return transition
-
-    def sample_trajectory(self, length: int) -> PartialTrajectory:
-        trajectory_end_index = np.random.randint(self._current_episode.transition_count)
-        trajectory = self._trajectory_slicer(self._current_episode, trajectory_end_index, length)
-        self.cycle_episode()
-        return trajectory
-
-    def dump(self, f: BinaryIO) -> None:
-        dump(self.episodes, f)
-
-    @property
-    def episodes(self) -> Sequence[d3rlpy.dataset.Episode]:
-        LOG.warning("This operation is discouraged. Loading episodes into memory from memory-efficient buffer.")
-        episodes = []
-        for _ in range(len(self._episode_generator)):
-            episode = next(self._episode_generator)
-            episodes.append(episode)
-        return episodes
-
-    def size(self) -> int:
-        return len(self._episode_generator)
-
-    @property
-    def transition_count(self) -> int:
-        LOG.warning("Usage of transition_count is discouraged. Cycling through all episodes for calculation.")
-        transition_count = 0
-        for _ in range(len(self._episode_generator)):
-            episode = next(self._episode_generator)
-            transition_count += episode.transition_count
-        return transition_count
-
-
 class D3RLPYAgent(ILAgent):
     @property
     def algorithm(self) -> LearnableBase:
@@ -342,30 +232,32 @@ class D3RLPYAgent(ILAgent):
         if not connector:
             connector = DummyConnector()
 
-        trajectories: SizedGenerator[d3rlpy.dataset.Episode] = episode_sequence.to_d3rlpy_episodes()
-        validation_trajectories: SizedGenerator[d3rlpy.dataset.Episode] = (
+        trajectories: WrappedEpisodeSequence[d3rlpy.dataset.Episode] = episode_sequence.to_d3rlpy_episodes()
+        validation_trajectories: WrappedEpisodeSequence[d3rlpy.dataset.Episode] = (
             validation_episode_sequence.to_d3rlpy_episodes() if validation_episode_sequence else None
         )
 
         if self.features_extractor:
+            """
+            Convert an Episode to an Episode with preprocessed observations.
+            """
 
-            def preprocess_d3rlpy_episodes(trajectories):
-                for trajectory in trajectories:
-                    yield d3rlpy.dataset.Episode(
-                        observations=self.features_extractor.preprocess(trajectory.observations),
-                        actions=trajectory.actions,
-                        rewards=trajectory.rewards,
-                        terminated=trajectory.terminated,
-                    )
+            def preprocess_observations_with_features_extractor(
+                d3rlpy_episode: d3rlpy.dataset.Episode,
+            ) -> d3rlpy.dataset.Episode:
+                return d3rlpy.dataset.Episode(
+                    observations=self.features_extractor.preprocess(d3rlpy_episode.observations),
+                    actions=d3rlpy_episode.actions,
+                    rewards=d3rlpy_episode.rewards,
+                    terminated=d3rlpy_episode.terminated,
+                )
 
-            trajectories = SizedGenerator(
-                preprocess_d3rlpy_episodes(trajectories), size=len(trajectories), looping=trajectories.looping
+            trajectories = trajectories.episode_sequence_from_additional_conversion(
+                preprocess_observations_with_features_extractor
             )
             validation_trajectories = (
-                SizedGenerator(
-                    preprocess_d3rlpy_episodes(validation_trajectories),
-                    size=len(validation_trajectories),
-                    looping=validation_trajectories.looping,
+                validation_trajectories.episode_sequence_from_additional_conversion(
+                    preprocess_observations_with_features_extractor
                 )
                 if validation_trajectories
                 else None
@@ -399,14 +291,16 @@ class D3RLPYAgent(ILAgent):
             ]
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
-        replay_buffer = GeneratorReplayBuffer(episode_generator=trajectories, env=training_environments[0])
+        replay_buffer = ReplayBuffer(
+            buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=trajectories, env=training_environments[0]
+        )
 
         evaluators = {
             "episode_reward_mean": d3rlpy.metrics.EnvironmentEvaluator(training_environments[0]),
         }
         if validation_trajectories:
-            validation_buffer = GeneratorReplayBuffer(
-                episode_generator=validation_trajectories, env=training_environments[0]
+            validation_buffer = ReplayBuffer(
+                buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=validation_trajectories, env=training_environments[0]
             )
             evaluators.update({"td_error": d3rlpy.metrics.TDErrorEvaluator(validation_buffer.episodes)})
 

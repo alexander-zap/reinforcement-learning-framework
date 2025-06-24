@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -17,7 +17,6 @@ from stable_baselines3.sac.policies import SACPolicy
 
 from rl_framework.util import (
     FeaturesExtractor,
-    SizedGenerator,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -79,7 +78,7 @@ class AlgorithmWrapper(ABC):
     @abstractmethod
     def build_algorithm(
         self,
-        trajectories: SizedGenerator[TrajectoryWithRew],
+        trajectories: Sequence[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> DemonstrationAlgorithm:
         raise NotImplementedError

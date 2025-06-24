@@ -1,20 +1,16 @@
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import gymnasium
 import numpy as np
-from imitation.algorithms.sqil import SQIL, SQILReplayBuffer
+from imitation.algorithms.sqil import SQIL
 from imitation.data.types import TrajectoryWithRew, Transitions
-from imitation.util import util
 from stable_baselines3.common.callbacks import CallbackList
-from stable_baselines3.common.type_aliases import ReplayBufferSamples
 from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.util import (
     FeaturesExtractor,
-    SizedGenerator,
-    create_memory_efficient_transition_batcher,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -25,28 +21,9 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
     def __init__(self, algorithm_parameters, features_extractor: Optional[FeaturesExtractor] = None):
         super().__init__(algorithm_parameters, features_extractor)
 
-        batch_size = self.rl_algo_kwargs.get("batch_size", 256)
-
-        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
-            demo_data_loader = create_memory_efficient_transition_batcher(
-                demonstrations,
-                batch_size,
-            )
-            batched_transitions_mapping = next(demo_data_loader)
-            self.expert_buffer.sample = lambda x, y: ReplayBufferSamples(
-                observations=util.safe_to_tensor(batched_transitions_mapping["obs"]),
-                actions=util.safe_to_tensor(batched_transitions_mapping["acts"]),
-                rewards=util.safe_to_tensor(np.array([[1.0]] * batch_size, dtype=np.float32)),
-                next_observations=util.safe_to_tensor(batched_transitions_mapping["next_obs"]),
-                dones=util.safe_to_tensor(batched_transitions_mapping["dones"]),
-            )
-
-        SQIL.set_demonstrations = lambda x, y: None
-        SQILReplayBuffer.set_demonstrations = patched_set_demonstrations
-
     def build_algorithm(
         self,
-        trajectories: SizedGenerator[TrajectoryWithRew],
+        trajectories: Sequence[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> SQIL:
         """

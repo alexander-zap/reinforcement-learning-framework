@@ -2,11 +2,11 @@ import copy
 import logging
 import math
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 import torch
-from imitation.algorithms.base import DemonstrationAlgorithm
+from imitation.algorithms.base import DemonstrationAlgorithm, make_data_loader
 from imitation.algorithms.bc import BC, BCTrainingMetrics, RolloutStatsComputer
 from imitation.data import types
 from imitation.data.types import TrajectoryWithRew, TransitionMapping
@@ -18,8 +18,6 @@ from rl_framework.util import (
     FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
-    SizedGenerator,
-    create_memory_efficient_transition_batcher,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -34,14 +32,9 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         self.rollout_interval = None
         self.rollout_episodes = 10
 
-        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
-            self._demo_data_loader = create_memory_efficient_transition_batcher(demonstrations, self.minibatch_size)
-
-        BC.set_demonstrations = patched_set_demonstrations
-
     def build_algorithm(
         self,
-        trajectories: SizedGenerator[TrajectoryWithRew],
+        trajectories: Sequence[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> BC:
         """
@@ -85,16 +78,14 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         algorithm: BC,
         total_timesteps: int,
         callback_list: CallbackList,
-        validation_trajectories: Optional[SizedGenerator[TrajectoryWithRew]] = None,
+        validation_trajectories: Optional[Sequence[TrajectoryWithRew]] = None,
         *args,
         **kwargs,
     ):
         on_batch_end_functions = []
 
         validation_transitions_batcher = (
-            iter(create_memory_efficient_transition_batcher(validation_trajectories))
-            if validation_trajectories
-            else None
+            iter(make_data_loader(validation_trajectories, algorithm.batch_size)) if validation_trajectories else None
         )
 
         for callback in callback_list.callbacks:
