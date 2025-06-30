@@ -4,7 +4,7 @@ import math
 import pickle
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, Union
 
 import d3rlpy.dataset
 import gymnasium as gym
