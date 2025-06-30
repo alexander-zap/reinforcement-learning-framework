@@ -1,6 +1,6 @@
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import torch
 from imitation.algorithms.adversarial.airl import AIRL
@@ -13,9 +13,7 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.util import (
     FeaturesExtractor,
-    SizedGenerator,
     add_callbacks_to_callback,
-    create_memory_efficient_transition_batcher,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -31,18 +29,9 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         super().__init__(algorithm_parameters, features_extractor)
         self.venv = None
 
-        def patched_set_demonstrations(self, demonstrations: SizedGenerator[TrajectoryWithRew]) -> None:
-            self._demo_data_loader = create_memory_efficient_transition_batcher(
-                demonstrations,
-                self.demo_batch_size,
-            )
-            self._endless_expert_iterator = self._demo_data_loader
-
-        AIRL.set_demonstrations = patched_set_demonstrations
-
     def build_algorithm(
         self,
-        trajectories: SizedGenerator[TrajectoryWithRew],
+        trajectories: Sequence[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> AIRL:
         """

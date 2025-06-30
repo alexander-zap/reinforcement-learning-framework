@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 from imitation.algorithms.density import DensityAlgorithm
@@ -9,7 +9,6 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.util import (
     FeaturesExtractor,
-    SizedGenerator,
     add_callbacks_to_callback,
     get_sb3_policy_kwargs_for_features_extractor,
 )
@@ -21,23 +20,9 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
     def __init__(self, algorithm_parameters, features_extractor: Optional[FeaturesExtractor] = None):
         super().__init__(algorithm_parameters, features_extractor)
 
-        def temporary_switch_off_looping_demonstrations(func):
-            def wrap(*args, **kwargs):
-                demonstrations: SizedGenerator = args[1]
-                demonstrations_were_looping = demonstrations.looping
-                demonstrations.looping = False
-                func(*args, **kwargs)
-                demonstrations.looping = demonstrations_were_looping
-
-            return wrap
-
-        DensityAlgorithm.set_demonstrations = temporary_switch_off_looping_demonstrations(
-            DensityAlgorithm.set_demonstrations
-        )
-
     def build_algorithm(
         self,
-        trajectories: SizedGenerator[TrajectoryWithRew],
+        trajectories: Sequence[TrajectoryWithRew],
         vectorized_environment: VecEnv,
     ) -> DensityAlgorithm:
         """

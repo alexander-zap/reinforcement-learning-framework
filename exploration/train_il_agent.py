@@ -1,10 +1,11 @@
 import os
 from pathlib import Path
 
+import d3rlpy.algos
 import gymnasium as gym
+import imitation.algorithms.bc
 import numpy as np
 from clearml import Task
-from imitation.algorithms.bc import BC
 from imitation.data import rollout, serialize
 from imitation.data.wrappers import RolloutInfoWrapper
 from imitation.policies.serialize import load_policy
@@ -12,7 +13,7 @@ from stable_baselines3.common.env_util import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.ppo import PPO, MlpPolicy
 
-from rl_framework.agent.imitation import EpisodeSequence, ImitationAgent
+from rl_framework.agent.imitation import D3RLPYAgent, EpisodeSequence, ImitationAgent
 from rl_framework.util import (
     ClearMLConnector,
     ClearMLDownloadConfig,
@@ -22,10 +23,7 @@ from rl_framework.util import (
 
 def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_path) -> None:
     def train_expert(venv):
-        expert = PPO(
-            policy=MlpPolicy,
-            env=env,
-        )
+        expert = PPO(policy=MlpPolicy, env=venv, device="cpu")
         expert.learn(100_000)
         return expert
 
@@ -36,6 +34,7 @@ def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_pa
             env_name="CartPole-v1",
             venv=venv,
         )
+        policy.to("cpu")
         return policy
 
     environment_return_functions = [lambda: RolloutInfoWrapper(Monitor(env))]
@@ -55,7 +54,9 @@ def create_and_save_trajectories_dataset(env, timesteps, trajectories_dataset_pa
 PARALLEL_ENVIRONMENTS = 8
 DOWNLOAD_EXISTING_AGENT = False
 TRAJECTORIES_PATH = (Path(__file__).parent.parent / "data" / "cartpole_rollout").as_posix()
+VALIDATION_TRAJECTORIES_PATH = (Path(__file__).parent.parent / "data" / "cartpole_rollout").as_posix()
 
+OFFLINE_RL = True
 N_TRAINING_TIMESTEPS = 200000
 N_EVALUATION_EPISODES = 10
 
@@ -78,7 +79,13 @@ if __name__ == "__main__":
     )
 
     # Create new agent
-    agent = ImitationAgent(algorithm_class=BC, algorithm_parameters={"minibatch_size": 16})
+    if OFFLINE_RL:
+        agent = D3RLPYAgent(algorithm_class=d3rlpy.algos.DQN, algorithm_parameters={"device": "cuda", "batch_size": 64})
+    else:
+        agent = ImitationAgent(
+            algorithm_class=imitation.algorithms.bc.BC,
+            algorithm_parameters={"minibatch_size": 16, "rl_algo_type": "PPO", "policy_type": "ActorCriticPolicy"},
+        )
 
     if DOWNLOAD_EXISTING_AGENT:
         # Download existing agent from repository
@@ -89,9 +96,16 @@ if __name__ == "__main__":
         if not os.path.exists(TRAJECTORIES_PATH):
             create_and_save_trajectories_dataset(environments[0], N_TRAINING_TIMESTEPS, TRAJECTORIES_PATH)
 
-        sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH, loop=True)
+        if not os.path.exists(VALIDATION_TRAJECTORIES_PATH):
+            create_and_save_trajectories_dataset(
+                environments[0], N_TRAINING_TIMESTEPS * 0.1, VALIDATION_TRAJECTORIES_PATH
+            )
+
+        sequence = EpisodeSequence.from_dataset(TRAJECTORIES_PATH)
+        validation_sequence = EpisodeSequence.from_dataset(VALIDATION_TRAJECTORIES_PATH)
         agent.train(
             episode_sequence=sequence,
+            validation_episode_sequence=validation_sequence,
             training_environments=environments,
             total_timesteps=N_TRAINING_TIMESTEPS,
             connector=connector,
