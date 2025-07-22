@@ -108,10 +108,10 @@ class Agent(ABC):
                         done_indices = np.where(dones == True)[0]
                         for done_index in done_indices:
                             agent = list(terminations.keys())[done_index]
-                            # if agent in episode_reward:
-                            episode_rewards.append(episode_reward[agent])
-                            pbar.update(1)
-                            del episode_reward[agent]
+                            if agent in episode_reward:
+                                episode_rewards.append(episode_reward[agent])
+                                pbar.update(1)
+                                del episode_reward[agent]
 
                     if env_done:
                         prev_observations, _ = evaluation_environment.reset()
