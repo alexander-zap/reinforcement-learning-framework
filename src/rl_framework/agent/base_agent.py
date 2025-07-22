@@ -155,6 +155,16 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def save_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
+        """
+        Save the agent as an ONNX model.
+
+        Args:
+            file_path (Path): Path to save the ONNX model.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         raise NotImplementedError
 

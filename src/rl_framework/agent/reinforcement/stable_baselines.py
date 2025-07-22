@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Type, Union
 import gymnasium
 import pettingzoo
 import stable_baselines3
+import torch.onnx
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
@@ -178,6 +179,18 @@ class StableBaselinesAgent(RLAgent):
         if not action.shape:
             action = action.item()
         return action
+
+    def save_as_onnx(self, file_path: Path) -> None:
+        """Save the agent as ONNX model.
+
+        Args:
+            file_path (Path): The file where the agent should be saved to.
+        """
+        assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
+
+        observation_size = self.algorithm.observation_space.shape
+        dummy_input = torch.randn(1, *observation_size)
+        torch.onnx.export(self.algorithm.policy, dummy_input, file_path, opset_version=17, input_names=["input"])
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
