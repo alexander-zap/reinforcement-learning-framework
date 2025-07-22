@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "reinforcement-learning-framework"
-version = "0.8.0"
+version = "0.8.1"
 description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and utilities."
 homepage = "https://github.com/alexander-zap/reinforcement-learning-framework"
 authors = ["Alexander Zap"]
@@ -43,6 +43,7 @@ dm-env-rpc = "^1.1.6"
 pettingzoo = "^1.24.3"
 imitation = "^1.0.0"
 pyarrow-hotfix = "^0.6"
+pyarrow = "<=20.0.0"  # right now there is a bug with 21.0
 d3rlpy = "^2.6"
 async-gym-agents = "^0.1.1"
 supersuit = "^3.9.3"
