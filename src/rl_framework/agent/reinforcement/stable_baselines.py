@@ -127,14 +127,14 @@ class StableBaselinesAgent(RLAgent):
                 """
                 A wrapper for SB3 VecEnv that correctly sets infos on step:
                     - `infos["terminal_observation"] = observation` when done
-                    - `infos["TimeLimit.truncated"] = True` when truncated
+                    - `infos["TimeLimit.truncated"] = True` when truncated (else False)
                 """
 
                 def step_wait(self):
                     observations, rewards, terminations, truncations, infos = self.venv.step_wait()
                     dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
                     for i in range(len(dones)):
-                        infos[i]["TimeLimit.truncated"] = truncations[i] and not terminations[i]
+                        infos[i]["TimeLimit.truncated"] = True if truncations[i] and not terminations[i] else False
                         if dones[i]:
                             infos[i]["terminal_observation"] = observations[i]
 
