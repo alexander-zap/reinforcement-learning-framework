@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
 import gymnasium
+import numpy as np
 import pettingzoo
 import stable_baselines3
 from stable_baselines3.common.base_class import BaseAlgorithm
@@ -121,7 +122,25 @@ class StableBaselinesAgent(RLAgent):
             vectorized_environment = MakeCPUAsyncConstructor(min(cpu_count(), len(environment_return_functions)))(
                 environment_return_functions, vector_envs[0].observation_space, vector_envs[0].action_space
             )
-            vectorized_environment = SB3VecEnvWrapper(vectorized_environment)
+
+            class InfoCorrectingSB3VecEnvWrapper(SB3VecEnvWrapper):
+                """
+                A wrapper for SB3 VecEnv that correctly sets infos on step:
+                    - `infos["terminal_observation"] = observation` when done
+                    - `infos["TimeLimit.truncated"] = True` when truncated
+                """
+
+                def step_wait(self):
+                    observations, rewards, terminations, truncations, infos = self.venv.step_wait()
+                    dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
+                    for i in range(len(dones)):
+                        infos[i]["TimeLimit.truncated"] = truncations[i] and not terminations[i]
+                        if dones[i]:
+                            infos[i]["terminal_observation"] = observations[i]
+
+                    return observations, rewards, dones, infos
+
+            vectorized_environment = InfoCorrectingSB3VecEnvWrapper(vectorized_environment)
             vectorized_environment = VecMonitor(vectorized_environment)
         else:
             training_environments = [Monitor(env) for env in training_environments]
