@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import gymnasium as gym
+import pettingzoo
 
 from rl_framework.agent.base_agent import Agent
 from rl_framework.util import Connector
@@ -13,7 +14,7 @@ class RLAgent(Agent, ABC):
         self,
         total_timesteps: int,
         connector: Optional[Connector],
-        training_environments: List[gym.Env],
+        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
         *args,
         **kwargs,
     ):
@@ -25,7 +26,8 @@ class RLAgent(Agent, ABC):
             connector: Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
                 If no connector is provided, callbacks will not be executed.
-            training_environments: List of gym interface environments on which the agent should be trained on.
+            training_environments: List of gym (or pettingzoo) interface environments on which the agent
+                should be trained on.
 
         """
         raise NotImplementedError

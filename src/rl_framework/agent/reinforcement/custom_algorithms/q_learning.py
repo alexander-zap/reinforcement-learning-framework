@@ -3,10 +3,11 @@ import os
 import pickle
 import random
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import gymnasium as gym
 import numpy as np
+import pettingzoo
 from tqdm import tqdm
 
 from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
@@ -103,7 +104,7 @@ class QLearning(CustomAlgorithm):
     def train(
         self,
         connector: Connector,
-        training_environments: List[gym.Env],
+        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
         total_timesteps: int,
         *args,
         **kwargs,
@@ -117,8 +118,9 @@ class QLearning(CustomAlgorithm):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gym.Env]): List of environments on which the agent should be trained on.
-                # NOTE: This class only supports training on one environment
+            training_environments (List[gym.Env, pettingzoo.ParallelEnv]): List of environments on which the agent
+                should be trained on.
+                # NOTE: This class only supports training on one single-agent environment.
             total_timesteps (int): Number of timesteps the agent should train for before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Logging is executed by calling the connector.log method.
@@ -155,6 +157,11 @@ class QLearning(CustomAlgorithm):
                 f"Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
                 f"training on multiple environments in parallel. Continuing with one environment as "
                 f"training environment."
+            )
+        elif isinstance(training_environments[0], pettingzoo.ParallelEnv):
+            raise ValueError(
+                f"Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
+                f"training on multi-agent environments."
             )
 
         training_environment = training_environments[0]

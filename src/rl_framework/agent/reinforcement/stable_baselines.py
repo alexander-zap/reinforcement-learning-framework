@@ -1,16 +1,21 @@
 import tempfile
 from collections import defaultdict
 from functools import partial
+from os import cpu_count
 from pathlib import Path
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Type, Union
 
-import gymnasium as gym
+import gymnasium
+import numpy as np
+import pettingzoo
 import stable_baselines3
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env.base_vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, VecMonitor
+from supersuit.vector import MakeCPUAsyncConstructor, MarkovVectorEnv
+from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
 
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
@@ -67,9 +72,9 @@ class StableBaselinesAgent(RLAgent):
 
     def train(
         self,
-        total_timesteps: int,
+        total_timesteps: int = 100000,
         connector: Optional[Connector] = None,
-        training_environments: List[gym.Env] = None,
+        training_environments: List[Union[gymnasium.Env, pettingzoo.ParallelEnv]] = None,
         *args,
         **kwargs,
     ):
@@ -82,14 +87,15 @@ class StableBaselinesAgent(RLAgent):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gym.Env]): List of environments on which the agent should be trained on.
+            training_environments (List[gymnasium.Env, pettingzoo.ParallelEnv]):
+                List of environments on which the agent should be trained on.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
         """
 
-        def make_env(index: int):
-            return training_environments[index]
+        def make_env(env_list: list, index: int):
+            return env_list[index]
 
         if not training_environments:
             raise ValueError("No training environments have been provided to the train-method.")
@@ -102,11 +108,48 @@ class StableBaselinesAgent(RLAgent):
                 wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
                 for env in training_environments
             ]
-        training_environments = [Monitor(env) for env in training_environments]
-        environment_return_functions = [partial(make_env, env_index) for env_index in range(len(training_environments))]
 
-        # noinspection PyCallingNonCallable
-        vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+        if isinstance(training_environments[0], pettingzoo.ParallelEnv):
+            vector_envs = []
+            for pettingzoo_environment in training_environments:
+                vector_env = MarkovVectorEnv(pettingzoo_environment, black_death=True)
+                vector_envs.append(vector_env)
+
+            environment_return_functions = [
+                partial(make_env, vector_envs, env_index) for env_index in range(len(vector_envs))
+            ]
+
+            vectorized_environment = MakeCPUAsyncConstructor(min(cpu_count(), len(environment_return_functions)))(
+                environment_return_functions, vector_envs[0].observation_space, vector_envs[0].action_space
+            )
+
+            class InfoCorrectingSB3VecEnvWrapper(SB3VecEnvWrapper):
+                """
+                A wrapper for SB3 VecEnv that correctly sets infos on step:
+                    - `infos["terminal_observation"] = observation` when done
+                    - `infos["TimeLimit.truncated"] = True` when truncated (else False)
+                """
+
+                def step_wait(self):
+                    observations, rewards, terminations, truncations, infos = self.venv.step_wait()
+                    dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
+                    for i in range(len(dones)):
+                        infos[i]["TimeLimit.truncated"] = True if truncations[i] and not terminations[i] else False
+                        if dones[i]:
+                            infos[i]["terminal_observation"] = observations[i]
+
+                    return observations, rewards, dones, infos
+
+            vectorized_environment = InfoCorrectingSB3VecEnvWrapper(vectorized_environment)
+            vectorized_environment = VecMonitor(vectorized_environment)
+        else:
+            training_environments = [Monitor(env) for env in training_environments]
+            environment_return_functions = [
+                partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
+            ]
+
+            # noinspection PyCallingNonCallable
+            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
