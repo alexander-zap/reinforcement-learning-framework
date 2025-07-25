@@ -1,5 +1,6 @@
 import tempfile
 from collections import defaultdict
+from copy import deepcopy
 from functools import partial
 from os import cpu_count
 from pathlib import Path
@@ -124,24 +125,59 @@ class StableBaselinesAgent(RLAgent):
                 environment_return_functions, vector_envs[0].observation_space, vector_envs[0].action_space
             )
 
-            class InfoCorrectingSB3VecEnvWrapper(SB3VecEnvWrapper):
+            class AutoResetSB3VecEnvWrapper(SB3VecEnvWrapper):
                 """
-                A wrapper for SB3 VecEnv that correctly sets infos on step:
+                A SB3VecEnvWrapper for Pettingzoo based vectorized environments (through MarkovVectorEnv).
+                "Automatically resets" episodes and sets infos on step:
                     - `infos["terminal_observation"] = observation` when done
                     - `infos["TimeLimit.truncated"] = True` when truncated (else False)
                 """
 
+                def __init__(self, vectorized_environment):
+                    super().__init__(vectorized_environment)
+                    self.last_observations = None
+                    self.last_terminations = None
+                    self.last_truncations = None
+                    self.last_rewards = None
+                    self.last_infos = None
+                    self.agents_to_reset = []
+
                 def step_wait(self):
                     observations, rewards, terminations, truncations, infos = self.venv.step_wait()
                     dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
+
+                    observations_to_return = deepcopy(observations)
+                    rewards_to_return = deepcopy(rewards)
+                    dones_to_return = deepcopy(dones)
+                    infos_to_return = deepcopy(infos)
+
                     for i in range(len(dones)):
-                        infos[i]["TimeLimit.truncated"] = True if truncations[i] and not terminations[i] else False
-                        if dones[i]:
-                            infos[i]["terminal_observation"] = observations[i]
+                        if i in self.agents_to_reset:
+                            rewards_to_return[i] = self.last_rewards[i]
+                            dones_to_return[i] = 1
+                            infos_to_return[i] = self.last_infos[i]
+                            infos_to_return[i]["TimeLimit.truncated"] = (
+                                True if self.last_truncations[i] and not self.last_terminations[i] else False
+                            )
+                            infos_to_return[i]["terminal_observation"] = self.last_observations[i]
+                            self.agents_to_reset.remove(i)
+                        elif dones[i]:
+                            # repeat old observation (workaround; cannot reset agent independently in MarkovVectorEnv)
+                            observations_to_return[i] = self.last_observations[i]
+                            dones_to_return[i] = self.last_truncations[i] or self.last_terminations[i]
+                            rewards_to_return[i] = self.last_rewards[i]
+                            infos_to_return[i] = self.last_infos[i]
+                            self.agents_to_reset.append(i)
 
-                    return observations, rewards, dones, infos
+                    self.last_observations = observations
+                    self.last_terminations = terminations
+                    self.last_truncations = truncations
+                    self.last_rewards = rewards
+                    self.last_infos = infos
 
-            vectorized_environment = InfoCorrectingSB3VecEnvWrapper(vectorized_environment)
+                    return observations_to_return, rewards_to_return, dones_to_return, infos_to_return
+
+            vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)
             vectorized_environment = VecMonitor(vectorized_environment)
         else:
             training_environments = [Monitor(env) for env in training_environments]
