@@ -118,17 +118,30 @@ class ClearMLConnector(Connector):
 
         # Save agent to file
         agent_save_path = Path(tempfile.gettempdir(), f"{str(uuid.uuid1())}-{file_name}.{file_ending}")
-        logging.debug(f"Saving agent to .zip file at {agent_save_path} and uploading artifact ...")
+        logging.debug(f"Saving agent to .zip file at {agent_save_path} and uploading as model ...")
         agent.save_to_file(agent_save_path)
         while not os.path.exists(agent_save_path):
             time.sleep(1)
 
-        # Upload to ClearML
+        # Upload saved agent to ClearML
         self.task.update_output_model(
             name=file_name,
             model_name=file_name,
             model_path=str(agent_save_path),
             tags=["final"] + list(self.upload_config.model_tags) if checkpoint_id is None else ["checkpoint"],
+        )
+
+        # Save policy as ONNX file
+        onnx_save_path = Path(tempfile.gettempdir(), f"{str(uuid.uuid1())}-{file_name}.onnx")
+        logging.debug(f"Saving agent to .onnx file at {onnx_save_path} and uploading as artifact ...")
+        agent.save_policy_as_onnx(onnx_save_path)
+        while not os.path.exists(onnx_save_path):
+            time.sleep(1)
+
+        # Upload policy ONNX to ClearML
+        self.task.upload_artifact(
+            name=f"{file_name}_ONNX",
+            artifact_object=str(onnx_save_path),
         )
 
         if not checkpoint_id:
