@@ -264,6 +264,7 @@ class StableBaselinesAgent(RLAgent):
         # FIXME: for algorithms like SAC we need to input `self.algorithm.policy.actor`
         onnx_policy = OnnxableSB3Policy(self.algorithm.policy)
         observation_size = self.algorithm.observation_space.shape
+        # FIXME: add support for batch size > 1
         dummy_input = torch.randn(1, *observation_size)
         torch.onnx.export(onnx_policy, dummy_input, file_path, opset_version=17, input_names=["input"])
 
