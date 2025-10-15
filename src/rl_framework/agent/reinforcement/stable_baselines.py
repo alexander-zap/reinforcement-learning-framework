@@ -4,14 +4,15 @@ from copy import deepcopy
 from functools import partial
 from os import cpu_count
 from pathlib import Path
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import gymnasium
 import numpy as np
 import pettingzoo
 import stable_baselines3
+import torch
 import torch.onnx
-from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.base_class import BaseAlgorithm, BasePolicy
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -235,17 +236,37 @@ class StableBaselinesAgent(RLAgent):
             action = action.item()
         return action
 
-    def save_as_onnx(self, file_path: Path) -> None:
-        """Save the agent as ONNX model.
+    def save_policy_as_onnx(self, file_path: Path) -> None:
+        """Save the policy as ONNX model.
+
+            Details for SB3: https://stable-baselines3.readthedocs.io/en/master/guide/export.html
 
         Args:
-            file_path (Path): The file where the agent should be saved to.
+            file_path (Path): The file where the policy should be saved to.
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
+        class OnnxableSB3Policy(torch.nn.Module):
+            def __init__(self, policy: BasePolicy):
+                super().__init__()
+                self.policy = policy
+
+            # FIXME: policy() returns `actions, values, log_prob` for PPO
+            # FIXME: determinism should be set based on policy (and own preference; could be set in config)
+            def forward(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                # NOTE: policy includes the features_extractor.
+                #  Preprocessing is included, but postprocessing (clipping/inscaling actions) is not.
+                # NOTE: For Box action space you may have to postprocess (unnormalize) actions to the correct bounds
+                #   low, high = model.action_space.low, model.action_space.high
+                #   post_processed_action = low + (0.5 * (scaled_action + 1.0) * (high - low))
+                return self.policy(observation, deterministic=False)
+
+        # FIXME: for algorithms like SAC we need to input `self.algorithm.policy.actor`
+        onnx_policy = OnnxableSB3Policy(self.algorithm.policy)
         observation_size = self.algorithm.observation_space.shape
+        # FIXME: add support for batch size > 1
         dummy_input = torch.randn(1, *observation_size)
-        torch.onnx.export(self.algorithm.policy, dummy_input, file_path, opset_version=17, input_names=["input"])
+        torch.onnx.export(onnx_policy, dummy_input, file_path, opset_version=17, input_names=["input"])
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
