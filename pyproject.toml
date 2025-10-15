@@ -45,7 +45,7 @@ imitation = "^1.0.0"
 pyarrow-hotfix = "^0.6"
 pyarrow = "<=20.0.0"  # right now there is a bug with 21.0
 d3rlpy = "^2.6"
-async-gym-agents = "^0.1.1"
+async-gym-agents = "^0.1.2"
 supersuit = "^3.9.3"
 onnx = "^1.15.0"
 
