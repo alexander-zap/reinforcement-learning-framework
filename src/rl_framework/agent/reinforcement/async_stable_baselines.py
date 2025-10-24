@@ -20,3 +20,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
 
     def to_vectorized_env(self, env_fns):
         return IndexableMultiEnv(env_fns)
+
+    def train(self, *args, **kwargs):
+        super().train(*args, **kwargs)
+        self.algorithm.shutdown()
