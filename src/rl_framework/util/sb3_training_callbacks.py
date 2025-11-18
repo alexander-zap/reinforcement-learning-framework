@@ -1,3 +1,5 @@
+from collections import Counter, deque
+
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
@@ -15,7 +17,7 @@ def add_callbacks_to_callback(callbacks_to_add: CallbackList, callback_to_be_add
 
 class LoggingCallback(BaseCallback):
     """
-    A custom callback that logs episode rewards after every done episode.
+    A custom callback that logs episode rewards and reason of episode end (if provided) after every done episode.
     """
 
     def __init__(self, connector, verbose=0):
@@ -26,6 +28,7 @@ class LoggingCallback(BaseCallback):
         super().__init__(verbose)
         self.connector = connector
         self.episode_reward = None
+        self.episode_end_reasons = deque(maxlen=500)
 
     def _on_step(self) -> bool:
         """
@@ -45,6 +48,14 @@ class LoggingCallback(BaseCallback):
                         self.num_timesteps, self.episode_reward[done_index], "Episode reward"
                     )
                     self.episode_reward[done_index] = 0
+
+                if self.locals["infos"][done_index].get("episode_end_reason", None) is not None:
+                    self.episode_end_reasons.append(self.locals["infos"][done_index]["episode_end_reason"])
+                    counter = Counter(self.episode_end_reasons)
+                    for reason, count in counter.items():
+                        self.connector.log_value_with_timestep(
+                            self.num_timesteps, count / len(self.episode_end_reasons), f"Episode end reason - {reason}"
+                        )
 
         return True
 
