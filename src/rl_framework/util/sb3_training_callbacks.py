@@ -66,6 +66,7 @@ class LoggingCallback(BaseCallback):
                     self.connector.log_value_with_timestep(
                         self.num_timesteps, self.episode_reward[done_index], "Episode reward"
                     )
+                    self.episode_reward[done_index] = 0
 
                 if self.locals["infos"][done_index].get("episode_end_reason", None) is not None:
                     self.episode_end_reasons.append(self.locals["infos"][done_index]["episode_end_reason"])
@@ -88,9 +89,7 @@ class LoggingCallback(BaseCallback):
                             self.connector.log_histogram_with_timestep(
                                 self.num_timesteps, np.array(self.episode_actions[done_index]), "Action distribution"
                             )
-
-                self.episode_actions[done_index] = []
-                self.episode_reward[done_index] = 0
+                    self.episode_actions[done_index] = []
 
         return True
 
