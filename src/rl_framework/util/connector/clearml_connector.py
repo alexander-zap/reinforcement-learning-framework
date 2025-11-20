@@ -96,7 +96,10 @@ class ClearMLConnector(Connector):
         g = sns.FacetGrid(df, row="step", hue="step", aspect=15, height=1.25)
         g.map(sns.histplot, "value", clip_on=False, fill=True, alpha=1)
 
-        plt.show()
+        title = f"{str(latest_timestep).rjust(15, '0')} - {histogram_name}"
+        self.task.get_logger().report_matplotlib_figure(
+            title=title, series=histogram_name, figure=plt, iteration=timestep, report_interactive=True
+        )
 
     def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
         """
