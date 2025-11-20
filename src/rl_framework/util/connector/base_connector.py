@@ -55,17 +55,44 @@ class Connector(ABC):
         NOTE: See individual connector package for the documented config dataclass attributes.
 
         self attributes:
-            logging_history: Dictionary mapping each logged value name to a list of logged values, e.g.:
+            histogram_sequences_to_log: Dictionary mapping histogram names to a list of logged histogram values, e.g.:
+            {
+                "action_distribution": [([0.1, 0.3, 0.6], 10), ([0.2, 0.5, 0.3], 20)]
+            }
+            Elements of each list are tuples of histogram-timestep-points.
+
+            value_sequences_to_log: Dictionary mapping value names to a list of logged values, e.g.:
             {
                 "Episode reward": [(50.6, 10), (90.5, 20), (150.3, 30), (200.0, 40)],
                 "Epsilon": [(1.0, 10), (0.74, 20), (0.46, 30), (0.15, 10)]
             }
-            Elements of each list are tuples of timestep-value-points.
+            Elements of each list are tuples of value-timestep-points.
+
+            values_to_log: Dictionary mapping each logged value name to a single logged value, e.g.:
+            {
+                "Mean episode reward": 150.3,
+                "Max episode reward": 200.0
+            }
         """
         self.upload_config = upload_config
         self.download_config = download_config
+        self.histogram_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
         self.value_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
         self.values_to_log: Dict[Text, SupportsFloat] = {}
+
+    def log_histogram_with_timestep(
+        self, timestep: int, histogram_values: List[SupportsFloat], histogram_name: Text
+    ) -> None:
+        """
+        Log histogram values to create a sequence of histograms over time steps.
+        Can be used afterward for visualization (e.g., plotting of histogram over time).
+
+        Args:
+            timestep: Time step which the histogram corresponds to
+            histogram_values: Values which should be logged as histogram
+            histogram_name: Name of histogram (e.g., "action_distribution")
+        """
+        self.histogram_sequences_to_log[histogram_name].append((histogram_values, timestep))
 
     def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
         """
