@@ -5,9 +5,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, SupportsFloat, Text
+from typing import List, Optional, SupportsFloat, Text
 
 import gymnasium as gym
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 import stable_baselines3
 from clearml import Task
 from clearml.model import InputModel
@@ -60,6 +63,43 @@ class ClearMLConnector(Connector):
             self.task.set_name(self.upload_config.task_name)
 
         self.task.add_tags(list(self.upload_config.task_tags))
+
+    def log_histogram_with_timestep(
+        self, timestep: int, histogram_values: List[SupportsFloat], histogram_name: Text
+    ) -> None:
+        """
+        Log histogram values to create a sequence of histograms over time steps.
+        Will appear in the "Histogram" section of the ClearML experiment page as a graph.
+
+        Args:
+            timestep: Time step which the histogram corresponds to (x-value)
+            histogram_values: Values which should be logged as histogram
+            histogram_name: Name of histogram (e.g., "action distribution")
+        """
+        super().log_histogram_with_timestep(timestep, histogram_values, histogram_name)
+
+        histogram_values_sequence, timestep_sequence = zip(*self.histogram_sequences_to_log[histogram_name])
+
+        # NOTE: Only the latest histogram is reported
+        #   Instead of aggregating all histograms into one plot, it's advised to inspect them individually in the webapp
+        # dfs = []
+        # for histogram_values, histogram_timestep in zip(histogram_values_sequence, timestep_sequence):
+        #     df = pd.DataFrame(data={"value": histogram_values, "step": [histogram_timestep] * len(histogram_values)})
+        #     dfs.append(df)
+        # df = pd.concat(dfs, ignore_index=True)
+
+        latest_value_sequence = histogram_values_sequence[-1]
+        latest_timestep = timestep_sequence[-1]
+        df = pd.DataFrame(data={"value": latest_value_sequence, "step": [latest_timestep] * len(latest_value_sequence)})
+
+        sns.set_theme(style="white", rc={"axes.facecolor": (0, 0, 0, 0)})
+        g = sns.FacetGrid(df, row="step", hue="step", aspect=15, height=1.25)
+        g.map(sns.histplot, "value", clip_on=False, fill=True, alpha=1)
+
+        title = f"{str(latest_timestep).rjust(15, '0')} - {histogram_name}"
+        self.task.get_logger().report_matplotlib_figure(
+            title=title, series=histogram_name, figure=plt, iteration=timestep, report_interactive=True
+        )
 
     def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
         """

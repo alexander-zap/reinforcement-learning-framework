@@ -136,14 +136,15 @@ class HuggingFaceConnector(Connector):
             for key, value in self.values_to_log.items():
                 result_data[key] = value
 
-            # Write a JSON file called "results.json" that will contain the
-            # evaluation results
+            # Write a JSON file called "results.json" that will contain the evaluation results
             with open(repo_local_path / "results.json", "w") as outfile:
                 json.dump(result_data, outfile)
 
-            # Additionally write a JSON file for all manually logged training metrics
-            with open(repo_local_path / "training_metrics.json", "w") as outfile:
+            # Additionally write a JSON file for all manually logged sequences
+            with open(repo_local_path / "logged_values.json", "w") as outfile:
                 json.dump(self.value_sequences_to_log, outfile)
+            with open(repo_local_path / "logged_histograms.json", "w") as outfile:
+                json.dump(self.histogram_sequences_to_log, outfile)
 
             # Step 5: Create a system info file
             with open(repo_local_path / "system.json", "w") as outfile:

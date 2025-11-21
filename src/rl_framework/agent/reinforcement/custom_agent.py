@@ -120,3 +120,6 @@ class CustomAgent(RLAgent):
             algorithm_parameters (Optional[Dict]): Parameters which should overwrite the algorithm after loading.
         """
         self.algorithm.load_from_file(file_path, algorithm_parameters=algorithm_parameters)
+
+    def save_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
+        raise NotImplementedError

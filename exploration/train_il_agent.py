@@ -113,7 +113,7 @@ if __name__ == "__main__":
 
     # Evaluate the model
     mean_reward, std_reward = agent.evaluate(
-        evaluation_environment=environments[0], n_eval_episodes=N_EVALUATION_EPISODES
+        evaluation_environments=[environments[0]], n_eval_episodes=N_EVALUATION_EPISODES
     )
     print(f"mean_reward={mean_reward:.2f} +/- {std_reward:.2f}")
 
