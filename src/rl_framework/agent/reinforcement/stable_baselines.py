@@ -6,6 +6,7 @@ from os import cpu_count
 from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
+import gym
 import gymnasium
 import numpy as np
 import pettingzoo
@@ -111,6 +112,12 @@ class StableBaselinesAgent(RLAgent):
                 for env in training_environments
             ]
 
+        v_env = None
+
+        # expected type: list[tuple[gym.Env, Callable]]
+        # - declaration for the policy creation (stub env) + method for creating of an environment list
+        is_mp = isinstance(training_environments[0], tuple)
+
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
             vector_envs = []
             for pettingzoo_environment in training_environments:
@@ -121,7 +128,7 @@ class StableBaselinesAgent(RLAgent):
                 partial(make_env, vector_envs, env_index) for env_index in range(len(vector_envs))
             ]
 
-            vectorized_environment = MakeCPUAsyncConstructor(min(cpu_count(), len(environment_return_functions)))(
+            v_env = MakeCPUAsyncConstructor(min(cpu_count(), len(environment_return_functions)))(
                 environment_return_functions, vector_envs[0].observation_space, vector_envs[0].action_space
             )
 
@@ -177,16 +184,26 @@ class StableBaselinesAgent(RLAgent):
 
                     return observations_to_return, rewards_to_return, dones_to_return, infos_to_return
 
-            vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)
-            vectorized_environment = VecMonitor(vectorized_environment)
-        else:
+            v_env = AutoResetSB3VecEnvWrapper(v_env)
+            v_env = VecMonitor(v_env)
+        elif not is_mp:  # create envs here before the policy (!)
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
                 partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
             ]
 
             # noinspection PyCallingNonCallable
-            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+            v_env = self.to_vectorized_env(env_fns=environment_return_functions)
+
+        dummy = None
+        env_funcs = None
+        if is_mp:
+            env_funcs = [env_func for dummy, env_func in training_environments]
+            dummy = training_environments[0][0]
+
+        # for the policy is expected
+        # that VecEnv == gym.Env on the level of state and action spaces
+        v_env: Union[VecEnv, gym.Env] = v_env if not is_mp else dummy
 
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
@@ -194,20 +211,29 @@ class StableBaselinesAgent(RLAgent):
                 parameters["policy_kwargs"].update(
                     get_sb3_policy_kwargs_for_features_extractor(self.features_extractor)
                 )
-            self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
+            if is_mp:
+                # pass the list of functions which will be used for the env creation
+                # create envs later
+                self.algorithm = self.algorithm_class(env=v_env, envs=env_funcs, **parameters)
+            else:
+                self.algorithm = self.algorithm_class(env=v_env, **parameters)
+
             self.algorithm_needs_initialization = False
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
                 self.save_to_file(tmp_path)
                 self.algorithm = self.algorithm_class.load(
-                    path=tmp_path, env=vectorized_environment, custom_objects=self.algorithm_parameters
+                    path=tmp_path, env=v_env, custom_objects=self.algorithm_parameters
                 )
 
         callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
 
-        vectorized_environment.close()
+        if is_mp and hasattr(self.algorithm, "shutdown"):
+            self.algorithm.shutdown()
+
+        v_env.close()
 
     def to_vectorized_env(self, env_fns) -> VecEnv:
         return SubprocVecEnv(env_fns)
