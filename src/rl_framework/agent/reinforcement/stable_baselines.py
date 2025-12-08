@@ -214,7 +214,7 @@ class StableBaselinesAgent(RLAgent):
             if is_mp:
                 # pass the list of functions which will be used for the env creation
                 # create envs later
-                self.algorithm = self.algorithm_class(env=v_env, envs=env_funcs, **parameters)
+                self.algorithm = self.algorithm_class(env=v_env, _envs=env_funcs, **parameters)
             else:
                 self.algorithm = self.algorithm_class(env=v_env, **parameters)
 
