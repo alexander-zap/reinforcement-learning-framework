@@ -6,7 +6,6 @@ from os import cpu_count
 from pathlib import Path
 from typing import Dict, List, Optional, Type, Union
 
-import gym
 import gymnasium
 import numpy as np
 import pettingzoo
@@ -203,7 +202,7 @@ class StableBaselinesAgent(RLAgent):
 
         # for the policy is expected
         # that VecEnv == gym.Env on the level of state and action spaces
-        v_env: Union[VecEnv, gym.Env] = v_env if not is_mp else dummy
+        v_env: Union[VecEnv, gymnasium.Env] = v_env if not is_mp else dummy
 
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
