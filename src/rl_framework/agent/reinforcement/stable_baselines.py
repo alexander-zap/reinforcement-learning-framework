@@ -179,6 +179,7 @@ class StableBaselinesAgent(RLAgent):
 
             vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)
             vectorized_environment = VecMonitor(vectorized_environment)
+
         elif isinstance(training_environments[0], gymnasium.Env):
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
@@ -187,31 +188,35 @@ class StableBaselinesAgent(RLAgent):
 
             # noinspection PyCallingNonCallable
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+
         elif isinstance(training_environments[0], VecEnv):
             assert len(training_environments) == 1
             vectorized_environment = training_environments[0]
+
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
 
+        algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
             if self.features_extractor:
                 parameters["policy_kwargs"].update(
                     get_sb3_policy_kwargs_for_features_extractor(self.features_extractor)
                 )
-            self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
+            algorithm_kwargs.update(parameters)
+            self.algorithm = self.algorithm_class(**algorithm_kwargs)
             self.algorithm_needs_initialization = False
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
                 self.save_to_file(tmp_path)
-                self.algorithm = self.algorithm_class.load(
-                    path=tmp_path, env=vectorized_environment, custom_objects=self.algorithm_parameters
-                )
+                algorithm_kwargs["path"] = tmp_path
+                algorithm_kwargs["custom_objects"] = self.algorithm_parameters
+                # noinspection PyUnresolvedReferences
+                self.algorithm = self.algorithm_class.load(**algorithm_kwargs)
 
         callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
-
         vectorized_environment.close()
 
     def to_vectorized_env(self, env_fns) -> VecEnv:

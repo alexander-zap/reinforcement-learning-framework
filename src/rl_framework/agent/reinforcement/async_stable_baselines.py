@@ -4,10 +4,10 @@ from typing import Dict, List, Optional, Type, Union
 import gymnasium
 import pettingzoo
 import stable_baselines3
-from async_gym_agents.agents.async_agent import get_injected_agent
-from async_gym_agents.envs.multi_env import IndexableMultiEnv
 from stable_baselines3.common.base_class import BaseAlgorithm, VecEnv
 
+from async_gym_agents.agents.async_agent import get_injected_agent
+from async_gym_agents.envs.multi_env import IndexableMultiEnv
 from rl_framework.agent.reinforcement.stable_baselines import StableBaselinesAgent
 from rl_framework.util import Connector, FeaturesExtractor
 
@@ -19,7 +19,12 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         algorithm_parameters: Optional[Dict] = None,
         features_extractor: Optional[FeaturesExtractor] = None,
     ):
-        super().__init__(get_injected_agent(algorithm_class), algorithm_parameters, features_extractor)
+        super().__init__(
+            # use multiprocessing method by default
+            get_injected_agent(algorithm_class),
+            algorithm_parameters,
+            features_extractor
+        )
 
     def to_vectorized_env(self, env_fns):
         return IndexableMultiEnv(env_fns)
@@ -33,12 +38,22 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         **kwargs,
     ):
         # Multiprocessing support when providing a list of tuples:
-        # - each tuple does space declaration for the policy creation (dummy env) + method returning an environment
+        # - each tuple does space declaration for the policy creation
+        # (stub env) + method returning an environment
         # - expected type: list[tuple[gymnasium.Env, Callable]]
         if isinstance(training_environments[0], tuple):
-            environment_return_functions, training_environments = map(list, zip(*training_environments))
+            stub_envs, training_environments = map(tuple, zip(*training_environments))
             # `_envs` argument of AsyncAgentInjector class is used to create environments delayed (for multiprocessing)
-            self.algorithm_class.__init__ = partial(self.algorithm_class.__init__, _envs=environment_return_functions)
+            self.algorithm_class = partial(
+                self.algorithm_class,
+                _envs=training_environments,  # functions for envs creation
+            )
+            # use stub as a train environments
+            # for creating policy with the right model properties
+            training_environments = stub_envs
 
         super().train(total_timesteps, connector, training_environments, *args, **kwargs)
-        self.algorithm.shutdown()
+        # base sb3 algorithm class doesn't have an implementation of the shutdown method,
+        # only our custom implementation of it - has it
+        if hasattr(self.algorithm, "shutdown"):
+            self.algorithm.shutdown()
