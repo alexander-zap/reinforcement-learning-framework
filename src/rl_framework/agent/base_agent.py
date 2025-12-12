@@ -68,6 +68,14 @@ class Agent(ABC):
 
         episode_rewards = []
 
+        #
+        if isinstance(evaluation_environments[0], tuple):
+            gym_envs = []
+            for _, env_func in evaluation_environments:
+                gym_envs.extend(env_func())
+
+            evaluation_environments = gym_envs
+
         with tqdm(total=n_eval_episodes) as pbar:
             if isinstance(evaluation_environments[0], pettingzoo.ParallelEnv):
 
@@ -165,6 +173,9 @@ class Agent(ABC):
 
             for thread in threads:
                 thread.join()
+
+        for env in evaluation_environments:
+            env.close()
 
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)
