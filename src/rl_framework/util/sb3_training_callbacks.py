@@ -81,7 +81,28 @@ class LoggingCallback(BaseCallback):
                     for metric_name, per_agent_values in self.episode_step_metrics.items():
                         if per_agent_values[done_index]:
                             self.connector.log_value_with_timestep(
-                                self.num_timesteps, np.mean(per_agent_values[done_index]), f"Mean - {metric_name}"
+                                self.num_timesteps,
+                                np.mean(per_agent_values[done_index]),
+                                value_name=f"Mean - {metric_name}",
+                                title_name=metric_name,
+                            )
+                            self.connector.log_value_with_timestep(
+                                self.num_timesteps,
+                                np.std(per_agent_values[done_index]),
+                                value_name=f"Std - {metric_name}",
+                                title_name=metric_name,
+                            )
+                            self.connector.log_value_with_timestep(
+                                self.num_timesteps,
+                                np.max(per_agent_values[done_index]),
+                                value_name=f"Max - {metric_name}",
+                                title_name=metric_name,
+                            )
+                            self.connector.log_value_with_timestep(
+                                self.num_timesteps,
+                                np.min(per_agent_values[done_index]),
+                                value_name=f"Min - {metric_name}",
+                                title_name=metric_name,
                             )
 
                 if self.locals["infos"][done_index].get("episode_end_reason", None) is not None:
@@ -89,7 +110,10 @@ class LoggingCallback(BaseCallback):
                     counter = Counter(self.episode_end_reasons)
                     for reason, count in counter.items():
                         self.connector.log_value_with_timestep(
-                            self.num_timesteps, count / len(self.episode_end_reasons), f"Episode end reason - {reason}"
+                            self.num_timesteps,
+                            count / len(self.episode_end_reasons),
+                            value_name=f"Episode end reason - {reason}",
+                            title_name="Episode end reasons",
                         )
 
                 if self.log_distributions:

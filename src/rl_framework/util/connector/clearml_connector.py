@@ -101,7 +101,9 @@ class ClearMLConnector(Connector):
             title=title, series=histogram_name, figure=plt, iteration=timestep, report_interactive=True
         )
 
-    def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
+    def log_value_with_timestep(
+        self, timestep: int, value_scalar: SupportsFloat, value_name: Text, title_name: Text = None
+    ) -> None:
         """
         Log scalar value to create a sequence of values over time steps.
         Will appear in the "Scalar" section of the ClearML experiment page as a graph.
@@ -110,10 +112,12 @@ class ClearMLConnector(Connector):
             timestep: Time step which the scalar value corresponds to (x-value)
             value_scalar: Scalar value which should be logged (y-value)
             value_name: Name of scalar value (e.g., "avg. sum of reward")
+            title_name: Name of the graph (e.g., "various reward metrics"); if None, value_name is used
         """
         super().log_value_with_timestep(timestep, value_scalar, value_name)
+        title_name = title_name or value_name
         self.task.get_logger().report_scalar(
-            title=value_name, series=value_name, value=float(value_scalar), iteration=timestep
+            title=title_name, series=value_name, value=float(value_scalar), iteration=timestep
         )
 
     def log_value(self, metric_scalar: SupportsFloat, metric_name: Text) -> None:
