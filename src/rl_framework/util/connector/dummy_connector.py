@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Optional
 
-from rl_framework.util import Environment
 from rl_framework.util.connector import Connector, DownloadConfig, UploadConfig
+from rl_framework.util.types import Environment
 
 
 class DummyConnector(Connector):

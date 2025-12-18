@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, SupportsFloat, Text, Tuple
 
-from rl_framework.util import Environment
+from rl_framework.util.types import Environment
 
 
 @dataclass

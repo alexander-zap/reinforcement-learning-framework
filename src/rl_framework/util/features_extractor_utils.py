@@ -8,7 +8,7 @@ import pettingzoo
 import torch.nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-from rl_framework.util import Environment
+from rl_framework.util.types import Environment
 
 
 class FeaturesExtractor(ABC, torch.nn.Module):

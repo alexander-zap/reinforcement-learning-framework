@@ -10,7 +10,7 @@ import stable_baselines3
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 from huggingface_hub.repocard import metadata_eval_result, metadata_save
 
-from rl_framework.util import Environment
+from rl_framework.util.types import Environment
 from rl_framework.util.video_recording import record_video
 
 from .base_connector import Connector, DownloadConfig, UploadConfig
