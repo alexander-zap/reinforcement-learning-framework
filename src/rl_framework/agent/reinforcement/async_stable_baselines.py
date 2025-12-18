@@ -1,14 +1,12 @@
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Type
 
-import gymnasium
-import pettingzoo
 import stable_baselines3
 from async_gym_agents.agents.async_agent import get_injected_agent
 from async_gym_agents.envs.multi_env import IndexableMultiEnv
-from stable_baselines3.common.base_class import BaseAlgorithm, VecEnv
+from stable_baselines3.common.base_class import BaseAlgorithm
 
 from rl_framework.agent.reinforcement.stable_baselines import StableBaselinesAgent
-from rl_framework.util import Connector, FeaturesExtractor
+from rl_framework.util import Connector, Environment, FeaturesExtractor
 
 
 class AsyncStableBaselinesAgent(StableBaselinesAgent):
@@ -18,7 +16,8 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         algorithm_parameters: Optional[Dict] = None,
         features_extractor: Optional[FeaturesExtractor] = None,
     ):
-        super().__init__(get_injected_agent(algorithm_class, use_mp=True), algorithm_parameters, features_extractor)
+        use_mp = algorithm_parameters.pop("use_mp", True) if algorithm_parameters else True
+        super().__init__(get_injected_agent(algorithm_class, use_mp=use_mp), algorithm_parameters, features_extractor)
 
     def to_vectorized_env(self, env_fns):
         return IndexableMultiEnv(env_fns)
@@ -27,7 +26,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         self,
         total_timesteps: int = 100000,
         connector: Optional[Connector] = None,
-        training_environments: List[Union[gymnasium.Env, pettingzoo.ParallelEnv, VecEnv, tuple]] = None,
+        training_environments: List[Environment] = None,
         *args,
         **kwargs,
     ):

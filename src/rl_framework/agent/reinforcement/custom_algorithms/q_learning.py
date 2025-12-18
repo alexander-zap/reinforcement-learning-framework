@@ -158,10 +158,10 @@ class QLearning(CustomAlgorithm):
                 f"training on multiple environments in parallel. Continuing with one environment as "
                 f"training environment."
             )
-        elif isinstance(training_environments[0], pettingzoo.ParallelEnv):
+        elif not isinstance(training_environments[0], gym.Env):
             raise ValueError(
-                f"Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
-                f"training on multi-agent environments."
+                f"Reinforcement Learning algorithm {self.__class__.__qualname__} currently does not support "
+                f"training on environment of type {type(training_environments[0])}."
             )
 
         training_environment = training_environments[0]

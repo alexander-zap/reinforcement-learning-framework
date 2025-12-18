@@ -85,8 +85,13 @@ def wrap_environment_with_features_extractor_preprocessor(
 
     if isinstance(environment, pettingzoo.ParallelEnv):
         wrapped_environment = FeaturesExtractorPreprocessingPettingzooWrapper(environment, features_extractor)
-    else:
+    elif isinstance(environment, gym.Env):
         wrapped_environment = FeaturesExtractorPreprocessingGymWrapper(environment, features_extractor)
+    else:
+        raise TypeError(
+            "Environment must be either a gym.Env or pettingzoo.ParallelEnv. "
+            "Other types are not supported yet for using features_extractor."
+        )
     return wrapped_environment
 
 

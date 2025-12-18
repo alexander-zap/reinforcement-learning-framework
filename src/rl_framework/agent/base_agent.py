@@ -1,7 +1,7 @@
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type
 
 import gymnasium as gym
 import numpy as np
@@ -10,6 +10,8 @@ from tqdm import tqdm
 
 from rl_framework.util import (
     Connector,
+    Environment,
+    EnvironmentFactory,
     FeaturesExtractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
@@ -44,7 +46,7 @@ class Agent(ABC):
 
     def evaluate(
         self,
-        evaluation_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
+        evaluation_environments: List[Environment],
         n_eval_episodes: int,
         seeds: Optional[List[int]] = None,
         deterministic: bool = False,
@@ -67,14 +69,6 @@ class Agent(ABC):
             ]
 
         episode_rewards = []
-
-        #
-        if isinstance(evaluation_environments[0], tuple):
-            gym_envs = []
-            for _, env_func in evaluation_environments:
-                gym_envs.extend(env_func())
-
-            evaluation_environments = gym_envs
 
         with tqdm(total=n_eval_episodes) as pbar:
             if isinstance(evaluation_environments[0], pettingzoo.ParallelEnv):
@@ -129,7 +123,15 @@ class Agent(ABC):
                             prev_observations, _ = evaluation_environment.reset()
                             episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
 
-            else:
+            elif isinstance(evaluation_environments[0], gym.Env) or isinstance(
+                evaluation_environments[0], EnvironmentFactory
+            ):
+                if isinstance(evaluation_environments[0], EnvironmentFactory):
+                    environments_from_callable = []
+                    for _, env_func in evaluation_environments:
+                        environments_from_callable.extend(env_func())
+                    evaluation_environments = environments_from_callable
+
                 if seeds is None:
                     seeds = []
 

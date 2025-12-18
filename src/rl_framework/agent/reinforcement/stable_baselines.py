@@ -4,7 +4,7 @@ from copy import deepcopy
 from functools import partial
 from os import cpu_count
 from pathlib import Path
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Type
 
 import gymnasium
 import numpy as np
@@ -23,6 +23,8 @@ from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    Environment,
+    EnvironmentFactory,
     FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
@@ -76,7 +78,7 @@ class StableBaselinesAgent(RLAgent):
         self,
         total_timesteps: int = 100000,
         connector: Optional[Connector] = None,
-        training_environments: List[Union[gymnasium.Env, pettingzoo.ParallelEnv, VecEnv]] = None,
+        training_environments: List[Environment] = None,
         *args,
         **kwargs,
     ):
@@ -89,7 +91,7 @@ class StableBaselinesAgent(RLAgent):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gymnasium.Env, pettingzoo.ParallelEnv]):
+            training_environments (List[gymnasium.Env, pettingzoo.ParallelEnv, VecEnv]):
                 List of environments on which the agent should be trained on.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
@@ -192,6 +194,16 @@ class StableBaselinesAgent(RLAgent):
         elif isinstance(training_environments[0], VecEnv):
             assert len(training_environments) == 1
             vectorized_environment = training_environments[0]
+
+        elif isinstance(training_environments[0], EnvironmentFactory):
+            environments_from_callable = []
+            for _, env_func in training_environments:
+                environments_from_callable.extend(env_func())
+            training_environments = environments_from_callable
+            environment_return_functions = [
+                partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
+            ]
+            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")

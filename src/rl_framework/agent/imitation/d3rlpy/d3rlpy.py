@@ -284,12 +284,19 @@ class D3RLPYAgent(ILAgent):
                 )
 
             vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
-        else:
+
+        elif isinstance(training_environments[0], gym.Env):
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
                 partial(make_env, env_index) for env_index in range(len(training_environments))
             ]
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+
+        else:
+            raise TypeError(
+                f"Training environment of unsupported type {type(training_environments[0])} "
+                f"provided to offline reinforcement learning agent."
+            )
 
         replay_buffer = ReplayBuffer(
             buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=trajectories, env=training_environments[0]
