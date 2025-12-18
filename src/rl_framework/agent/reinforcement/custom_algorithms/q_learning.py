@@ -3,11 +3,10 @@ import os
 import pickle
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import gymnasium as gym
 import numpy as np
-import pettingzoo
 from tqdm import tqdm
 
 from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
@@ -15,6 +14,7 @@ from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm im
 )
 from rl_framework.util import (
     Connector,
+    Environment,
     FeaturesExtractor,
     encode_observations_with_features_extractor,
 )
@@ -104,7 +104,7 @@ class QLearning(CustomAlgorithm):
     def train(
         self,
         connector: Connector,
-        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
+        training_environments: List[Environment],
         total_timesteps: int,
         *args,
         **kwargs,

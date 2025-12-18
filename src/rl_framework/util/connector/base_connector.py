@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, SupportsFloat, Text, Tuple
 
-import gymnasium as gym
+from rl_framework.util import Environment
 
 
 @dataclass
@@ -120,7 +120,7 @@ class Connector(ABC):
     def upload(
         self,
         agent,
-        video_recording_environment: Optional[gym.Env] = None,
+        video_recording_environment: Optional[Environment] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,

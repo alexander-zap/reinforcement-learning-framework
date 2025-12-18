@@ -4,7 +4,7 @@ import math
 import pickle
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, Optional, Type
 
 import d3rlpy.dataset
 import gymnasium as gym
@@ -81,6 +81,7 @@ from rl_framework.agent.imitation_learning_agent import Agent, ILAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    Environment,
     FeaturesExtractor,
     patch_d3rlpy,
     wrap_environment_with_features_extractor_preprocessor,
@@ -198,7 +199,7 @@ class D3RLPYAgent(ILAgent):
         episode_sequence: EpisodeSequence,
         validation_episode_sequence: Optional[EpisodeSequence] = None,
         connector: Optional[Connector] = None,
-        training_environments: Optional[List[Union[gym.Env, pettingzoo.ParallelEnv]]] = None,
+        training_environments: Optional[Environment] = None,
         *args,
         **kwargs,
     ):

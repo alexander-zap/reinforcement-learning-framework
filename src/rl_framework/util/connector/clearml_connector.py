@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, SupportsFloat, Text
 
-import gymnasium as gym
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -15,6 +14,7 @@ import stable_baselines3
 from clearml import Task
 from clearml.model import InputModel
 
+from rl_framework.util.types import Environment
 from rl_framework.util.video_recording import record_video
 
 from .base_connector import Connector, DownloadConfig, UploadConfig
@@ -135,7 +135,7 @@ class ClearMLConnector(Connector):
     def upload(
         self,
         agent,
-        video_recording_environment: Optional[gym.Env] = None,
+        video_recording_environment: Optional[Environment] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,

@@ -1,9 +1,8 @@
 from pathlib import Path
 from typing import Optional
 
-import gymnasium as gym
-
-from .base_connector import Connector, DownloadConfig, UploadConfig
+from rl_framework.util import Environment
+from rl_framework.util.connector import Connector, DownloadConfig, UploadConfig
 
 
 class DummyConnector(Connector):
@@ -13,7 +12,7 @@ class DummyConnector(Connector):
     def upload(
         self,
         agent,
-        video_recording_environment: Optional[gym.Env] = None,
+        video_recording_environment: Optional[Environment] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
