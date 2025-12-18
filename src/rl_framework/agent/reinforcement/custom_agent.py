@@ -60,7 +60,7 @@ class CustomAgent(RLAgent):
         This training is done by using the agent-on-environment training method provided by the custom algorithm.
 
         Args:
-            training_environments (List[gym.Env, pettingzoo.ParallelEnv]): Environment on which the agent should be
+            training_environments (List[Environment]): Environment on which the agent should be
                 trained on. Multiple environments enables parallel training of an agent.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)

@@ -118,8 +118,7 @@ class QLearning(CustomAlgorithm):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gym.Env, pettingzoo.ParallelEnv]): List of environments on which the agent
-                should be trained on.
+            training_environments (List[Environment]): List of environments on which the agent should be trained on.
                 # NOTE: This class only supports training on one single-agent environment.
             total_timesteps (int): Number of timesteps the agent should train for before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)

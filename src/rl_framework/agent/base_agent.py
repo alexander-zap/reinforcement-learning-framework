@@ -55,7 +55,7 @@ class Agent(ABC):
         Evaluate the agent for ``n_eval_episodes`` episodes and returns average reward and std of reward.
 
         Args:
-            evaluation_environments (list of gym.Env or pettingzoo.ParallelEnv): The evaluation environments.
+            evaluation_environments (List[Environment]): The evaluation environments.
             n_eval_episodes (int): Number of episode to evaluate the agent.
             seeds (Optional[List[int]]): List of seeds for evaluations.
                 No seed is used if not provided or fewer seeds are provided then n_eval_episodes.

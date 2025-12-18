@@ -6,7 +6,12 @@ from async_gym_agents.envs.multi_env import IndexableMultiEnv
 from stable_baselines3.common.base_class import BaseAlgorithm
 
 from rl_framework.agent.reinforcement.stable_baselines import StableBaselinesAgent
-from rl_framework.util import Connector, Environment, FeaturesExtractor
+from rl_framework.util import (
+    Connector,
+    Environment,
+    EnvironmentFactory,
+    FeaturesExtractor,
+)
 
 
 class AsyncStableBaselinesAgent(StableBaselinesAgent):
@@ -34,7 +39,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         # - each tuple does space declaration for the policy creation
         # (stub env) + method returning an environment
         # - expected type: list[tuple[gymnasium.Env, Callable]]
-        if isinstance(training_environments[0], tuple):
+        if isinstance(training_environments[0], EnvironmentFactory):
             stub_envs, environment_return_fns = map(tuple, zip(*training_environments))
             # `_envs` argument of AsyncAgentInjector class is used to create environments delayed (for multiprocessing)
 
