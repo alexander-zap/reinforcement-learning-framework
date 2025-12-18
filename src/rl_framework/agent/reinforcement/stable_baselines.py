@@ -24,7 +24,6 @@ from rl_framework.util import (
     Connector,
     DummyConnector,
     Environment,
-    EnvironmentFactory,
     FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
@@ -194,7 +193,8 @@ class StableBaselinesAgent(RLAgent):
             assert len(training_environments) == 1
             vectorized_environment = training_environments[0]
 
-        elif isinstance(training_environments[0], EnvironmentFactory):
+        # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
+        elif isinstance(training_environments[0], tuple):
             environments_from_callable = []
             for _, env_func in training_environments:
                 environments_from_callable.extend(env_func())

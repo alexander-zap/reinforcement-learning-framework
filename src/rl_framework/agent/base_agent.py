@@ -126,7 +126,8 @@ class Agent(ABC):
             elif isinstance(evaluation_environments[0], gym.Env) or isinstance(
                 evaluation_environments[0], EnvironmentFactory
             ):
-                if isinstance(evaluation_environments[0], EnvironmentFactory):
+                # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
+                if isinstance(evaluation_environments[0], tuple):
                     environments_from_callable = []
                     for _, env_func in evaluation_environments:
                         environments_from_callable.extend(env_func())
