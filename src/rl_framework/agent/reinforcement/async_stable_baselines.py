@@ -1,4 +1,3 @@
-from functools import partial
 from typing import Dict, List, Optional, Type, Union
 
 import gymnasium
@@ -37,12 +36,17 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         # (stub env) + method returning an environment
         # - expected type: list[tuple[gymnasium.Env, Callable]]
         if isinstance(training_environments[0], tuple):
-            stub_envs, training_environments = map(tuple, zip(*training_environments))
+            stub_envs, environment_return_fns = map(tuple, zip(*training_environments))
             # `_envs` argument of AsyncAgentInjector class is used to create environments delayed (for multiprocessing)
-            self.algorithm_class = partial(
-                self.algorithm_class,
-                envs=training_environments,  # functions for envs creation
-            )
+
+            original_init = self.algorithm_class.__init__
+
+            def wrapped_init(this, *args, **kwargs):
+                kwargs.setdefault("envs", environment_return_fns)  # functions for envs creation
+                return original_init(this, *args, **kwargs)
+
+            self.algorithm_class.__init__ = wrapped_init
+
             # use stub as a train environments
             # for creating policy with the right model properties
             training_environments = stub_envs
