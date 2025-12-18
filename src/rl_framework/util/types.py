@@ -1,36 +1,12 @@
-from typing import Generator, Generic, Sized, TypeVar
+from typing import Callable, List, Union
 
-T = TypeVar("T")
+import gymnasium as gym
+from pettingzoo import ParallelEnv
+from stable_baselines3.common.vec_env import VecEnv
 
+# tuple of
+#   - gymnasium.Env (defining observation and action space)
+#   - Callable returning a gymnasium.Env or a list of gym.Env
+EnvironmentFactory = tuple[gym.Env, Callable[[], Union[gym.Env, List[gym.Env]]]]
 
-class SizedGenerator(Generator[T, None, None], Sized, Generic[T]):
-    def __init__(self, generator: Generator, size: int, looping: bool):
-        self.generator = generator
-        self.total_number_of_elements_in_generator = size
-        self.number_of_elements_in_current_generator_loop = size
-        self.looping = looping
-
-    def __len__(self):
-        return self.number_of_elements_in_current_generator_loop
-
-    def __iter__(self):
-        return self
-
-    def __next__(self) -> T:
-        next_element = next(self.generator)
-        self.number_of_elements_in_current_generator_loop -= 1
-        if self.number_of_elements_in_current_generator_loop <= 0:
-            if self.looping:
-                self.number_of_elements_in_current_generator_loop = self.total_number_of_elements_in_generator
-            else:
-                raise StopIteration
-        return next_element
-
-    def send(self, value):
-        return self.generator.send(value)
-
-    def throw(self, typ, val=None, tb=None):
-        return self.generator.throw(typ, val, tb)
-
-    def close(self):
-        return self.generator.close()
+Environment = Union[gym.Env, ParallelEnv, VecEnv, EnvironmentFactory]

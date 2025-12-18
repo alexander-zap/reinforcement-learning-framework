@@ -4,7 +4,7 @@ import math
 import pickle
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, Optional, Type
 
 import d3rlpy.dataset
 import gymnasium as gym
@@ -81,6 +81,7 @@ from rl_framework.agent.imitation_learning_agent import Agent, ILAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    Environment,
     FeaturesExtractor,
     patch_d3rlpy,
     wrap_environment_with_features_extractor_preprocessor,
@@ -198,7 +199,7 @@ class D3RLPYAgent(ILAgent):
         episode_sequence: EpisodeSequence,
         validation_episode_sequence: Optional[EpisodeSequence] = None,
         connector: Optional[Connector] = None,
-        training_environments: Optional[List[Union[gym.Env, pettingzoo.ParallelEnv]]] = None,
+        training_environments: Optional[Environment] = None,
         *args,
         **kwargs,
     ):
@@ -284,12 +285,19 @@ class D3RLPYAgent(ILAgent):
                 )
 
             vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
-        else:
+
+        elif isinstance(training_environments[0], gym.Env):
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
                 partial(make_env, env_index) for env_index in range(len(training_environments))
             ]
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+
+        else:
+            raise TypeError(
+                f"Training environment of unsupported type {type(training_environments[0])} "
+                f"provided to offline reinforcement learning agent."
+            )
 
         replay_buffer = ReplayBuffer(
             buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=trajectories, env=training_environments[0]

@@ -22,6 +22,6 @@ from .sb3_training_callbacks import (
     SavingCallback,
     add_callbacks_to_callback,
 )
-from .types import SizedGenerator
+from .types import Environment, EnvironmentFactory
 from .util import patch_d3rlpy, patch_datasets, patch_imitation_safe_to_tensor
 from .video_recording import record_video

@@ -1,8 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Optional, Type, Union
-
-import gymnasium as gym
-import pettingzoo
+from typing import Dict, List, Optional, Type
 
 from rl_framework.agent.reinforcement.custom_algorithms import (
     CustomAlgorithm,
@@ -12,6 +9,7 @@ from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    Environment,
     FeaturesExtractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
@@ -52,7 +50,7 @@ class CustomAgent(RLAgent):
         self,
         total_timesteps: int,
         connector: Optional[Connector] = None,
-        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]] = None,
+        training_environments: List[Environment] = None,
         *args,
         **kwargs,
     ):
@@ -62,7 +60,7 @@ class CustomAgent(RLAgent):
         This training is done by using the agent-on-environment training method provided by the custom algorithm.
 
         Args:
-            training_environments (List[gym.Env, pettingzoo.ParallelEnv]): Environment on which the agent should be
+            training_environments (List[Environment]): Environment on which the agent should be
                 trained on. Multiple environments enables parallel training of an agent.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)

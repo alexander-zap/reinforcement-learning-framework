@@ -3,6 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import gymnasium as gym
 import imageio
 import numpy as np
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecVideoRecorder
@@ -28,7 +29,13 @@ def record_video(
     if sb3_replay:
         # Create a Stable-baselines3 vector environment (VecEnv)
         if not isinstance(video_recording_environment, VecEnv):
-            video_recording_environment = DummyVecEnv([lambda: video_recording_environment])
+            if isinstance(video_recording_environment, gym.Env):
+                video_recording_environment = DummyVecEnv([lambda: video_recording_environment])
+            else:
+                raise ValueError(
+                    "For SB3 replay recording, the provided environment needs to be of type "
+                    "gym.Env or stable_baselines3.common.vec_env.VecEnv."
+                )
 
         # This is another temporary directory for video outputs (replay video file will be copied to repository path).
         # Copying is required, since SB3 creates other files which we don't want in the repo.

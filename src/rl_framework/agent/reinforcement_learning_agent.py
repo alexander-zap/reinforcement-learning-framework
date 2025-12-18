@@ -1,11 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Union
-
-import gymnasium as gym
-import pettingzoo
+from typing import List, Optional
 
 from rl_framework.agent.base_agent import Agent
-from rl_framework.util import Connector
+from rl_framework.util import Connector, Environment
 
 
 class RLAgent(Agent, ABC):
@@ -14,7 +11,7 @@ class RLAgent(Agent, ABC):
         self,
         total_timesteps: int,
         connector: Optional[Connector],
-        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
+        training_environments: List[Environment],
         *args,
         **kwargs,
     ):
