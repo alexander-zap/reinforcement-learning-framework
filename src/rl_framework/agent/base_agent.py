@@ -11,7 +11,6 @@ from tqdm import tqdm
 from rl_framework.util import (
     Connector,
     Environment,
-    EnvironmentFactory,
     FeaturesExtractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
@@ -123,9 +122,7 @@ class Agent(ABC):
                             prev_observations, _ = evaluation_environment.reset()
                             episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
 
-            elif isinstance(evaluation_environments[0], gym.Env) or isinstance(
-                evaluation_environments[0], EnvironmentFactory
-            ):
+            elif isinstance(evaluation_environments[0], gym.Env) or isinstance(evaluation_environments[0], tuple):
                 # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
                 if isinstance(evaluation_environments[0], tuple):
                     environments_from_callable = []
