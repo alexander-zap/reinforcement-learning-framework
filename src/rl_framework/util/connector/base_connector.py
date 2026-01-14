@@ -94,7 +94,9 @@ class Connector(ABC):
         """
         self.histogram_sequences_to_log[histogram_name].append((histogram_values, timestep))
 
-    def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
+    def log_value_with_timestep(
+        self, timestep: int, value_scalar: SupportsFloat, value_name: Text, title_name: Text = None
+    ) -> None:
         """
         Log scalar value to create a sequence of values over time steps.
         Can be used afterward for visualization (e.g., plotting of value over time).
@@ -102,7 +104,9 @@ class Connector(ABC):
         Args:
             timestep: Time step which the scalar value corresponds to (x-value)
             value_scalar: Scalar value which should be logged (y-value)
-            value_name: Name of scalar value (e.g., "episode_reward")
+            value_name: Name of scalar value (e.g., "avg. sum of reward")
+            title_name: Name of the graph (e.g., "various reward metrics"); if None, value_name is used
+                # NOTE: title_name is not used in this base implementation, but may be used in subclasses
         """
         self.value_sequences_to_log[value_name].append((timestep, value_scalar))
 
