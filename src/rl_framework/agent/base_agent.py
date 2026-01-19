@@ -1,7 +1,7 @@
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type
 
 import gymnasium as gym
 import numpy as np
@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from rl_framework.util import (
     Connector,
+    Environment,
     FeaturesExtractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
@@ -44,7 +45,7 @@ class Agent(ABC):
 
     def evaluate(
         self,
-        evaluation_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
+        evaluation_environments: List[Environment],
         n_eval_episodes: int,
         seeds: Optional[List[int]] = None,
         deterministic: bool = False,
@@ -53,7 +54,7 @@ class Agent(ABC):
         Evaluate the agent for ``n_eval_episodes`` episodes and returns average reward and std of reward.
 
         Args:
-            evaluation_environments (list of gym.Env or pettingzoo.ParallelEnv): The evaluation environments.
+            evaluation_environments (List[Environment]): The evaluation environments.
             n_eval_episodes (int): Number of episode to evaluate the agent.
             seeds (Optional[List[int]]): List of seeds for evaluations.
                 No seed is used if not provided or fewer seeds are provided then n_eval_episodes.
@@ -121,7 +122,14 @@ class Agent(ABC):
                             prev_observations, _ = evaluation_environment.reset()
                             episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
 
-            else:
+            elif isinstance(evaluation_environments[0], gym.Env) or isinstance(evaluation_environments[0], tuple):
+                # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
+                if isinstance(evaluation_environments[0], tuple):
+                    environments_from_callable = []
+                    for _, env_func in evaluation_environments:
+                        environments_from_callable.extend(env_func())
+                    evaluation_environments = environments_from_callable
+
                 if seeds is None:
                     seeds = []
 
@@ -166,6 +174,9 @@ class Agent(ABC):
             for thread in threads:
                 thread.join()
 
+        for env in evaluation_environments:
+            env.close()
+
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)
         return mean_reward, std_reward
@@ -192,14 +203,14 @@ class Agent(ABC):
     def load_from_file(self, file_path: Path, algorithm_parameters: Optional[Dict], *args, **kwargs) -> None:
         raise NotImplementedError
 
-    def upload(self, connector: Connector, video_recording_environment: Optional[gym.Env] = None) -> None:
+    def upload(self, connector: Connector, video_recording_environment: Optional[Environment] = None) -> None:
         """
         Evaluate and upload the decision-making agent to the connector.
             Additional option: Generate a video of the agent interacting with the environment.
 
         Args:
             connector (Connector): Connector for uploading.
-            video_recording_environment (gym.Env): Environment used for clip creation before upload.
+            video_recording_environment (Environment): Environment used for clip creation before upload.
                 Optional. If not provided, no video will be recorded.
         """
         connector.upload(

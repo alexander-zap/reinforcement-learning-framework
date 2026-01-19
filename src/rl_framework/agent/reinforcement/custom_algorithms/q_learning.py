@@ -3,11 +3,10 @@ import os
 import pickle
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import gymnasium as gym
 import numpy as np
-import pettingzoo
 from tqdm import tqdm
 
 from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm import (
@@ -15,6 +14,7 @@ from rl_framework.agent.reinforcement.custom_algorithms.base_custom_algorithm im
 )
 from rl_framework.util import (
     Connector,
+    Environment,
     FeaturesExtractor,
     encode_observations_with_features_extractor,
 )
@@ -104,7 +104,7 @@ class QLearning(CustomAlgorithm):
     def train(
         self,
         connector: Connector,
-        training_environments: List[Union[gym.Env, pettingzoo.ParallelEnv]],
+        training_environments: List[Environment],
         total_timesteps: int,
         *args,
         **kwargs,
@@ -118,8 +118,7 @@ class QLearning(CustomAlgorithm):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gym.Env, pettingzoo.ParallelEnv]): List of environments on which the agent
-                should be trained on.
+            training_environments (List[Environment]): List of environments on which the agent should be trained on.
                 # NOTE: This class only supports training on one single-agent environment.
             total_timesteps (int): Number of timesteps the agent should train for before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
@@ -158,10 +157,10 @@ class QLearning(CustomAlgorithm):
                 f"training on multiple environments in parallel. Continuing with one environment as "
                 f"training environment."
             )
-        elif isinstance(training_environments[0], pettingzoo.ParallelEnv):
+        elif not isinstance(training_environments[0], gym.Env):
             raise ValueError(
-                f"Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
-                f"training on multi-agent environments."
+                f"Reinforcement Learning algorithm {self.__class__.__qualname__} currently does not support "
+                f"training on environment of type {type(training_environments[0])}."
             )
 
         training_environment = training_environments[0]

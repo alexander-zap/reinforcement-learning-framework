@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Union
+from typing import Any
 
 import gymnasium as gym
 import numpy
@@ -7,6 +7,8 @@ import numpy as np
 import pettingzoo
 import torch.nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
+from rl_framework.util.types import Environment
 
 
 class FeaturesExtractor(ABC, torch.nn.Module):
@@ -42,8 +44,8 @@ def encode_observations_with_features_extractor(
 
 
 def wrap_environment_with_features_extractor_preprocessor(
-    environment: Union[gym.Env, pettingzoo.ParallelEnv], features_extractor: FeaturesExtractor
-) -> Union[gym.Env, pettingzoo.ParallelEnv]:
+    environment: Environment, features_extractor: FeaturesExtractor
+) -> Environment:
     class FeaturesExtractorPreprocessingGymWrapper(gym.ObservationWrapper):
         def __init__(self, env, features_extractor: FeaturesExtractor):
             super().__init__(env)
@@ -85,8 +87,13 @@ def wrap_environment_with_features_extractor_preprocessor(
 
     if isinstance(environment, pettingzoo.ParallelEnv):
         wrapped_environment = FeaturesExtractorPreprocessingPettingzooWrapper(environment, features_extractor)
-    else:
+    elif isinstance(environment, gym.Env):
         wrapped_environment = FeaturesExtractorPreprocessingGymWrapper(environment, features_extractor)
+    else:
+        raise TypeError(
+            "Environment must be either a gym.Env or pettingzoo.ParallelEnv. "
+            "Other types are not supported yet for using features_extractor."
+        )
     return wrapped_environment
 
 
