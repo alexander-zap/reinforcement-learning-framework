@@ -16,8 +16,10 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         algorithm_parameters: Optional[Dict] = None,
         features_extractor: Optional[FeaturesExtractor] = None,
     ):
-        use_mp = algorithm_parameters.pop("use_mp", True) if algorithm_parameters else True
-        super().__init__(get_injected_agent(algorithm_class, use_mp=use_mp), algorithm_parameters, features_extractor)
+        self.use_mp = algorithm_parameters.pop("use_mp", True) if algorithm_parameters else True
+        super().__init__(
+            get_injected_agent(algorithm_class, use_mp=self.use_mp), algorithm_parameters, features_extractor
+        )
 
     def to_vectorized_env(self, env_fns):
         return IndexableMultiEnv(env_fns)
@@ -34,7 +36,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         # - each tuple does space declaration for the policy creation
         # (stub env) + method returning an environment
         # - expected type: list[tuple[gymnasium.Env, Callable]]
-        if isinstance(training_environments[0], tuple):
+        if isinstance(training_environments[0], tuple) and self.use_mp:
             stub_envs, environment_return_fns = map(tuple, zip(*training_environments))
             # `_envs` argument of AsyncAgentInjector class is used to create environments delayed (for multiprocessing)
 
