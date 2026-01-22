@@ -224,7 +224,12 @@ class StableBaselinesAgent(RLAgent):
                 algorithm_kwargs["path"] = tmp_path
                 algorithm_kwargs["custom_objects"] = self.algorithm_parameters
                 # noinspection PyUnresolvedReferences
-                self.algorithm = self.algorithm_class.load(**algorithm_kwargs)
+                device = self.algorithm_parameters.get("device", None)
+                self.algorithm = (
+                    self.algorithm_class.load(**algorithm_kwargs)
+                    if not device
+                    else self.algorithm_class.load(**algorithm_kwargs, device=device)
+                )
 
         callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
