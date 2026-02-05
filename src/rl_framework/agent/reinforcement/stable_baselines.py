@@ -111,7 +111,6 @@ class StableBaselinesAgent(RLAgent):
                 for env in training_environments
             ]
 
-        envs = None
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
             vector_envs = []
             for pettingzoo_environment in training_environments:
@@ -191,11 +190,8 @@ class StableBaselinesAgent(RLAgent):
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
         elif isinstance(training_environments[0], VecEnv):
-            if len(training_environments) == 1:
-                vectorized_environment = training_environments[0]
-            else:
-                envs = training_environments
-                vectorized_environment = training_environments[0]
+            assert len(training_environments) == 1
+            vectorized_environment = training_environments[0]
 
         # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
         elif isinstance(training_environments[0], tuple):
@@ -211,7 +207,7 @@ class StableBaselinesAgent(RLAgent):
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
 
-        algorithm_kwargs = {"env": vectorized_environment, "envs": envs}
+        algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
             if self.features_extractor:

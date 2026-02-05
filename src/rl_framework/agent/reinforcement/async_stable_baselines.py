@@ -36,7 +36,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         # - each tuple does space declaration for the policy creation
         # (stub env) + method returning an environment
         # - expected type: list[tuple[gymnasium.Env, Callable]]
-        if isinstance(training_environments[0], tuple) and self.use_mp:
+        if isinstance(training_environments[0], tuple):
             stub_envs, environment_return_fns = map(tuple, zip(*training_environments))
             # `_envs` argument of AsyncAgentInjector class is used to create environments delayed (for multiprocessing)
 
