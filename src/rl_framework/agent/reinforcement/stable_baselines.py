@@ -196,13 +196,17 @@ class StableBaselinesAgent(RLAgent):
         # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
         elif isinstance(training_environments[0], tuple):
             environments_from_callable = []
-            for _, env_func in training_environments:
+            stub_environment = None
+            for stub_env, env_func in training_environments:
                 environments_from_callable.extend(env_func())
+                stub_environment = stub_env
             training_environments = environments_from_callable
             environment_return_functions = [
                 partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
             ]
-            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+            vectorized_environment = self.to_vectorized_env(
+                env_fns=environment_return_functions, stub_env=stub_environment
+            )
 
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
@@ -235,7 +239,7 @@ class StableBaselinesAgent(RLAgent):
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
         vectorized_environment.close()
 
-    def to_vectorized_env(self, env_fns) -> VecEnv:
+    def to_vectorized_env(self, env_fns, stub_env=None) -> VecEnv:
         return SubprocVecEnv(env_fns)
 
     def choose_action(self, observation: object, deterministic: bool = False, *args, **kwargs):
