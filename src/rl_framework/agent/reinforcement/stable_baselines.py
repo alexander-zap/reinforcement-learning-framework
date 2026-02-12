@@ -195,15 +195,13 @@ class StableBaselinesAgent(RLAgent):
 
         # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
         elif isinstance(training_environments[0], tuple):
-            environments_from_callable = []
+            environment_return_functions = []
             stub_environment = None
             for stub_env, env_func in training_environments:
-                environments_from_callable.extend(env_func())
+                environment_return_functions.append(env_func)
                 stub_environment = stub_env
-            training_environments = environments_from_callable
-            environment_return_functions = [
-                partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
-            ]
+
+            # noinspection PyCallingNonCallable
             vectorized_environment = self.to_vectorized_env(
                 env_fns=environment_return_functions, stub_env=stub_environment
             )
