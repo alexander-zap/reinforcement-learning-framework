@@ -1,5 +1,5 @@
 from collections import Counter, deque
-from typing import Any, Deque, List, Union
+from typing import Any, List, Union
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
@@ -34,8 +34,7 @@ class LoggingCallback(BaseCallback):
         self.connector = connector
         self.log_distributions = log_distributions
 
-        # Tracking episode reward per episode
-        #   (np.array, one index per agent, continuously updated by adding rewards at each step)
+        # Tracking episode reward per episode (np array per agent, continuously updated by adding rewards at each step)
         self.episode_reward: Union[np.ndarray | None] = None
         # Tracking actions per episode (one list per agent, updated by appending action at each step)
         # NOTE: Even though officially actions can be Any, for logging we assume they are int or float
@@ -179,55 +178,5 @@ class SavingCallback(BaseCallback):
                 checkpoint_id=self.num_timesteps,
             )
             self.next_upload = self.num_timesteps + self.checkpoint_frequency
-
-        return True
-
-
-class ExperimentPruningCallback(BaseCallback):
-    """
-    A custom callback which stop the training the experiment does not reach performance threshold at given step amount.
-    """
-
-    def __init__(self, episode_reward_threshold: float = 0.0, pruning_start_at: int = 1000000, verbose=0):
-        """
-        Args:
-            episode_reward_threshold: If the mean episode reward of the last 1000 episodes is below this threshold
-                (after `pruning_start_at` steps), the experiment will be pruned.
-            pruning_start_at: After how many steps the potential pruning should start.
-            verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
-        """
-        super().__init__(verbose)
-
-        self.episode_reward_threshold = episode_reward_threshold
-        self.pruning_start_at = pruning_start_at
-
-        # Continuously tracking episode reward for all agents
-        #   (np.array, one index per agent, continuously updated by adding rewards at each step)
-        self.accumulation_of_episode_reward: Union[np.ndarray | None] = None
-        # Saving episode rewards of last 1000 episodes (for all agents)
-        self.episode_rewards: Deque[float] = deque(maxlen=1000)
-
-    def _on_step(self) -> bool:
-        """
-        This method will be called by the model after each call to `env.step()`.
-        If the callback returns False, training is aborted early.
-        """
-        if self.episode_reward is None:
-            self.episode_reward = self.locals["rewards"]
-        else:
-            self.episode_reward += self.locals["rewards"]
-
-        done_indices = np.where(self.locals["dones"] == True)[0]
-        if done_indices.size != 0:
-            for done_index in done_indices:
-                if not self.locals["infos"][done_index].get("discard", False):
-                    self.episode_rewards.append(self.episode_reward[done_index])
-                # Reset trackers for done agent
-                self.episode_reward[done_index] = 0
-
-        if self.num_timesteps > self.pruning_start_at and len(self.episode_rewards) == self.episode_rewards.maxlen:
-            mean_episode_reward = np.mean(self.episode_rewards)
-            if mean_episode_reward < self.episode_reward_threshold:
-                return False
 
         return True
