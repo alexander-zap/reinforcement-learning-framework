@@ -145,6 +145,8 @@ class HuggingFaceConnector(Connector):
                 json.dump(self.value_sequences_to_log, outfile)
             with open(repo_local_path / "logged_histograms.json", "w") as outfile:
                 json.dump(self.histogram_sequences_to_log, outfile)
+            with open(repo_local_path / "logged_dicts.json", "w") as outfile:
+                json.dump(self.dicts_to_log, outfile)
 
             # Step 5: Create a system info file
             with open(repo_local_path / "system.json", "w") as outfile:
