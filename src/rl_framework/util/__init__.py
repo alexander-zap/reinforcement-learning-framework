@@ -19,6 +19,7 @@ from .features_extractor_utils import (
 )
 from .sb3_training_callbacks import (
     LoggingCallback,
+    ResetInfoCallback,
     SavingCallback,
     add_callbacks_to_callback,
 )

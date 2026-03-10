@@ -26,6 +26,7 @@ from rl_framework.util import (
     Environment,
     FeaturesExtractor,
     LoggingCallback,
+    ResetInfoCallback,
     SavingCallback,
     get_sb3_policy_kwargs_for_features_extractor,
     wrap_environment_with_features_extractor_preprocessor,
@@ -233,7 +234,9 @@ class StableBaselinesAgent(RLAgent):
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
-        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
+        callback_list = CallbackList(
+            [SavingCallback(self, connector), LoggingCallback(connector), ResetInfoCallback(connector)]
+        )
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
         vectorized_environment.close()
 

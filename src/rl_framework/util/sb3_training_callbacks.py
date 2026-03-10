@@ -231,3 +231,51 @@ class ExperimentPruningCallback(BaseCallback):
                 return False
 
         return True
+
+
+class ResetInfoCallback(BaseCallback):
+    """
+    A custom callback that logs after every reset the reset_infos dict..
+    """
+
+    def __init__(self, connector, verbose=0):
+        """
+        Args:
+            verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
+        """
+        super().__init__(verbose)
+        self.connector = connector
+        # Tracking episode number for each agent (agent index -> episode count)
+        self.episode_counter: dict[str, int] = {}
+        # Tracking agents which have done a first step (list of agent indices)
+        self.first_step_tracker: list[str] = []
+
+    def _on_step(self) -> bool:
+        """
+        This method will be called by the model after each call to `env.step()`.
+        If the callback returns False, training is aborted early.
+        """
+
+        # Write reset info at first step of first episode
+        for agent_index, reset_info in enumerate(self.locals["reset_infos"]):
+            if agent_index not in self.first_step_tracker:
+                self.episode_counter[agent_index] = 0
+                self.first_step_tracker.append(agent_index)
+                if reset_info is not None:
+                    self.connector.log_dict(
+                        self.locals["reset_infos"][agent_index],
+                        f"Reset Info - Agent {agent_index} - Episode {self.episode_counter.get(agent_index, 0)}",
+                    )
+
+        # Write reset info at each reset (when done=True, reset has already happened and reset_info is available)
+        done_indices = np.where(self.locals["dones"] == True)[0]
+        if done_indices.size != 0:
+            for done_index in done_indices:
+                self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
+                if reset_info is not None:
+                    self.connector.log_dict(
+                        self.locals["reset_infos"][done_index],
+                        f"Reset Info - Agent {done_index} - Episode {self.episode_counter.get(done_index, 0)}",
+                    )
+
+        return True
