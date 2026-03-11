@@ -260,6 +260,8 @@ class ResetInfoCallback(BaseCallback):
         This method will be called by the model after each call to `env.step()`.
         If the callback returns False, training is aborted early.
         """
+        if not self.locals.get("reset_infos", None):
+            self.update_locals({"reset_infos": self.training_env.reset_infos})
 
         # Write reset info at first step of first episode
         for agent_index, reset_info in enumerate(self.locals["reset_infos"]):
