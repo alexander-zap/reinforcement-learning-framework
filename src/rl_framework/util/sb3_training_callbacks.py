@@ -70,6 +70,8 @@ class LoggingCallback(BaseCallback):
                     if metric_name not in self.episode_step_metrics:
                         self.episode_step_metrics[metric_name] = [[] for _ in range(len(self.locals["infos"]))]
                     self.episode_step_metrics[metric_name][agent_index].append(float(value))
+                if key.startswith("meta_") and isinstance(value, dict):
+                    self.connector.log_dict(value, key)
 
         done_indices = np.where(self.locals["dones"] == True)[0]
         if done_indices.size != 0:
@@ -263,7 +265,7 @@ class ResetInfoCallback(BaseCallback):
                 self.first_step_tracker.append(agent_index)
                 if reset_info:
                     self.connector.log_dict(
-                        self.locals["reset_infos"][agent_index],
+                        reset_info,
                         f"Reset Info - Agent {agent_index} - Episode {self.episode_counter.get(agent_index, 0)}",
                     )
 
@@ -272,9 +274,10 @@ class ResetInfoCallback(BaseCallback):
         if done_indices.size != 0:
             for done_index in done_indices:
                 self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
+                reset_info = self.locals["reset_infos"][done_index]
                 if reset_info:
                     self.connector.log_dict(
-                        self.locals["reset_infos"][done_index],
+                        reset_info,
                         f"Reset Info - Agent {done_index} - Episode {self.episode_counter.get(done_index, 0)}",
                     )
 
