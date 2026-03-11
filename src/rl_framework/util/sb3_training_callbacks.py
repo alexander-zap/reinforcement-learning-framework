@@ -261,7 +261,7 @@ class ResetInfoCallback(BaseCallback):
             if agent_index not in self.first_step_tracker:
                 self.episode_counter[agent_index] = 0
                 self.first_step_tracker.append(agent_index)
-                if reset_info is not None:
+                if reset_info:
                     self.connector.log_dict(
                         self.locals["reset_infos"][agent_index],
                         f"Reset Info - Agent {agent_index} - Episode {self.episode_counter.get(agent_index, 0)}",
@@ -272,7 +272,7 @@ class ResetInfoCallback(BaseCallback):
         if done_indices.size != 0:
             for done_index in done_indices:
                 self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
-                if reset_info is not None:
+                if reset_info:
                     self.connector.log_dict(
                         self.locals["reset_infos"][done_index],
                         f"Reset Info - Agent {done_index} - Episode {self.episode_counter.get(done_index, 0)}",
