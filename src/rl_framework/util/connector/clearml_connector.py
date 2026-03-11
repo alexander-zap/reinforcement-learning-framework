@@ -64,6 +64,17 @@ class ClearMLConnector(Connector):
 
         self.task.add_tags(list(self.upload_config.task_tags))
 
+    def log_dict(self, dict_to_log: dict, dict_name: Text) -> None:
+        """
+        Log a dictionary to the ClearML task, which appears in the "Artifacts" section of the ClearML experiment page.
+
+        Args:
+            dict_to_log: Dictionary of values to log (e.g., {"game_version": 1.0, "num_sensors": 10})
+            dict_name: Name of the dictionary (e.g., "game settings")
+        """
+        super().log_dict(dict_to_log, dict_name)
+        self.task.connect_configuration(dict_to_log, name=dict_name)
+
     def log_histogram_with_timestep(
         self, timestep: int, histogram_values: List[SupportsFloat], histogram_name: Text
     ) -> None:

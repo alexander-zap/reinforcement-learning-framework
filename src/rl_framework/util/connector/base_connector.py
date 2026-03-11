@@ -79,6 +79,17 @@ class Connector(ABC):
         self.histogram_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
         self.value_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
         self.values_to_log: Dict[Text, SupportsFloat] = {}
+        self.dicts_to_log: Dict[Text, dict] = {}
+
+    def log_dict(self, dict_to_log: dict, dict_name: Text) -> None:
+        """
+        Log a dictionary to the ClearML task, which appears in the "Artifacts" section of the ClearML experiment page.
+
+        Args:
+            dict_to_log: Dictionary of values to log (e.g., {"game_version": 1.0, "num_sensors": 10})
+            dict_name: Name of the dictionary (e.g., "game settings")
+        """
+        self.dicts_to_log[dict_name] = dict_to_log
 
     def log_histogram_with_timestep(
         self, timestep: int, histogram_values: List[SupportsFloat], histogram_name: Text
