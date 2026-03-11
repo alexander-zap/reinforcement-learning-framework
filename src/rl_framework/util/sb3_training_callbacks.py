@@ -70,8 +70,11 @@ class LoggingCallback(BaseCallback):
                     if metric_name not in self.episode_step_metrics:
                         self.episode_step_metrics[metric_name] = [[] for _ in range(len(self.locals["infos"]))]
                     self.episode_step_metrics[metric_name][agent_index].append(float(value))
-                if key.startswith("meta_") and isinstance(value, dict):
-                    self.connector.log_dict(value, key)
+                if key.startswith("meta_"):
+                    if isinstance(value, dict):
+                        self.connector.log_dict(value, key)
+                    else:
+                        self.connector.log_dict({key: value}, key)
 
         done_indices = np.where(self.locals["dones"] == True)[0]
         if done_indices.size != 0:
