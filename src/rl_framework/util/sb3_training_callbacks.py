@@ -25,7 +25,7 @@ class LoggingCallback(BaseCallback):
         - reason of episode end (provided as "episode_end_reason" in the info dict on terminated step)
     """
 
-    def __init__(self, connector, logging_frequency=10, log_distributions=False, verbose=0):
+    def __init__(self, connector, logging_frequency=1, log_distributions=False, verbose=0):
         """
         Args:
             verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
