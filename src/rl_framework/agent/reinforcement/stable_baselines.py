@@ -64,6 +64,7 @@ class StableBaselinesAgent(RLAgent):
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
+        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -234,8 +235,21 @@ class StableBaselinesAgent(RLAgent):
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
+        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
+        checkpoint_frequency = self.callback_parameters.get("checkpoint_frequency", 500000)
+        log_distributions = self.callback_parameters.get("log_distributions", False)
+        logging_frequency = self.callback_parameters.get("logging_frequency", 500000)
+
         callback_list = CallbackList(
-            [SavingCallback(self, connector), LoggingCallback(connector), ResetInfoCallback(connector)]
+            [
+                SavingCallback(
+                    self, connector=connector, checkpoint_frequency=checkpoint_frequency, verbose=callback_verbosity
+                ),
+                LoggingCallback(
+                    connector=connector, logging_frequency=logging_frequency, log_distributions=log_distributions
+                ),
+                ResetInfoCallback(connector=connector),
+            ]
         )
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
         vectorized_environment.close()
@@ -314,6 +328,9 @@ class StableBaselinesAgent(RLAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
+        if not algorithm_parameters:
+            algorithm_parameters = {}
+
         if "policy" not in algorithm_parameters:
             algorithm_parameters.update({"policy": "MlpPolicy"})
 

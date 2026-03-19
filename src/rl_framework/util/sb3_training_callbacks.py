@@ -25,18 +25,20 @@ class LoggingCallback(BaseCallback):
         - reason of episode end (provided as "episode_end_reason" in the info dict on terminated step)
     """
 
-    def __init__(self, connector, log_distributions=False, verbose=0):
+    def __init__(self, connector, logging_frequency=10, log_distributions=False, verbose=0):
         """
         Args:
             verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
         """
         super().__init__(verbose)
         self.connector = connector
+        self.logging_frequency = logging_frequency
         self.log_distributions = log_distributions
 
         # Tracking episode reward per episode
         #   (np.array, one index per agent, continuously updated by adding rewards at each step)
         self.episode_reward: Union[np.ndarray | None] = None
+        self.episode_rewards: dict[str, List[float]] = {}
         # Tracking actions per episode (one list per agent, updated by appending action at each step)
         # NOTE: Even though officially actions can be Any, for logging we assume they are int or float
         self.episode_actions: Union[List[List[Any]] | None] = None
@@ -44,7 +46,9 @@ class LoggingCallback(BaseCallback):
         self.episode_step_metrics: dict[str, List[List[float]]] = {}
 
         # Tracking stats across multiple episodes
-        self.episode_end_reasons = deque(maxlen=500)
+        self.episode_end_reasons: dict[str, Deque] = {}
+
+        self.episode_counter: dict[str, int] = {}
 
     def _on_step(self) -> bool:
         """
@@ -79,50 +83,62 @@ class LoggingCallback(BaseCallback):
         done_indices = np.where(self.locals["dones"] == True)[0]
         if done_indices.size != 0:
             for done_index in done_indices:
-                if not self.locals["infos"][done_index].get("discard", False):
-                    self.connector.log_value_with_timestep(
-                        self.num_timesteps, self.episode_reward[done_index], "Episode reward"
-                    )
-                    # Log other tracked step metrics
-                    for metric_name, per_agent_values in self.episode_step_metrics.items():
-                        if per_agent_values[done_index]:
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                np.mean(per_agent_values[done_index]),
-                                value_name=f"Mean - {metric_name}",
-                                title_name=metric_name,
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                np.std(per_agent_values[done_index]),
-                                value_name=f"Std - {metric_name}",
-                                title_name=metric_name,
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                np.max(per_agent_values[done_index]),
-                                value_name=f"Max - {metric_name}",
-                                title_name=metric_name,
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                np.min(per_agent_values[done_index]),
-                                value_name=f"Min - {metric_name}",
-                                title_name=metric_name,
-                            )
+                self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
+
+                if done_index not in self.episode_rewards:
+                    self.episode_rewards[done_index] = []
+                self.episode_rewards[done_index].append(self.episode_reward[done_index])
+
+                log_this_episode = self.episode_counter[done_index] % self.logging_frequency == 0
+
+                if log_this_episode:
+                    if not self.locals["infos"][done_index].get("discard", False):
+                        self.connector.log_value_with_timestep(
+                            self.num_timesteps, np.mean(self.episode_rewards[done_index]), "Episode reward"
+                        )
+                        # Log other tracked step metrics
+                        for metric_name, per_agent_values in self.episode_step_metrics.items():
+                            if per_agent_values[done_index]:
+                                self.connector.log_value_with_timestep(
+                                    self.num_timesteps,
+                                    np.mean(per_agent_values[done_index]),
+                                    value_name=f"Mean - {metric_name}",
+                                    title_name=metric_name,
+                                )
+                                self.connector.log_value_with_timestep(
+                                    self.num_timesteps,
+                                    np.std(per_agent_values[done_index]),
+                                    value_name=f"Std - {metric_name}",
+                                    title_name=metric_name,
+                                )
+                                self.connector.log_value_with_timestep(
+                                    self.num_timesteps,
+                                    np.max(per_agent_values[done_index]),
+                                    value_name=f"Max - {metric_name}",
+                                    title_name=metric_name,
+                                )
+                                self.connector.log_value_with_timestep(
+                                    self.num_timesteps,
+                                    np.min(per_agent_values[done_index]),
+                                    value_name=f"Min - {metric_name}",
+                                    title_name=metric_name,
+                                )
 
                 if self.locals["infos"][done_index].get("episode_end_reason", None) is not None:
+                    if done_index not in self.episode_end_reasons:
+                        self.episode_end_reasons[done_index] = deque(maxlen=100)
                     self.episode_end_reasons.append(self.locals["infos"][done_index]["episode_end_reason"])
-                    counter = Counter(self.episode_end_reasons)
-                    for reason, count in counter.items():
-                        self.connector.log_value_with_timestep(
-                            self.num_timesteps,
-                            count / len(self.episode_end_reasons),
-                            value_name=f"Episode end reason - {reason}",
-                            title_name="Episode end reasons",
-                        )
+                    if log_this_episode:
+                        counter = Counter(self.episode_end_reasons)
+                        for reason, count in counter.items():
+                            self.connector.log_value_with_timestep(
+                                self.num_timesteps,
+                                count / len(self.episode_end_reasons[done_index]),
+                                value_name=f"Episode end reason - {reason}",
+                                title_name="Episode end reasons",
+                            )
 
-                if self.log_distributions:
+                if self.log_distributions and log_this_episode:
                     # Log action distribution
                     if self.episode_actions[done_index]:
                         if isinstance(self.episode_actions[done_index][0], np.ndarray):
@@ -148,10 +164,12 @@ class LoggingCallback(BaseCallback):
 
                 # Reset trackers for done agent
                 self.episode_reward[done_index] = 0
-                for metric_name in self.episode_step_metrics.keys():
-                    self.episode_step_metrics[metric_name][done_index] = []
-                if self.episode_actions:
-                    self.episode_actions[done_index] = []
+                if log_this_episode:
+                    self.episode_rewards[done_index] = []
+                    for metric_name in self.episode_step_metrics.keys():
+                        self.episode_step_metrics[metric_name][done_index] = []
+                    if self.episode_actions:
+                        self.episode_actions[done_index] = []
 
         return True
 
