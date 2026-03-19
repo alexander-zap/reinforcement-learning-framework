@@ -127,7 +127,7 @@ class LoggingCallback(BaseCallback):
                 if self.locals["infos"][done_index].get("episode_end_reason", None) is not None:
                     if done_index not in self.episode_end_reasons:
                         self.episode_end_reasons[done_index] = deque(maxlen=100)
-                    self.episode_end_reasons.append(self.locals["infos"][done_index]["episode_end_reason"])
+                    self.episode_end_reasons[done_index].append(self.locals["infos"][done_index]["episode_end_reason"])
                     if log_this_episode:
                         counter = Counter(self.episode_end_reasons)
                         for reason, count in counter.items():
