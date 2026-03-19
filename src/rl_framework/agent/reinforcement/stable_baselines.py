@@ -238,7 +238,7 @@ class StableBaselinesAgent(RLAgent):
         callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
         checkpoint_frequency = self.callback_parameters.get("checkpoint_frequency", 500000)
         log_distributions = self.callback_parameters.get("log_distributions", False)
-        logging_frequency = self.callback_parameters.get("logging_frequency", 500000)
+        logging_frequency = self.callback_parameters.get("logging_frequency", 1)
 
         callback_list = CallbackList(
             [
