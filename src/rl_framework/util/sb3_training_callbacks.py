@@ -129,7 +129,7 @@ class LoggingCallback(BaseCallback):
                         self.episode_end_reasons[done_index] = deque(maxlen=100)
                     self.episode_end_reasons[done_index].append(self.locals["infos"][done_index]["episode_end_reason"])
                     if log_this_episode:
-                        counter = Counter(self.episode_end_reasons)
+                        counter = Counter(self.episode_end_reasons[done_index])
                         for reason, count in counter.items():
                             self.connector.log_value_with_timestep(
                                 self.num_timesteps,
