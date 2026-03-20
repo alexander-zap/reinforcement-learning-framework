@@ -236,18 +236,20 @@ class StableBaselinesAgent(RLAgent):
                 )
 
         callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
-        checkpoint_frequency = self.callback_parameters.get("checkpoint_frequency", 500000)
-        log_distributions = self.callback_parameters.get("log_distributions", False)
-        logging_frequency = self.callback_parameters.get("logging_frequency", 1)
+        callback_saving_interval = self.callback_parameters.get("callback_saving_interval", 500000)
+        callback_logging_interval = self.callback_parameters.get("callback_logging_interval", 1)
+        callback_log_distributions = self.callback_parameters.get("callback_log_distributions", False)
         sb3_logging_interval = self.callback_parameters.get("sb3_logging_interval", 1)
 
         callback_list = CallbackList(
             [
                 SavingCallback(
-                    self, connector=connector, checkpoint_frequency=checkpoint_frequency, verbose=callback_verbosity
+                    self, connector=connector, checkpoint_frequency=callback_saving_interval, verbose=callback_verbosity
                 ),
                 LoggingCallback(
-                    connector=connector, logging_frequency=logging_frequency, log_distributions=log_distributions
+                    connector=connector,
+                    logging_frequency=callback_logging_interval,
+                    log_distributions=callback_log_distributions,
                 ),
                 ResetInfoCallback(connector=connector),
             ]
