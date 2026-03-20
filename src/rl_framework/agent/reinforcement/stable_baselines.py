@@ -239,6 +239,7 @@ class StableBaselinesAgent(RLAgent):
         checkpoint_frequency = self.callback_parameters.get("checkpoint_frequency", 500000)
         log_distributions = self.callback_parameters.get("log_distributions", False)
         logging_frequency = self.callback_parameters.get("logging_frequency", 1)
+        sb3_logging_interval = self.callback_parameters.get("sb3_logging_interval", 1)
 
         callback_list = CallbackList(
             [
@@ -251,7 +252,7 @@ class StableBaselinesAgent(RLAgent):
                 ResetInfoCallback(connector=connector),
             ]
         )
-        self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
+        self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list, log_interval=sb3_logging_interval)
         vectorized_environment.close()
 
     def to_vectorized_env(self, env_fns, stub_env=None) -> VecEnv:
