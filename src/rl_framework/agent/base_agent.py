@@ -172,8 +172,7 @@ class Agent(ABC):
                         observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
 
                         actions = [
-                            self.choose_action(observation, deterministic=deterministic)
-                            for observation in prev_observations
+                            self.choose_action(observation, deterministic=deterministic) for observation in observations
                         ]
 
                         current_rewards += rewards
