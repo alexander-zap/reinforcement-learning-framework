@@ -64,6 +64,7 @@ class StableBaselinesAgent(RLAgent):
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
+        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -234,10 +235,26 @@ class StableBaselinesAgent(RLAgent):
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
+        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
+        callback_saving_interval = self.callback_parameters.get("callback_saving_interval", 500000)
+        callback_logging_interval = self.callback_parameters.get("callback_logging_interval", 1)
+        callback_log_distributions = self.callback_parameters.get("callback_log_distributions", False)
+        sb3_logging_interval = self.callback_parameters.get("sb3_logging_interval", 1)
+
         callback_list = CallbackList(
-            [SavingCallback(self, connector), LoggingCallback(connector), ResetInfoCallback(connector)]
+            [
+                SavingCallback(
+                    self, connector=connector, checkpoint_frequency=callback_saving_interval, verbose=callback_verbosity
+                ),
+                LoggingCallback(
+                    connector=connector,
+                    logging_frequency=callback_logging_interval,
+                    log_distributions=callback_log_distributions,
+                ),
+                ResetInfoCallback(connector=connector),
+            ]
         )
-        self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
+        self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list, log_interval=sb3_logging_interval)
         vectorized_environment.close()
 
     def to_vectorized_env(self, env_fns, stub_env=None) -> VecEnv:
@@ -314,6 +331,9 @@ class StableBaselinesAgent(RLAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
+        if not algorithm_parameters:
+            algorithm_parameters = {}
+
         if "policy" not in algorithm_parameters:
             algorithm_parameters.update({"policy": "MlpPolicy"})
 
