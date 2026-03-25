@@ -1,8 +1,13 @@
+import contextlib
+import io
 from typing import Callable, List, Union
 
 import gymnasium as gym
 from pettingzoo import ParallelEnv
-from stable_baselines3.common.vec_env import VecEnv
+
+# Suppress gym deprecation warning during import (safety measure)
+with contextlib.redirect_stderr(io.StringIO()):
+    from stable_baselines3.common.vec_env import VecEnv
 
 # Tuple of
 #   - gymnasium.Env (stub env, defining observation and action space)
