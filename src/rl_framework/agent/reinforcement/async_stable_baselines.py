@@ -24,12 +24,16 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         return IndexableMultiEnv(env_fns, stub_env)
 
     def get_callbacks(self, connector: Connector) -> list[BaseCallback]:
-        class BufferUtilLoggingCallback(BaseCallback):
+        class AsyncSBUtilizationLoggingCallback(BaseCallback):
             """
             A custom callback that logs after every n episodes:
                 - buffer utilization
                 - buffer emptiness
+                - buffer fullness
+                - buffer worker fullness wait time
                 - discarded episodes
+                - main profiler stats
+                - worker profiler stats
             """
 
             def __init__(self, connector, logging_frequency=1000, verbose=0):
@@ -62,31 +66,31 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                                 self.num_timesteps,
                                 buffer_utilization,
                                 value_name="Buffer Utilization",
-                                title_name="Buffer Stats",
+                                title_name="Buffer Profiler Stats",
                             )
                             self.connector.log_value_with_timestep(
                                 self.num_timesteps,
                                 buffer_emptiness,
                                 value_name="Buffer Emptiness",
-                                title_name="Buffer Stats",
+                                title_name="Buffer Profiler Stats",
                             )
                             self.connector.log_value_with_timestep(
                                 self.num_timesteps,
                                 buffer_full_push_fraction,
                                 value_name="Buffer Fullness",
-                                title_name="Buffer Stats",
+                                title_name="Buffer Profiler Stats",
                             )
                             self.connector.log_value_with_timestep(
                                 self.num_timesteps,
                                 buffer_avg_push_time,
                                 value_name="Buffer Worker Fullness Wait Time",
-                                title_name="Buffer Stats",
+                                title_name="Buffer Profiler Stats",
                             )
                             self.connector.log_value_with_timestep(
                                 self.num_timesteps,
                                 discarded_episodes_fraction,
                                 value_name="Discarded Episodes",
-                                title_name="Buffer Stats",
+                                title_name="Buffer Profiler Stats",
                             )
 
                             main_stats = report["main"]
@@ -97,7 +101,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                                         self.num_timesteps,
                                         value,
                                         value_name=f"{phase}/{key}",
-                                        title_name="Main Stats",
+                                        title_name="Main Profiler Stats",
                                     )
 
                             worker_stats = report["worker"]
@@ -108,7 +112,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                                         self.num_timesteps,
                                         value,
                                         value_name=f"{phase}/{key}",
-                                        title_name="Worker Stats",
+                                        title_name="Worker Profiler Stats",
                                     )
                 return True
 
@@ -117,7 +121,7 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
             "callback_async_utilization_logging_interval", 1000
         )
         callbacks.append(
-            BufferUtilLoggingCallback(connector, logging_frequency=callback_async_utilization_logging_frequency)
+            AsyncSBUtilizationLoggingCallback(connector, logging_frequency=callback_async_utilization_logging_frequency)
         )
         return callbacks
 
