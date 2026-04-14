@@ -12,7 +12,7 @@ import pettingzoo
 import stable_baselines3
 import torch.onnx
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import VecEnv, VecMonitor
@@ -235,30 +235,35 @@ class StableBaselinesAgent(RLAgent):
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
-        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
-        callback_saving_interval = self.callback_parameters.get("callback_saving_interval", 500000)
-        callback_logging_interval = self.callback_parameters.get("callback_logging_interval", 1)
-        callback_log_distributions = self.callback_parameters.get("callback_log_distributions", False)
-        sb3_logging_interval = self.callback_parameters.get("sb3_logging_interval", 1)
+        callbacks = self.get_callbacks(connector=connector)
+        callback_list = CallbackList(callbacks)
 
-        callback_list = CallbackList(
-            [
-                SavingCallback(
-                    self, connector=connector, checkpoint_frequency=callback_saving_interval, verbose=callback_verbosity
-                ),
-                LoggingCallback(
-                    connector=connector,
-                    logging_frequency=callback_logging_interval,
-                    log_distributions=callback_log_distributions,
-                ),
-                ResetInfoCallback(connector=connector),
-            ]
-        )
+        sb3_logging_interval = self.callback_parameters.get("sb3_logging_interval", 1)
         self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list, log_interval=sb3_logging_interval)
         vectorized_environment.close()
 
     def to_vectorized_env(self, env_fns, stub_env=None) -> VecEnv:
         return SubprocVecEnv(env_fns)
+
+    def get_callbacks(self, connector: Connector) -> list[BaseCallback]:
+        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
+        callback_saving_interval = self.callback_parameters.get("callback_saving_interval", 500000)
+        callback_logging_interval = self.callback_parameters.get("callback_logging_interval", 1)
+        callback_log_distributions = self.callback_parameters.get("callback_log_distributions", False)
+
+        callbacks = [
+            SavingCallback(
+                self, connector=connector, checkpoint_frequency=callback_saving_interval, verbose=callback_verbosity
+            ),
+            LoggingCallback(
+                connector=connector,
+                logging_frequency=callback_logging_interval,
+                log_distributions=callback_log_distributions,
+            ),
+            ResetInfoCallback(connector=connector),
+        ]
+
+        return callbacks
 
     def choose_action(self, observation: object, deterministic: bool = False, *args, **kwargs):
         """
