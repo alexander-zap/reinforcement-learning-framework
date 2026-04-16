@@ -100,8 +100,8 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                                     self.connector.log_value_with_timestep(
                                         self.num_timesteps,
                                         value,
-                                        value_name=f"{phase}/{key}",
-                                        title_name="Main Profiler Stats",
+                                        value_name=f"{phase}",
+                                        title_name=f"Main Profiler Stats / {key}",
                                     )
 
                             worker_stats = report["worker"]
@@ -111,8 +111,8 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                                     self.connector.log_value_with_timestep(
                                         self.num_timesteps,
                                         value,
-                                        value_name=f"{phase}/{key}",
-                                        title_name="Worker Profiler Stats",
+                                        value_name=f"{phase}",
+                                        title_name=f"Worker Profiler Stats / {key}",
                                     )
                 return True
 
