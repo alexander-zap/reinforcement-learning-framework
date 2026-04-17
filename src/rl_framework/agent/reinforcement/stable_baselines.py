@@ -1,3 +1,4 @@
+import logging
 import tempfile
 from collections import defaultdict
 from copy import deepcopy
@@ -29,6 +30,7 @@ from rl_framework.util import (
     ResetInfoCallback,
     SavingCallback,
     get_sb3_policy_kwargs_for_features_extractor,
+    reset_optimizer_state,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
@@ -65,6 +67,8 @@ class StableBaselinesAgent(RLAgent):
 
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
+        # Optionally reset optimizer state for fresh fine-tuning
+        self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -210,6 +214,10 @@ class StableBaselinesAgent(RLAgent):
 
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
+
+        if self.reset_optimizer:
+            reset_paths = reset_optimizer_state(self.algorithm)
+            logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
 
         algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:

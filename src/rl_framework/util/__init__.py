@@ -17,6 +17,7 @@ from .features_extractor_utils import (
     get_sb3_policy_kwargs_for_features_extractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
+from .sb3_optimizer_reset import reset_optimizer_state
 from .sb3_training_callbacks import (
     LoggingCallback,
     ResetInfoCallback,
