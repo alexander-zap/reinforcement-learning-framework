@@ -12,8 +12,10 @@ from tqdm import tqdm
 
 from rl_framework.util import (
     Connector,
+    DummyConnector,
     Environment,
     FeaturesExtractor,
+    MetricAggregator,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
@@ -49,6 +51,8 @@ class Agent(ABC):
         self,
         evaluation_environments: List[Environment],
         n_eval_episodes: int,
+        connector: Connector = DummyConnector(),
+        logging_frequency: int = 10,
         deterministic: bool = False,
     ) -> Tuple[float, float]:
         """
@@ -57,6 +61,8 @@ class Agent(ABC):
         Args:
             evaluation_environments (List[Environment]): The evaluation environments.
             n_eval_episodes (int): Number of episode to evaluate the agent.
+            connector (Connector): Connector for logging evaluation metrics.
+            logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
 
@@ -159,18 +165,22 @@ class Agent(ABC):
                     vectorized_environments = evaluation_environments
 
                 def evaluate_agent_on_environment(evaluation_environment: VecEnv, n_episodes: int):
+                    n_envs = evaluation_environment.num_envs
+
+                    metric_aggregator = MetricAggregator(connector=connector)
+                    log_frequency = min(n_episodes // n_envs, logging_frequency)
+
                     prev_observations = evaluation_environment.reset()
                     prev_actions = [
                         self.choose_action(observation, deterministic=deterministic)
                         for observation in prev_observations
                     ]
 
-                    n_envs = evaluation_environment.num_envs
                     current_rewards = np.zeros(n_envs)
 
                     while len(episode_rewards) < n_episodes:
                         observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
-
+                        metric_aggregator.aggregate_step(observations, prev_actions, rewards, dones, infos)
                         actions = [
                             self.choose_action(observation, deterministic=deterministic) for observation in observations
                         ]
@@ -184,6 +194,15 @@ class Agent(ABC):
                                 episode_rewards.append(current_rewards[i])
                                 pbar.update(1)
                                 current_rewards[i] = 0
+
+                                log_episode = (len(metric_aggregator.episode_rewards.get(i, [])) % log_frequency) == 0
+                                if log_episode:
+                                    metric_aggregator.log_aggregated_metrics(
+                                        agent_index=i,
+                                        num_timesteps=len(episode_rewards),
+                                        log_distributions=False,
+                                        metric_name_prefix="Evaluation - ",
+                                    )
 
             threads = []
             for evaluation_environment in vectorized_environments:
