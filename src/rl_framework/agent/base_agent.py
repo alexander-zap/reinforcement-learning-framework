@@ -52,6 +52,7 @@ class Agent(ABC):
         evaluation_environments: List[Environment],
         n_eval_episodes: int,
         connector: Connector = DummyConnector(),
+        logging_frequency: int = 10,
         deterministic: bool = False,
     ) -> Tuple[float, float]:
         """
@@ -61,6 +62,7 @@ class Agent(ABC):
             evaluation_environments (List[Environment]): The evaluation environments.
             n_eval_episodes (int): Number of episode to evaluate the agent.
             connector (Connector): Connector for logging evaluation metrics.
+            logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
 
@@ -166,7 +168,7 @@ class Agent(ABC):
                     n_envs = evaluation_environment.num_envs
 
                     metric_aggregator = MetricAggregator(connector=connector)
-                    log_frequency = min(n_episodes // n_envs, 100)
+                    log_frequency = min(n_episodes // n_envs, logging_frequency)
 
                     prev_observations = evaluation_environment.reset()
                     prev_actions = [
