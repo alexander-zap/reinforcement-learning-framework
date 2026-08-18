@@ -38,7 +38,7 @@ class MetricAggregator:
         """
         # Rewards
         if self.episode_reward is None:
-            self.episode_reward = rewards
+            self.episode_reward = rewards.copy()
         else:
             self.episode_reward += rewards
 

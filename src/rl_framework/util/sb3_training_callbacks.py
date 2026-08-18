@@ -79,39 +79,26 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         )
 
         # Log meta infos
-        for agent_index, info in enumerate(self.locals["infos"]):
-            for key, value in info.items():
-                if key.startswith("meta_"):
-                    if isinstance(value, dict):
-                        self.connector.log_dict(value, key)
-                    else:
-                        self.connector.log_dict({key: value}, key)
+        for info in self.locals["infos"]:
+            self._log_meta_infos(info)
 
         # Log metrics at end of episode
         done_indices = np.where(self.locals["dones"] == True)[0]
-        if done_indices.size != 0:
-            for done_index in done_indices:
-                self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
-                log_this_episode = self.episode_counter[done_index] % self.logging_frequency == 0
-
-                if log_this_episode:
-                    self.metric_aggregator.log_aggregated_metrics(
-                        agent_index=done_index,
-                        num_timesteps=self.num_timesteps,
-                        log_distributions=self.log_distributions,
-                    )
-                    self.metric_aggregator.reset_multi_episode_trackers(done_index)
+        for done_index in done_indices:
+            self._log_if_due(done_index, self.num_timesteps)
 
         return True
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
-        """Aggregate framework metrics directly from a complete episode batch."""
+        """Aggregate framework metrics one transition at a time, exactly as `_on_step` does.
+
+        Unlike checkpoint/pruning/reset-info handling below, this can't be reduced to
+        inspecting only the episode's boundary transitions: `aggregate_step` needs every
+        transition's reward/action/step-metrics, since any of them may carry a metric.
+        """
         batch = context.batch
-        if self._supports_episode_aggregation(self.metric_aggregator):
-            self._aggregate_episode(batch)
-        else:
-            self._aggregate_episode_by_step(batch)
-            self._log_episode_metadata(batch)
+        for transition_index in range(batch.transition_count):
+            self._process_transition(batch, transition_index)
 
         terminal_dones = slice_episode_field(
             batch,
@@ -119,102 +106,50 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
             batch.transition_count - 1,
         )
         for done_index in np.flatnonzero(terminal_dones):
-            self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
-            if self.episode_counter[done_index] % self.logging_frequency == 0:
-                self.metric_aggregator.log_aggregated_metrics(
-                    agent_index=done_index,
-                    num_timesteps=context.end_timestep,
-                    log_distributions=self.log_distributions,
-                )
-                self.metric_aggregator.reset_multi_episode_trackers(done_index)
+            self._log_if_due(done_index, context.end_timestep)
 
         return True
 
-    def _aggregate_episode_by_step(self, batch) -> None:
-        for transition_index in range(batch.transition_count):
-            infos = get_episode_infos(batch, transition_index)
-            self.metric_aggregator.aggregate_step(
-                slice_episode_field(batch, "new_obs", transition_index),
-                slice_episode_field(
-                    batch,
-                    resolve_episode_action_field(batch.episode_kind),
-                    transition_index,
-                ),
-                slice_episode_field(
-                    batch,
-                    resolve_episode_reward_field(batch.episode_kind),
-                    transition_index,
-                ),
-                slice_episode_field(batch, "dones", transition_index),
-                infos,
-            )
-
-    def _aggregate_episode(self, batch) -> None:
-        aggregator = self.metric_aggregator
-        # Each complete environment is packed into its own episode batch.
-        episode_agent_index = 0
-        terminal_index = batch.transition_count - 1
-        terminal_dones = slice_episode_field(batch, "dones", terminal_index)
-        terminal_infos = get_episode_infos(batch, terminal_index)
-        discarded = any(
-            terminal_infos[done_index].get(constants.DISCARD_INFO_KEY, False)
-            for done_index in np.flatnonzero(terminal_dones)
+    def _process_transition(self, batch, transition_index: int) -> None:
+        infos = get_episode_infos(batch, transition_index)
+        self.metric_aggregator.aggregate_step(
+            slice_episode_field(batch, "new_obs", transition_index),
+            slice_episode_field(
+                batch,
+                resolve_episode_action_field(batch.episode_kind),
+                transition_index,
+            ),
+            slice_episode_field(
+                batch,
+                resolve_episode_reward_field(batch.episode_kind),
+                transition_index,
+            ),
+            slice_episode_field(batch, "dones", transition_index),
+            infos,
         )
-        if discarded:
-            self._log_episode_metadata(batch)
-            if aggregator.episode_reward is None:
-                reward_values = batch.fields[resolve_episode_reward_field(batch.episode_kind)]
-                aggregator.episode_reward = np.zeros(1, dtype=reward_values.dtype)
-            aggregator.episode_reward[episode_agent_index] = 0
-            return
+        for info in infos:
+            self._log_meta_infos(info)
 
-        rewards = batch.fields[resolve_episode_reward_field(batch.episode_kind)]
-        if aggregator.episode_reward is None:
-            aggregator.episode_reward = np.zeros(1, dtype=rewards.dtype)
-        aggregator.episode_reward[episode_agent_index] += np.sum(rewards)
+    def _log_meta_infos(self, info: dict) -> None:
+        """Log every `meta_*` entry in one step's/transition's info dict, deduping unchanged values."""
+        for key, value in info.items():
+            if key.startswith(constants.META_INFO_PREFIX):
+                self._log_metadata(key, value)
 
-        if aggregator.aggregate_distributions:
-            if not aggregator.episode_actions:
-                aggregator.episode_actions = [[]]
-            action_field = resolve_episode_action_field(batch.episode_kind)
-            aggregator.episode_actions[episode_agent_index].extend(batch.fields[action_field])
+    def _log_if_due(self, done_index: int, num_timesteps: int) -> None:
+        """Log and reset one agent's aggregated metrics if its logging_frequency is met.
 
-        self._aggregate_episode_infos(batch)
-        for done_index in np.flatnonzero(terminal_dones):
-            terminal_info = terminal_infos[done_index]
-            aggregator.episode_rewards.setdefault(done_index, []).append(aggregator.episode_reward[done_index])
-            end_reason = terminal_info.get(constants.EPISODE_END_REASON_INFO_KEY)
-            if end_reason is not None:
-                aggregator.episode_end_reasons.setdefault(
-                    done_index,
-                    deque(maxlen=constants.EPISODE_END_REASON_WINDOW_SIZE),
-                ).append(end_reason)
-            aggregator.episode_reward[done_index] = 0
-
-    def _aggregate_episode_infos(self, batch) -> None:
-        aggregator = self.metric_aggregator
-        episode_step_metrics = aggregator.episode_step_metrics
-        step_metric_prefix = constants.STEP_METRIC_INFO_PREFIX
-        meta_info_prefix = constants.META_INFO_PREFIX
-        for infos in batch.infos.values():
-            for agent_index, info in enumerate(infos):
-                for key, value in info.items():
-                    if key.startswith(step_metric_prefix):
-                        metric_name = key[len(step_metric_prefix) :]
-                        per_agent_values = episode_step_metrics.get(metric_name)
-                        if per_agent_values is None:
-                            per_agent_values = [[] for _ in range(len(infos))]
-                            episode_step_metrics[metric_name] = per_agent_values
-                        per_agent_values[agent_index].append(float(value))
-                    elif key.startswith(meta_info_prefix):
-                        self._log_metadata(key, value)
-
-    def _log_episode_metadata(self, batch) -> None:
-        for infos in batch.infos.values():
-            for info in infos:
-                for key, value in info.items():
-                    if key.startswith(constants.META_INFO_PREFIX):
-                        self._log_metadata(key, value)
+        Shared by both `_on_step` (one done agent at a time) and `process_episode`
+        (looping the batch's terminal `dones`, since an episode batch can only end once).
+        """
+        self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
+        if self.episode_counter[done_index] % self.logging_frequency == 0:
+            self.metric_aggregator.log_aggregated_metrics(
+                agent_index=done_index,
+                num_timesteps=num_timesteps,
+                log_distributions=self.log_distributions,
+            )
+            self.metric_aggregator.reset_multi_episode_trackers(done_index)
 
     def _log_metadata(self, key: str, value: object) -> None:
         if key in self.logged_metadata_by_key and self._metadata_matches(
@@ -278,40 +213,39 @@ class SavingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         This method will be called by the model after each call to `env.step()`.
         If the callback returns False, training is aborted early.
         """
-        if self.num_timesteps > self.next_upload:
-            self.connector.upload(
-                agent=self.agent,
-                checkpoint_id=self.num_timesteps,
-            )
-            self.next_upload = self.num_timesteps + self.checkpoint_frequency
-
+        self._maybe_upload(self.num_timesteps)
         return True
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
         """Preserve checkpoint scheduling without checking it every transition.
 
-        Batched by episode for both on- and off-policy collection: every
-        checkpoint threshold crossed within the batch is replayed in order,
-        so a long-running off-policy episode still uploads at the same
-        cumulative-timestep boundaries a per-step check would have used.
+        Uploads are keyed off elapsed timesteps, not `done`, so - unlike the other
+        callbacks below - this still has to step through every checkpoint boundary
+        crossed within the batch (there can be several within one long episode)
+        rather than only looking at the episode's start/end.
         """
         checkpoint_timestep = max(
             context.start_timestep + 1,
             self.next_upload + 1,
         )
         while checkpoint_timestep <= context.end_timestep:
-            self.num_timesteps = checkpoint_timestep
-            self.connector.upload(
-                agent=self.agent,
-                checkpoint_id=checkpoint_timestep,
-            )
-            self.next_upload = checkpoint_timestep + self.checkpoint_frequency
+            self._maybe_upload(checkpoint_timestep)
             checkpoint_timestep = max(
                 checkpoint_timestep + 1,
                 self.next_upload + 1,
             )
 
         return True
+
+    def _maybe_upload(self, timestep: int) -> None:
+        """Upload a checkpoint if `timestep` has crossed the next scheduled upload."""
+        if timestep > self.next_upload:
+            self.num_timesteps = timestep
+            self.connector.upload(
+                agent=self.agent,
+                checkpoint_id=timestep,
+            )
+            self.next_upload = timestep + self.checkpoint_frequency
 
 
 class ExperimentPruningCallback(EpisodeBatchableCallbackMixin, BaseCallback):
@@ -334,7 +268,7 @@ class ExperimentPruningCallback(EpisodeBatchableCallbackMixin, BaseCallback):
 
         # Continuously tracking episode reward for all agents
         #   (np.array, one index per agent, continuously updated by adding rewards at each step)
-        self.accumulation_of_episode_reward: Union[np.ndarray | None] = None
+        self.episode_reward: Union[np.ndarray | None] = None
         # Saving episode rewards of last 1000 episodes (for all agents)
         self.episode_rewards: Deque[float] = deque(maxlen=1000)
 
@@ -344,24 +278,15 @@ class ExperimentPruningCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         If the callback returns False, training is aborted early.
         """
         if self.episode_reward is None:
-            self.episode_reward = self.locals["rewards"]
-        else:
-            self.episode_reward += self.locals["rewards"]
+            self.episode_reward = np.zeros_like(self.locals["rewards"])
+        self.episode_reward += self.locals["rewards"]
 
-        done_indices = np.where(self.locals["dones"] == True)[0]
-        if done_indices.size != 0:
-            for done_index in done_indices:
-                if not self.locals["infos"][done_index].get("discard", False):
-                    self.episode_rewards.append(self.episode_reward[done_index])
-                # Reset trackers for done agent
-                self.episode_reward[done_index] = 0
+        for done_index in np.where(self.locals["dones"] == True)[0]:
+            self._record_completed_episode(self.episode_reward[done_index], self.locals["infos"][done_index])
+            # Reset tracker for done agent
+            self.episode_reward[done_index] = 0
 
-        if self.num_timesteps > self.pruning_start_at and len(self.episode_rewards) == self.episode_rewards.maxlen:
-            mean_episode_reward = np.mean(self.episode_rewards)
-            if mean_episode_reward < self.episode_reward_threshold:
-                return False
-
-        return True
+        return self._should_continue(self.num_timesteps)
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
         """Evaluate pruning once when a complete episode changes its reward window."""
@@ -376,12 +301,20 @@ class ExperimentPruningCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         terminal_infos = get_episode_infos(batch, terminal_index)
 
         for done_index in np.flatnonzero(terminal_dones):
-            if not terminal_infos[done_index].get(constants.DISCARD_INFO_KEY, False):
-                self.episode_rewards.append(episode_rewards[done_index])
+            self._record_completed_episode(episode_rewards[done_index], terminal_infos[done_index])
 
         self.episode_reward = np.zeros_like(episode_rewards)
+        return self._should_continue(context.end_timestep)
+
+    def _record_completed_episode(self, reward_value: float, info: dict) -> None:
+        """Append one finished episode's total reward to the pruning window, unless discarded."""
+        if not info.get(constants.DISCARD_INFO_KEY, False):
+            self.episode_rewards.append(reward_value)
+
+    def _should_continue(self, current_timestep: int) -> bool:
+        """Prune once the reward window is full and its mean falls below the threshold."""
         reward_window_is_full = len(self.episode_rewards) == self.episode_rewards.maxlen
-        if context.end_timestep <= self.pruning_start_at or not reward_window_is_full:
+        if current_timestep <= self.pruning_start_at or not reward_window_is_full:
             return True
         return bool(np.mean(self.episode_rewards) >= self.episode_reward_threshold)
 
@@ -413,48 +346,45 @@ class ResetInfoCallback(EpisodeBatchableCallbackMixin, BaseCallback):
 
         # Write reset info at first step of first episode
         for agent_index, reset_info in enumerate(self.locals["reset_infos"]):
-            if agent_index not in self.first_step_tracker:
-                self.episode_counter[agent_index] = 0
-                self.first_step_tracker.append(agent_index)
-                if reset_info:
-                    self.connector.log_dict(
-                        reset_info,
-                        f"Reset Info - Agent {agent_index} - Episode {self.episode_counter.get(agent_index, 0)}",
-                    )
+            self._handle_first_step(agent_index, reset_info)
 
         # Write reset info at each reset (when done=True, reset has already happened and reset_info is available)
-        done_indices = np.where(self.locals["dones"] == True)[0]
-        if done_indices.size != 0:
-            for done_index in done_indices:
-                self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
-                reset_info = self.locals["reset_infos"][done_index]
-                if reset_info:
-                    self.connector.log_dict(
-                        reset_info,
-                        f"Reset Info - Agent {done_index} - Episode {self.episode_counter.get(done_index, 0)}",
-                    )
+        for done_index in np.where(self.locals["dones"] == True)[0]:
+            self._handle_episode_end(done_index, self.locals["reset_infos"][done_index])
 
         return True
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
-        """Log initial and post-terminal reset information once per episode."""
+        """Log initial and post-terminal reset information once per episode.
+
+        Reset info only ever appears at an episode's first transition (the initial
+        reset) or its terminal one (the reset that followed `done`), so - like
+        `_handle_first_step`/`_handle_episode_end` below - only those two rows of
+        the batch need inspecting, not every transition in between.
+        """
         batch = context.batch
         initial_reset_infos = get_episode_reset_infos(batch, 0)
         for agent_index, reset_info in enumerate(initial_reset_infos):
-            if agent_index in self.first_step_tracker:
-                continue
-            self.episode_counter[agent_index] = 0
-            self.first_step_tracker.append(agent_index)
-            self._log_reset_info(agent_index, reset_info)
+            self._handle_first_step(agent_index, reset_info)
 
         terminal_index = batch.transition_count - 1
         terminal_dones = slice_episode_field(batch, "dones", terminal_index)
         terminal_reset_infos = get_episode_reset_infos(batch, terminal_index)
         for done_index in np.flatnonzero(terminal_dones):
-            self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
-            self._log_reset_info(done_index, terminal_reset_infos[done_index])
+            self._handle_episode_end(done_index, terminal_reset_infos[done_index])
 
         return True
+
+    def _handle_first_step(self, agent_index: int, reset_info: dict) -> None:
+        if agent_index in self.first_step_tracker:
+            return
+        self.episode_counter[agent_index] = 0
+        self.first_step_tracker.append(agent_index)
+        self._log_reset_info(agent_index, reset_info)
+
+    def _handle_episode_end(self, agent_index: int, reset_info: dict) -> None:
+        self.episode_counter[agent_index] = self.episode_counter.get(agent_index, 0) + 1
+        self._log_reset_info(agent_index, reset_info)
 
     def _log_reset_info(self, agent_index: int, reset_info: dict) -> None:
         if not reset_info:
