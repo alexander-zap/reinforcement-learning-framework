@@ -92,43 +92,6 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                         if log_this_episode:
                             report: Dict[str, object] = self.model.get_profiler_report()
 
-                            buffer_utilization = report["buffer"]["utilization"]
-                            buffer_emptiness = report["buffer"]["emptiness"]
-                            buffer_full_push_fraction = report["buffer"]["full_push_fraction"]
-                            buffer_avg_push_time = report["buffer"]["avg_push_time_seconds"]
-                            discarded_episodes_fraction = report["buffer"]["discarded_episodes_fraction"]
-
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                buffer_utilization,
-                                value_name="Buffer Utilization",
-                                title_name="Buffer Profiler Stats",
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                buffer_emptiness,
-                                value_name="Buffer Emptiness",
-                                title_name="Buffer Profiler Stats",
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                buffer_full_push_fraction,
-                                value_name="Buffer Fullness",
-                                title_name="Buffer Profiler Stats",
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                buffer_avg_push_time,
-                                value_name="Buffer Worker Fullness Wait Time",
-                                title_name="Buffer Profiler Stats",
-                            )
-                            self.connector.log_value_with_timestep(
-                                self.num_timesteps,
-                                discarded_episodes_fraction,
-                                value_name="Discarded Episodes",
-                                title_name="Buffer Profiler Stats",
-                            )
-
                             main_stats = report["main"]
 
                             for phase in main_stats.keys():
@@ -149,6 +112,23 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
                                         value,
                                         value_name=f"{phase}",
                                         title_name=f"Worker Profiler Stats / {key}",
+                                    )
+
+                            for section_title, section_stats in (
+                                ("Buffer Profiler Stats", report["buffer"]),
+                                ("Worker Sync Profiler Stats", report["worker_sync"]),
+                                ("Transport Profiler Stats", report["transport"]),
+                                ("Assembly Profiler Stats", report["assembly"]),
+                                ("Policy Profiler Stats", report["policy"]),
+                            ):
+                                for key, value in section_stats.items():
+                                    if value is None:
+                                        continue
+                                    self.connector.log_value_with_timestep(
+                                        self.num_timesteps,
+                                        value,
+                                        value_name=key,
+                                        title_name=section_title,
                                     )
                 return True
 
