@@ -84,6 +84,7 @@ class Agent(ABC):
             ]
 
         episode_rewards = []
+        episode_rewards_lock = threading.Lock()
 
         with tqdm(total=n_eval_episodes) as pbar:
             if isinstance(evaluation_environments[0], pettingzoo.ParallelEnv):
@@ -96,8 +97,9 @@ class Agent(ABC):
                     }
 
                     episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
+                    local_episode_rewards = []
 
-                    while len(episode_rewards) < n_episodes:
+                    while len(local_episode_rewards) < n_episodes:
                         (
                             observations,
                             rewards,
@@ -130,7 +132,7 @@ class Agent(ABC):
                             for done_index in done_indices:
                                 agent = list(terminations.keys())[done_index]
                                 if agent in episode_reward:
-                                    episode_rewards.append(episode_reward[agent])
+                                    local_episode_rewards.append(episode_reward[agent])
                                     pbar.update(1)
                                     del episode_reward[agent]
 
@@ -141,6 +143,9 @@ class Agent(ABC):
                                 for agent in evaluation_environment.agents
                             }
                             episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
+
+                    with episode_rewards_lock:
+                        episode_rewards.extend(local_episode_rewards)
 
             elif (
                 isinstance(evaluation_environments[0], gym.Env)
@@ -168,7 +173,7 @@ class Agent(ABC):
                     n_envs = evaluation_environment.num_envs
 
                     metric_aggregator = MetricAggregator(connector=connector)
-                    log_frequency = min(n_episodes // n_envs, logging_frequency)
+                    log_frequency = max(min(n_episodes // n_envs, logging_frequency), 1)
 
                     prev_observations = evaluation_environment.reset()
                     prev_actions = [
@@ -177,8 +182,9 @@ class Agent(ABC):
                     ]
 
                     current_rewards = np.zeros(n_envs)
+                    local_episode_rewards = []
 
-                    while len(episode_rewards) < n_episodes:
+                    while len(local_episode_rewards) < n_episodes:
                         observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
                         metric_aggregator.aggregate_step(observations, prev_actions, rewards, dones, infos)
                         actions = [
@@ -191,7 +197,7 @@ class Agent(ABC):
 
                         for i in range(n_envs):
                             if dones[i]:
-                                episode_rewards.append(current_rewards[i])
+                                local_episode_rewards.append(current_rewards[i])
                                 pbar.update(1)
                                 current_rewards[i] = 0
 
@@ -199,10 +205,13 @@ class Agent(ABC):
                                 if log_episode:
                                     metric_aggregator.log_aggregated_metrics(
                                         agent_index=i,
-                                        num_timesteps=len(episode_rewards),
+                                        num_timesteps=len(local_episode_rewards),
                                         log_distributions=False,
                                         metric_name_prefix="Evaluation - ",
                                     )
+
+                    with episode_rewards_lock:
+                        episode_rewards.extend(local_episode_rewards)
 
             threads = []
             for evaluation_environment in vectorized_environments:
