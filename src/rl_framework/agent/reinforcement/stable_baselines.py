@@ -5,7 +5,7 @@ from copy import deepcopy
 from functools import partial
 from os import cpu_count
 from pathlib import Path
-from typing import Dict, List, Optional, Type
+from typing import Callable, Dict, List, Optional, Type
 
 import gymnasium
 import numpy as np
@@ -26,6 +26,7 @@ from rl_framework.util import (
     DummyConnector,
     Environment,
     FeaturesExtractor,
+    GammaScheduleCallback,
     LoggingCallback,
     ResetInfoCallback,
     SavingCallback,
@@ -60,6 +61,8 @@ class StableBaselinesAgent(RLAgent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
+                `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule the
+                discount factor over training.
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
@@ -69,6 +72,8 @@ class StableBaselinesAgent(RLAgent):
         self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
         # Optionally reset optimizer state for fresh fine-tuning
         self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self.gamma_schedule: Optional[Callable[[float], float]] = None
+        self._setup_gamma_schedule()
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -270,6 +275,8 @@ class StableBaselinesAgent(RLAgent):
             ),
             ResetInfoCallback(connector=connector),
         ]
+        if self.gamma_schedule is not None:
+            callbacks.append(GammaScheduleCallback(self.gamma_schedule, verbose=callback_verbosity))
 
         return callbacks
 
@@ -326,8 +333,22 @@ class StableBaselinesAgent(RLAgent):
         """
         if algorithm_parameters:
             self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+            self._setup_gamma_schedule()
         self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
         self.algorithm_needs_initialization = False
+
+    def _setup_gamma_schedule(self) -> None:
+        """
+        Set `gamma_schedule` from `algorithm_parameters`. A callable `gamma` becomes the schedule (applied during
+        training by `GammaScheduleCallback`) and is replaced by its start value, since SB3 algorithms require a float.
+        A constant (or missing) `gamma` clears the schedule.
+        """
+        gamma_schedule = self.algorithm_parameters.get("gamma")
+        if not callable(gamma_schedule):
+            self.gamma_schedule = None
+        else:
+            self.gamma_schedule = gamma_schedule
+            self.algorithm_parameters["gamma"] = float(gamma_schedule(1.0))
 
     @staticmethod
     def _add_required_default_parameters(algorithm_parameters: Optional[Dict]):
