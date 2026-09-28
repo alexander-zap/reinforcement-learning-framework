@@ -88,6 +88,8 @@ class Agent(ABC):
 
         with tqdm(total=n_eval_episodes) as pbar:
             if isinstance(evaluation_environments[0], pettingzoo.ParallelEnv):
+                # Each pettingzoo environment is evaluated in its own thread, without vectorization
+                vectorized_environments = evaluation_environments
 
                 def evaluate_agent_on_environment(evaluation_environment, n_episodes: int):
                     prev_observations, _ = evaluation_environment.reset()
@@ -212,6 +214,11 @@ class Agent(ABC):
 
                     with episode_rewards_lock:
                         episode_rewards.extend(local_episode_rewards)
+
+            else:
+                raise TypeError(
+                    f"Evaluation is not supported for environments of type {type(evaluation_environments[0])}."
+                )
 
             threads = []
             for evaluation_environment in vectorized_environments:
