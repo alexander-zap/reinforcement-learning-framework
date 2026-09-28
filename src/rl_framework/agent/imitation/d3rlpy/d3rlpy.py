@@ -372,7 +372,7 @@ class D3RLPYAgent(ILAgent):
                 Providing None leads to keeping the previously set parameters.
         """
         if algorithm_parameters:
-            self.algorithm_parameters = algorithm_parameters
+            self.algorithm_parameters = {**algorithm_parameters}
 
         with open(file_path, "rb") as f:
             obj = pickle.load(f)

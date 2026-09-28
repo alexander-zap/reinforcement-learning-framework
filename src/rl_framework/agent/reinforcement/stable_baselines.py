@@ -228,9 +228,10 @@ class StableBaselinesAgent(RLAgent):
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
             if self.features_extractor:
-                parameters["policy_kwargs"].update(
-                    get_sb3_policy_kwargs_for_features_extractor(self.features_extractor)
-                )
+                parameters["policy_kwargs"] = {
+                    **parameters["policy_kwargs"],
+                    **get_sb3_policy_kwargs_for_features_extractor(self.features_extractor),
+                }
             algorithm_kwargs.update(parameters)
             self.algorithm = self.algorithm_class(**algorithm_kwargs)
             self.algorithm_needs_initialization = False
@@ -332,7 +333,7 @@ class StableBaselinesAgent(RLAgent):
                 Providing None leads to keeping the previously set parameters.
         """
         if algorithm_parameters:
-            self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+            self.algorithm_parameters = self._add_required_default_parameters({**algorithm_parameters})
             self._setup_gamma_schedule()
         self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
         self.algorithm_needs_initialization = False

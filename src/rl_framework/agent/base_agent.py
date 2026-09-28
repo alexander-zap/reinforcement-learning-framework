@@ -44,7 +44,7 @@ class Agent(ABC):
                     used before the action/value prediction network.
         """
         self.algorithm_class = algorithm_class
-        self.algorithm_parameters = algorithm_parameters if algorithm_parameters else {}
+        self.algorithm_parameters = {**algorithm_parameters} if algorithm_parameters else {}
         self.features_extractor = features_extractor
 
     def evaluate(
