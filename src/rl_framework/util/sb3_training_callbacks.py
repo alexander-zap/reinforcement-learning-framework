@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Deque, Union
+from typing import Callable, Deque, Union
 
 import numpy as np
 from async_gym_agents import constants
@@ -393,3 +393,42 @@ class ResetInfoCallback(EpisodeBatchableCallbackMixin, BaseCallback):
             reset_info,
             f"Reset Info - Agent {agent_index} - Episode {self.episode_counter[agent_index]}",
         )
+
+
+class GammaScheduleCallback(EpisodeBatchableCallbackMixin, BaseCallback):
+    """
+    Sets the discount factor (gamma) from a schedule before every rollout.
+
+    The schedule follows the SB3 learning-rate convention: it is called with `progress_remaining`, which goes from 1
+    (start of training) to 0 (end of training).
+    """
+
+    def __init__(self, gamma_schedule: Callable[[float], float], verbose=0):
+        """
+        Args:
+            gamma_schedule: Callable mapping `progress_remaining` to the gamma value to use for the next rollout.
+            verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
+        """
+        super().__init__(verbose)
+        self.gamma_schedule = gamma_schedule
+
+    def _on_rollout_start(self) -> None:
+        # Computed here instead of reading `model._current_progress_remaining`, which SB3 only updates after a rollout
+        # (and which still holds the previous run's value on the first rollout of a loaded model).
+        progress_remaining = 1.0 - float(self.model.num_timesteps) / float(self.model._total_timesteps)
+        gamma = float(self.gamma_schedule(progress_remaining))
+
+        self.model.gamma = gamma
+        # Buffers copy gamma on creation (on-policy GAE, n-step replay), so they need to be updated as well.
+        for buffer_name in ("rollout_buffer", "replay_buffer"):
+            buffer = getattr(self.model, buffer_name, None)
+            if buffer is not None and hasattr(buffer, "gamma"):
+                buffer.gamma = gamma
+
+        self.logger.record("train/gamma", gamma)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def process_episode(self, context: EpisodeCallbackContext) -> bool:
+        return True

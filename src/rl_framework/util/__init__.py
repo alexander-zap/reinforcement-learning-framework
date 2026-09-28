@@ -20,6 +20,7 @@ from .features_extractor_utils import (
 from .metric_logging_utils import MetricAggregator
 from .sb3_optimizer_reset import reset_optimizer_state
 from .sb3_training_callbacks import (
+    GammaScheduleCallback,
     LoggingCallback,
     ResetInfoCallback,
     SavingCallback,
