@@ -34,6 +34,7 @@ numpy = "^1.26.3"
 protobuf = "~3.20"
 gymnasium = "^0.29"
 stable-baselines3 = {extras = ["extra"], version = "^2.2"}
+sb3-contrib = "^2.2"
 tqdm = "^4.66"
 huggingface_hub = "^0.19"
 imageio = "^2.33.0"
@@ -48,6 +49,7 @@ d3rlpy = "^2.6"
 async-gym-agents = "^0.4.1"
 supersuit = "^3.9.3"
 onnx = "^1.15.0"
+seaborn = "^0.13"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^7.2"
