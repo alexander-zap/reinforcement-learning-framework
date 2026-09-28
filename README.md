@@ -13,13 +13,13 @@ An easy-to-read Reinforcement Learning (RL) framework. Provides standardized int
 
 ### Install all dependencies in your development environment
 
-To set up your local development environment, please install poetry (see (tutorial)\[https://python-poetry.org/docs/\]) and run:
+To set up your local development environment, please install uv (see [installation guide](https://docs.astral.sh/uv/getting-started/installation/)) and run:
 
 ```
-poetry install
+uv sync
 ```
 
-Behind the scenes, this creates a virtual environment and installs `rl_framework` along with its dependencies into a new virtualenv. Whenever you run `poetry run <command>`, that `<command>` is actually run inside the virtualenv managed by poetry.
+Behind the scenes, this creates a virtual environment in `.venv` and installs `rl_framework` along with its dependencies (including the `dev` and `test` dependency groups) at the exact versions pinned in `uv.lock`. Whenever you run `uv run <command>`, that `<command>` is actually run inside this virtual environment.
 
 You can now import functions and classes from the module with `import rl_framework`.
 
@@ -127,22 +127,22 @@ In [this RL example script](exploration/train_rl_agent.py) and in [this IL examp
 You can use your module code (`src/`) in Jupyter notebooks without running into import errors by running:
 
 ```
-poetry run jupyter notebook
+uv run --with jupyter jupyter notebook
 ```
 
 or
 
 ```
-poetry run jupyter-lab
+uv run --with jupyter jupyter lab
 ```
 
 This starts the jupyter server inside the project's virtualenv.
 
-Assuming you already have Jupyter installed, you can make your virtual environment available as a separate kernel by running:
+If you use a separately installed Jupyter, you can make your virtual environment available as a separate kernel by running:
 
 ```
-poetry add ipykernel
-poetry run python -m ipykernel install --user --name="reinforcement-learning-framework"
+uv add --dev ipykernel
+uv run python -m ipykernel install --user --name="reinforcement-learning-framework"
 ```
 
 Note that we mainly use notebooks for experiments, visualizations and reports. Every piece of functionality that is meant to be reused should go into module code and be imported into notebooks.
@@ -152,34 +152,35 @@ Note that we mainly use notebooks for experiments, visualizations and reports. E
 We use `pytest` as test framework. To execute the tests, please run
 
 ```
-pytest tests
+uv run pytest tests
 ```
 
 To run the tests with coverage information, please use
 
 ```
-pytest tests --cov=src --cov-report=html --cov-report=term
+uv run pytest tests --cov=src --cov-report=html --cov-report=term
 ```
 
 Have a look at the `htmlcov` folder, after the tests are done.
 
 ### Distribution Package
 
-To build a distribution package (wheel), please use
+To release a new version, bump the version number, build the source distribution and wheel, and upload them to PyPI:
 
 ```
-python setup.py bdist_wheel
+uv version --bump patch
+uv build
+uv publish
 ```
 
-This will clean up the build folder and then run the `bdist_wheel` command.
+`uv build` writes the packages to the `dist` folder. `uv publish` uploads everything in `dist`, so remove old builds before building. It reads the PyPI token from the `UV_PUBLISH_TOKEN` environment variable (or pass it with `--token`).
 
 ### Contributions
 
 Before contributing, please set up the pre-commit hooks to reduce errors and ensure consistency
 
 ```
-pip install -U pre-commit
-pre-commit install
+uv run pre-commit install
 ```
 
 If you run into any issues, you can remove the hooks again with `pre-commit uninstall`.
