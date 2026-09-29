@@ -1,6 +1,6 @@
 [project]
 name = "reinforcement-learning-framework"
-version = "0.11.2"
+version = "0.11.3"
 description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and utilities."
 authors = [{ name = "Alexander Zap" }]
 requires-python = ">=3.9,<4"
