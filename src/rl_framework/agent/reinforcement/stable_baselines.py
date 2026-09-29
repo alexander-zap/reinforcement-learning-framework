@@ -30,8 +30,10 @@ from rl_framework.util import (
     LoggingCallback,
     ResetInfoCallback,
     SavingCallback,
+    apply_action_bias,
     get_sb3_policy_kwargs_for_features_extractor,
     reset_optimizer_state,
+    validate_initial_action_bias,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
@@ -63,6 +65,8 @@ class StableBaselinesAgent(RLAgent):
                 for algorithm-specific params.
                 `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule the
                 discount factor over training.
+                `initial_action_bias` may give the initial biases of the policy's action output layer (PPO, A2C, TRPO,
+                SAC, TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
@@ -74,6 +78,8 @@ class StableBaselinesAgent(RLAgent):
         self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
         self.gamma_schedule: Optional[Callable[[float], float]] = None
         self._setup_gamma_schedule()
+        self.initial_action_bias: Optional[np.ndarray] = None
+        self._setup_initial_action_bias()
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -235,6 +241,9 @@ class StableBaselinesAgent(RLAgent):
             algorithm_kwargs.update(parameters)
             self.algorithm = self.algorithm_class(**algorithm_kwargs)
             self.algorithm_needs_initialization = False
+            # Only a freshly created model gets the initial action bias, before learn() collects its first rollout.
+            if self.initial_action_bias is not None:
+                apply_action_bias(self.algorithm, self.initial_action_bias)
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
@@ -335,6 +344,7 @@ class StableBaselinesAgent(RLAgent):
         if algorithm_parameters:
             self.algorithm_parameters = self._add_required_default_parameters({**algorithm_parameters})
             self._setup_gamma_schedule()
+            self._setup_initial_action_bias()
         self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
         self.algorithm_needs_initialization = False
 
@@ -350,6 +360,14 @@ class StableBaselinesAgent(RLAgent):
         else:
             self.gamma_schedule = gamma_schedule
             self.algorithm_parameters["gamma"] = float(gamma_schedule(1.0))
+
+    def _setup_initial_action_bias(self) -> None:
+        """
+        Set `initial_action_bias` from `algorithm_parameters` (see `rl_framework.util.policy_init`), where it is
+        removed, since SB3 algorithms do not accept it. It is applied to freshly created models only.
+        """
+        initial_action_bias = self.algorithm_parameters.pop("initial_action_bias", None)
+        self.initial_action_bias = validate_initial_action_bias(initial_action_bias, self.algorithm_class)
 
     @staticmethod
     def _add_required_default_parameters(algorithm_parameters: Optional[Dict]):
