@@ -18,6 +18,7 @@ from .features_extractor_utils import (
     wrap_environment_with_features_extractor_preprocessor,
 )
 from .metric_logging_utils import MetricAggregator
+from .policy_init import apply_action_bias, validate_initial_action_bias
 from .sb3_optimizer_reset import reset_optimizer_state
 from .sb3_training_callbacks import (
     GammaScheduleCallback,
