@@ -346,6 +346,15 @@ class D3RLPYAgent(ILAgent):
         )[0]
         return action
 
+    def save_policy_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
+        """Save the agent policy as ONNX model.
+
+        Args:
+            file_path (Path): The file where the policy should be saved to.
+        """
+        assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
+        self.algorithm.save_policy(Path(file_path).as_posix())
+
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
 

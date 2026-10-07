@@ -1,11 +1,15 @@
+import copy
+import inspect
 from abc import ABC, abstractmethod
-from typing import Any, Union
+from typing import Any, Optional, Type, Union
 
 import gymnasium as gym
 import numpy
 import numpy as np
 import pettingzoo
 import torch.nn
+from pettingzoo.utils.wrappers import BaseParallelWrapper
+from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
@@ -57,31 +61,29 @@ def wrap_environment_with_features_extractor_preprocessor(
         def observation(self, observation):
             return self.features_extractor.preprocess(np.array([observation]))[0]
 
-    class FeaturesExtractorPreprocessingPettingzooWrapper(pettingzoo.ParallelEnv):
+    class FeaturesExtractorPreprocessingPettingzooWrapper(BaseParallelWrapper):
         def __init__(self, env, features_extractor: FeaturesExtractor):
-            # https://stackoverflow.com/a/1445289
-            self.__class__ = type(env.__class__.__name__, (self.__class__, env.__class__), {})
-            self.__dict__ = env.__dict__
-
-            self.env = env
-
-            self.observation_spaces = {
-                agent: (
-                    features_extractor.preprocessed_observation_space
-                    if features_extractor.preprocessed_observation_space is not None
-                    else env.observation_space
-                )
-                for agent in env.agents
-            }
+            super().__init__(env)
             self.features_extractor = features_extractor
+
+        def observation_space(self, agent):
+            if self.features_extractor.preprocessed_observation_space is not None:
+                return self.features_extractor.preprocessed_observation_space
+            return self.env.observation_space(agent)
+
+        def _preprocess(self, observations: dict) -> dict:
+            return {
+                agent: self.features_extractor.preprocess(np.array([observation]))[0]
+                for agent, observation in observations.items()
+            }
+
+        def reset(self, seed=None, options=None):
+            observations, infos = self.env.reset(seed=seed, options=options)
+            return self._preprocess(observations), infos
 
         def step(self, actions: dict):
             observations, rewards, terminations, truncations, infos = self.env.step(actions)
-            processed_observations = {
-                agent: self.features_extractor.preprocess(np.array([observation]))[0]
-                for agent, observation in observations
-            }
-            return processed_observations, rewards, terminations, truncations, infos
+            return self._preprocess(observations), rewards, terminations, truncations, infos
 
     if isinstance(environment, pettingzoo.ParallelEnv):
         wrapped_environment = FeaturesExtractorPreprocessingPettingzooWrapper(environment, features_extractor)
@@ -90,18 +92,35 @@ def wrap_environment_with_features_extractor_preprocessor(
     return wrapped_environment
 
 
-def get_sb3_policy_kwargs_for_features_extractor(features_extractor: FeaturesExtractor) -> dict:
-    return {
+def get_sb3_policy_kwargs_for_features_extractor(
+    features_extractor: FeaturesExtractor, policy_class: Optional[Type[BasePolicy]] = None
+) -> dict:
+    """
+    Build SB3 `policy_kwargs` which make the policy use the given features extractor.
+
+    Args:
+        features_extractor: Features extractor to be used by the policy.
+        policy_class: SB3 policy class the kwargs are built for. `share_features_extractor` is only set if the policy
+            class accepts it (e.g., `DQNPolicy` does not). If None, the policy class is assumed to accept it.
+
+    Returns:
+        policy_kwargs (dict): Keyword arguments to be passed to the policy constructor.
+    """
+    policy_kwargs = {
         "features_extractor_class": StableBaselinesFeaturesExtractor,
         "features_extractor_kwargs": {"features_extractor": features_extractor},
-        "share_features_extractor": True,
     }
+    if policy_class is None or "share_features_extractor" in inspect.signature(policy_class.__init__).parameters:
+        policy_kwargs["share_features_extractor"] = True
+    return policy_kwargs
 
 
 class StableBaselinesFeaturesExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Space, features_extractor: FeaturesExtractor):
         super().__init__(observation_space=observation_space, features_dim=features_extractor.output_dim)
-        self.features_extractor = features_extractor
+        # Each SB3 construction gets its own copy, so that target networks (DQN, SAC, TD3) do not share their weights
+        #   with the online network (otherwise the in-place Polyak update corrupts the shared weights).
+        self.features_extractor = copy.deepcopy(features_extractor)
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         return self.features_extractor(observations)

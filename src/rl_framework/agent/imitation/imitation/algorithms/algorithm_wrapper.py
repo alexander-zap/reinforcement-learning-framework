@@ -116,11 +116,12 @@ class AlgorithmWrapper(ABC):
         )
 
         if self.features_extractor:
-            saved_variables["data"].update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
+            saved_variables["data"].update(
+                get_sb3_policy_kwargs_for_features_extractor(self.features_extractor, self.policy_class)
+            )
 
         policy: BasePolicy = self.policy_class(**saved_variables["data"])
         policy.load_state_dict(saved_variables["state_dict"])
-        assert policy.features_extractor.features_extractor == self.features_extractor
         policy.to(device)
         return policy
 
