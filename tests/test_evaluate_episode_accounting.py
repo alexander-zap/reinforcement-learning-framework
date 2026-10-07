@@ -41,7 +41,7 @@ class ConstantActionAgent(Agent):
     def choose_action(self, observation, deterministic, *args, **kwargs):
         return 0
 
-    save_as_onnx = save_to_file = load_from_file = None
+    save_policy_as_onnx = save_to_file = load_from_file = None
 
 
 class RecordingConnector(DummyConnector):

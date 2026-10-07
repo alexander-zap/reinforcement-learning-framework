@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Type
 import gymnasium as gym
 import pettingzoo
 import supersuit as ss
+import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -247,6 +248,21 @@ class ImitationAgent(ILAgent):
         if not action.shape:
             action = action.item()
         return action
+
+    def save_policy_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
+        """Save the agent policy as ONNX model.
+
+        Args:
+            file_path (Path): The file where the policy should be saved to.
+        """
+        assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
+
+        if not self.algorithm_policy:
+            raise ValueError("Cannot export uninitialized agent. Start a training first to initialize.")
+
+        observation_size = self.algorithm_policy.observation_space.shape
+        dummy_input = torch.randn(1, *observation_size, device=self.algorithm_policy.device)
+        torch.onnx.export(self.algorithm_policy, dummy_input, file_path, opset_version=17, input_names=["input"])
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).

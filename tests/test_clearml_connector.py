@@ -24,11 +24,16 @@ def make_connector(upload_file_name="model.zip", download_file_name=None, task_i
     )
 
 
-def upload_checkpoint(file_name):
-    connector = make_connector(upload_file_name=file_name)
+def make_agent():
     agent = Mock()
     agent.save_to_file.side_effect = lambda path: Path(path).write_bytes(b"model")
-    connector.upload(agent=agent, checkpoint_id=7)
+    agent.save_policy_as_onnx.side_effect = lambda path: Path(path).write_bytes(b"onnx")
+    return agent
+
+
+def upload_checkpoint(file_name):
+    connector = make_connector(upload_file_name=file_name)
+    connector.upload(agent=make_agent(), checkpoint_id=7)
     kwargs = connector.task.update_output_model.call_args.kwargs
     return kwargs["name"], Path(kwargs["model_path"]).name
 
@@ -48,6 +53,23 @@ def test_upload_keeps_multi_dot_file_name():
     name, saved_file = upload_checkpoint("model.v2.zip")
     assert name == "model.v2-7"
     assert saved_file.endswith("-model.v2-7.zip")
+
+
+def test_upload_adds_policy_onnx_as_artifact():
+    connector = make_connector(upload_file_name="model.zip")
+    connector.upload(agent=make_agent(), checkpoint_id=7)
+    kwargs = connector.task.upload_artifact.call_args.kwargs
+    assert kwargs["name"] == "model-7_ONNX"
+    assert kwargs["artifact_object"].endswith("-model-7.onnx")
+
+
+def test_upload_skips_onnx_for_agents_without_onnx_export():
+    connector = make_connector(upload_file_name="model.zip")
+    agent = make_agent()
+    agent.save_policy_as_onnx.side_effect = NotImplementedError
+    connector.upload(agent=agent, checkpoint_id=7)
+    connector.task.update_output_model.assert_called_once()
+    connector.task.upload_artifact.assert_not_called()
 
 
 def download_from_task(monkeypatch, file_name):
