@@ -1,15 +1,21 @@
+import threading
 from abc import ABC, abstractmethod
+from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type
 
 import gymnasium as gym
 import numpy as np
 import pettingzoo
+from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 from tqdm import tqdm
 
 from rl_framework.util import (
     Connector,
+    DummyConnector,
+    Environment,
     FeaturesExtractor,
+    MetricAggregator,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
@@ -38,113 +44,197 @@ class Agent(ABC):
                     used before the action/value prediction network.
         """
         self.algorithm_class = algorithm_class
-        self.algorithm_parameters = algorithm_parameters if algorithm_parameters else {}
+        self.algorithm_parameters = {**algorithm_parameters} if algorithm_parameters else {}
         self.features_extractor = features_extractor
 
     def evaluate(
         self,
-        evaluation_environment: Union[gym.Env, pettingzoo.ParallelEnv],
+        evaluation_environments: List[Environment],
         n_eval_episodes: int,
-        seeds: Optional[List[int]] = None,
+        connector: Connector = DummyConnector(),
+        logging_frequency: int = 10,
         deterministic: bool = False,
     ) -> Tuple[float, float]:
         """
         Evaluate the agent for ``n_eval_episodes`` episodes and returns average reward and std of reward.
 
         Args:
-            evaluation_environment (gym.Env or pettingzoo.ParallelEnv): The evaluation environment.
+            evaluation_environments (List[Environment]): The evaluation environments.
             n_eval_episodes (int): Number of episode to evaluate the agent.
-            seeds (Optional[List[int]]): List of seeds for evaluations.
-                No seed is used if not provided or fewer seeds are provided then n_eval_episodes.
+            connector (Connector): Connector for logging evaluation metrics.
+            logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
 
+        def envs_to_dummy_vec_env(environments: List[gym.Env]) -> VecEnv:
+            def make_env(env_list: list, index: int):
+                return env_list[index]
+
+            environment_fns = [partial(make_env, environments, env_index) for env_index in range(len(environments))]
+
+            # noinspection PyCallingNonCallable
+            vectorized_environment = DummyVecEnv(env_fns=environment_fns)
+
+            return vectorized_environment
+
         if self.features_extractor:
-            evaluation_environment = wrap_environment_with_features_extractor_preprocessor(
-                evaluation_environment, self.features_extractor
-            )
+            evaluation_environments = [
+                wrap_environment_with_features_extractor_preprocessor(evaluation_environment, self.features_extractor)
+                for evaluation_environment in evaluation_environments
+            ]
 
         episode_rewards = []
+        episode_rewards_lock = threading.Lock()
 
-        if isinstance(evaluation_environment, pettingzoo.ParallelEnv):
-            prev_observations, _ = evaluation_environment.reset()
-            prev_actions = {
-                agent: self.choose_action(prev_observations[agent], deterministic=deterministic)
-                for agent in evaluation_environment.agents
-            }
+        with tqdm(total=n_eval_episodes) as pbar:
+            if isinstance(evaluation_environments[0], pettingzoo.ParallelEnv):
+                # Each pettingzoo environment is evaluated in its own thread, without vectorization
+                vectorized_environments = evaluation_environments
 
-            episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
-
-            with tqdm(total=n_eval_episodes) as pbar:
-                while len(episode_rewards) < n_eval_episodes:
-                    (
-                        observations,
-                        rewards,
-                        terminations,
-                        truncations,
-                        infos,
-                    ) = evaluation_environment.step(prev_actions)
-
-                    terms = np.fromiter(terminations.values(), dtype=bool)
-                    truncs = np.fromiter(truncations.values(), dtype=bool)
-                    dones = terms | truncs
-                    env_done = dones.all()
-
-                    # next action to be executed (based on new observation)
-                    actions = {
-                        agent: self.choose_action(observations[agent], deterministic=deterministic)
+                def evaluate_agent_on_environment(evaluation_environment, n_episodes: int):
+                    prev_observations, _ = evaluation_environment.reset()
+                    prev_actions = {
+                        agent: self.choose_action(prev_observations[agent], deterministic=deterministic)
                         for agent in evaluation_environment.agents
                     }
 
-                    for agent in rewards.keys():
-                        if agent not in episode_reward and not (terminations[agent] or truncations[agent]):
-                            episode_reward[agent] = rewards[agent]
-                        elif agent in episode_reward:
-                            episode_reward[agent] += rewards[agent]
+                    episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
+                    local_episode_rewards = []
 
-                    prev_actions = actions
+                    while len(local_episode_rewards) < n_episodes:
+                        (
+                            observations,
+                            rewards,
+                            terminations,
+                            truncations,
+                            infos,
+                        ) = evaluation_environment.step(prev_actions)
 
-                    if dones.any():
-                        done_indices = np.where(dones == True)[0]
-                        for done_index in done_indices:
-                            agent = list(terminations.keys())[done_index]
-                            if agent in episode_reward:
-                                episode_rewards.append(episode_reward[agent])
+                        terms = np.fromiter(terminations.values(), dtype=bool)
+                        truncs = np.fromiter(truncations.values(), dtype=bool)
+                        dones = terms | truncs
+                        env_done = dones.all()
+
+                        # next action to be executed (based on new observation)
+                        actions = {
+                            agent: self.choose_action(observations[agent], deterministic=deterministic)
+                            for agent in evaluation_environment.agents
+                        }
+
+                        for agent in rewards.keys():
+                            if agent not in episode_reward and not (terminations[agent] or truncations[agent]):
+                                episode_reward[agent] = rewards[agent]
+                            elif agent in episode_reward:
+                                episode_reward[agent] += rewards[agent]
+
+                        prev_actions = actions
+
+                        if dones.any():
+                            done_indices = np.where(dones == True)[0]
+                            for done_index in done_indices:
+                                agent = list(terminations.keys())[done_index]
+                                if agent in episode_reward:
+                                    local_episode_rewards.append(episode_reward[agent])
+                                    pbar.update(1)
+                                    del episode_reward[agent]
+
+                        if env_done:
+                            prev_observations, _ = evaluation_environment.reset()
+                            prev_actions = {
+                                agent: self.choose_action(prev_observations[agent], deterministic=deterministic)
+                                for agent in evaluation_environment.agents
+                            }
+                            episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
+
+                    with episode_rewards_lock:
+                        episode_rewards.extend(local_episode_rewards)
+
+            elif (
+                isinstance(evaluation_environments[0], gym.Env)
+                or isinstance(evaluation_environments[0], VecEnv)
+                or isinstance(evaluation_environments[0], tuple)
+            ):
+                # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
+                if isinstance(evaluation_environments[0], tuple):
+                    environments_from_callable = []
+                    for _, env_func in evaluation_environments:
+                        instantiated_environment = env_func()
+                        if isinstance(instantiated_environment, list):
+                            instantiated_environment = envs_to_dummy_vec_env(instantiated_environment)
+                        environments_from_callable.append(instantiated_environment)
+                    evaluation_environments = environments_from_callable
+
+                if isinstance(evaluation_environments[0], gym.Env):
+                    # noinspection PyCallingNonCallable
+                    vectorized_environments = [envs_to_dummy_vec_env(evaluation_environments)]
+
+                if isinstance(evaluation_environments[0], VecEnv):
+                    vectorized_environments = evaluation_environments
+
+                def evaluate_agent_on_environment(evaluation_environment: VecEnv, n_episodes: int):
+                    n_envs = evaluation_environment.num_envs
+
+                    metric_aggregator = MetricAggregator(connector=connector)
+                    log_frequency = max(min(n_episodes // n_envs, logging_frequency), 1)
+
+                    prev_observations = evaluation_environment.reset()
+                    prev_actions = [
+                        self.choose_action(observation, deterministic=deterministic)
+                        for observation in prev_observations
+                    ]
+
+                    current_rewards = np.zeros(n_envs)
+                    local_episode_rewards = []
+
+                    while len(local_episode_rewards) < n_episodes:
+                        observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
+                        metric_aggregator.aggregate_step(observations, prev_actions, rewards, dones, infos)
+                        actions = [
+                            self.choose_action(observation, deterministic=deterministic) for observation in observations
+                        ]
+
+                        current_rewards += rewards
+
+                        prev_actions = actions
+
+                        for i in range(n_envs):
+                            if dones[i]:
+                                local_episode_rewards.append(current_rewards[i])
                                 pbar.update(1)
-                                del episode_reward[agent]
+                                current_rewards[i] = 0
 
-                    if env_done:
-                        prev_observations, _ = evaluation_environment.reset()
-                        episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
+                                log_episode = (len(metric_aggregator.episode_rewards.get(i, [])) % log_frequency) == 0
+                                if log_episode:
+                                    metric_aggregator.log_aggregated_metrics(
+                                        agent_index=i,
+                                        num_timesteps=len(local_episode_rewards),
+                                        log_distributions=False,
+                                        metric_name_prefix="Evaluation - ",
+                                    )
 
-        else:
-            if seeds is None:
-                seeds = []
+                    with episode_rewards_lock:
+                        episode_rewards.extend(local_episode_rewards)
 
-            for episode in tqdm(range(n_eval_episodes)):
-                seed = seeds[episode] if episode < len(seeds) else None
-                episode_reward = 0
+            else:
+                raise TypeError(
+                    f"Evaluation is not supported for environments of type {type(evaluation_environments[0])}."
+                )
 
-                prev_observation, _ = evaluation_environment.reset(seed=seed)
-                prev_action = self.choose_action(prev_observation, deterministic=deterministic)
+            threads = []
+            for evaluation_environment in vectorized_environments:
+                episode_count_per_environment = (n_eval_episodes // len(vectorized_environments)) + 1
+                thread = threading.Thread(
+                    target=evaluate_agent_on_environment,
+                    args=(evaluation_environment, episode_count_per_environment),
+                )
+                threads.append(thread)
+                thread.start()
 
-                while True:
-                    (
-                        observation,
-                        reward,
-                        terminated,
-                        truncated,
-                        info,
-                    ) = evaluation_environment.step(prev_action)
-                    done = terminated or truncated
-                    # next action to be executed (based on new observation)
-                    action = self.choose_action(observation, deterministic=deterministic)
-                    episode_reward += reward
-                    prev_action = action
+            for thread in threads:
+                thread.join()
 
-                    if done:
-                        episode_rewards.append(episode_reward)
-                        break
+        for env in evaluation_environments:
+            env.close()
 
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)
@@ -172,14 +262,14 @@ class Agent(ABC):
     def load_from_file(self, file_path: Path, algorithm_parameters: Optional[Dict], *args, **kwargs) -> None:
         raise NotImplementedError
 
-    def upload(self, connector: Connector, video_recording_environment: Optional[gym.Env] = None) -> None:
+    def upload(self, connector: Connector, video_recording_environment: Optional[Environment] = None) -> None:
         """
         Evaluate and upload the decision-making agent to the connector.
             Additional option: Generate a video of the agent interacting with the environment.
 
         Args:
             connector (Connector): Connector for uploading.
-            video_recording_environment (gym.Env): Environment used for clip creation before upload.
+            video_recording_environment (Environment): Environment used for clip creation before upload.
                 Optional. If not provided, no video will be recorded.
         """
         connector.upload(

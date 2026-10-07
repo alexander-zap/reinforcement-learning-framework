@@ -5,13 +5,16 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, SupportsFloat, Text
+from typing import List, Optional, SupportsFloat, Text
 
-import gymnasium as gym
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 import stable_baselines3
 from clearml import Task
 from clearml.model import InputModel
 
+from rl_framework.util.types import Environment
 from rl_framework.util.video_recording import record_video
 
 from .base_connector import Connector, DownloadConfig, UploadConfig
@@ -61,7 +64,57 @@ class ClearMLConnector(Connector):
 
         self.task.add_tags(list(self.upload_config.task_tags))
 
-    def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
+    def log_dict(self, dict_to_log: dict, dict_name: Text) -> None:
+        """
+        Log a dictionary to the ClearML task, which appears in the "Artifacts" section of the ClearML experiment page.
+
+        Args:
+            dict_to_log: Dictionary of values to log (e.g., {"game_version": 1.0, "num_sensors": 10})
+            dict_name: Name of the dictionary (e.g., "game settings")
+        """
+        super().log_dict(dict_to_log, dict_name)
+        self.task.connect_configuration(dict_to_log, name=dict_name)
+
+    def log_histogram_with_timestep(
+        self, timestep: int, histogram_values: List[SupportsFloat], histogram_name: Text
+    ) -> None:
+        """
+        Log histogram values to create a sequence of histograms over time steps.
+        Will appear in the "Histogram" section of the ClearML experiment page as a graph.
+
+        Args:
+            timestep: Time step which the histogram corresponds to (x-value)
+            histogram_values: Values which should be logged as histogram
+            histogram_name: Name of histogram (e.g., "action distribution")
+        """
+        super().log_histogram_with_timestep(timestep, histogram_values, histogram_name)
+
+        histogram_values_sequence, timestep_sequence = zip(*self.histogram_sequences_to_log[histogram_name])
+
+        # NOTE: Only the latest histogram is reported
+        #   Instead of aggregating all histograms into one plot, it's advised to inspect them individually in the webapp
+        # dfs = []
+        # for histogram_values, histogram_timestep in zip(histogram_values_sequence, timestep_sequence):
+        #     df = pd.DataFrame(data={"value": histogram_values, "step": [histogram_timestep] * len(histogram_values)})
+        #     dfs.append(df)
+        # df = pd.concat(dfs, ignore_index=True)
+
+        latest_value_sequence = histogram_values_sequence[-1]
+        latest_timestep = timestep_sequence[-1]
+        df = pd.DataFrame(data={"value": latest_value_sequence, "step": [latest_timestep] * len(latest_value_sequence)})
+
+        sns.set_theme(style="white", rc={"axes.facecolor": (0, 0, 0, 0)})
+        g = sns.FacetGrid(df, row="step", hue="step", aspect=15, height=1.25)
+        g.map(sns.histplot, "value", clip_on=False, fill=True, alpha=1)
+
+        title = f"{str(latest_timestep).rjust(15, '0')} - {histogram_name}"
+        self.task.get_logger().report_matplotlib_figure(
+            title=title, series=histogram_name, figure=plt, iteration=timestep, report_interactive=True
+        )
+
+    def log_value_with_timestep(
+        self, timestep: int, value_scalar: SupportsFloat, value_name: Text, title_name: Text = None
+    ) -> None:
         """
         Log scalar value to create a sequence of values over time steps.
         Will appear in the "Scalar" section of the ClearML experiment page as a graph.
@@ -70,10 +123,12 @@ class ClearMLConnector(Connector):
             timestep: Time step which the scalar value corresponds to (x-value)
             value_scalar: Scalar value which should be logged (y-value)
             value_name: Name of scalar value (e.g., "avg. sum of reward")
+            title_name: Name of the graph (e.g., "various reward metrics"); if None, value_name is used
         """
         super().log_value_with_timestep(timestep, value_scalar, value_name)
+        title_name = title_name or value_name
         self.task.get_logger().report_scalar(
-            title=value_name, series=value_name, value=float(value_scalar), iteration=timestep
+            title=title_name, series=value_name, value=float(value_scalar), iteration=timestep
         )
 
     def log_value(self, metric_scalar: SupportsFloat, metric_name: Text) -> None:
@@ -91,7 +146,7 @@ class ClearMLConnector(Connector):
     def upload(
         self,
         agent,
-        video_recording_environment: Optional[gym.Env] = None,
+        video_recording_environment: Optional[Environment] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
@@ -131,18 +186,22 @@ class ClearMLConnector(Connector):
             tags=["final"] + list(self.upload_config.model_tags) if checkpoint_id is None else ["checkpoint"],
         )
 
-        # Save policy as ONNX file
+        # Save policy as ONNX file (skipped for agents which do not support ONNX export)
         onnx_save_path = Path(tempfile.gettempdir(), f"{str(uuid.uuid1())}-{file_name}.onnx")
         logging.debug(f"Saving agent to .onnx file at {onnx_save_path} and uploading as artifact ...")
-        agent.save_policy_as_onnx(onnx_save_path)
-        while not os.path.exists(onnx_save_path):
-            time.sleep(1)
+        try:
+            agent.save_policy_as_onnx(onnx_save_path)
+        except NotImplementedError:
+            logging.warning(f"{agent.__class__.__name__} does not support ONNX export. Skipping ONNX upload.")
+        else:
+            while not os.path.exists(onnx_save_path):
+                time.sleep(1)
 
-        # Upload policy ONNX to ClearML
-        self.task.upload_artifact(
-            name=f"{file_name}_ONNX",
-            artifact_object=str(onnx_save_path),
-        )
+            # Upload policy ONNX to ClearML
+            self.task.upload_artifact(
+                name=f"{file_name}_ONNX",
+                artifact_object=str(onnx_save_path),
+            )
 
         if not checkpoint_id:
             logging.info(

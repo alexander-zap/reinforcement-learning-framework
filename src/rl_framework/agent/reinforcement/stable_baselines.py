@@ -1,10 +1,11 @@
+import logging
 import tempfile
 from collections import defaultdict
 from copy import deepcopy
 from functools import partial
 from os import cpu_count
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
 import gymnasium
 import numpy as np
@@ -13,7 +14,7 @@ import stable_baselines3
 import torch
 import torch.onnx
 from stable_baselines3.common.base_class import BaseAlgorithm, BasePolicy
-from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import VecEnv, VecMonitor
@@ -24,10 +25,16 @@ from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    Environment,
     FeaturesExtractor,
+    GammaScheduleCallback,
     LoggingCallback,
+    ResetInfoCallback,
     SavingCallback,
+    apply_action_bias,
     get_sb3_policy_kwargs_for_features_extractor,
+    reset_optimizer_state,
+    validate_initial_action_bias,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
@@ -57,12 +64,23 @@ class StableBaselinesAgent(RLAgent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
+                `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule the
+                discount factor over training.
+                `initial_action_bias` may give the initial biases of the policy's action output layer (PPO, A2C, TRPO,
+                SAC, TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
+        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
+        # Optionally reset optimizer state for fresh fine-tuning
+        self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self.gamma_schedule: Optional[Callable[[float], float]] = None
+        self._setup_gamma_schedule()
+        self.initial_action_bias: Optional[np.ndarray] = None
+        self._setup_initial_action_bias()
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -77,7 +95,7 @@ class StableBaselinesAgent(RLAgent):
         self,
         total_timesteps: int = 100000,
         connector: Optional[Connector] = None,
-        training_environments: List[Union[gymnasium.Env, pettingzoo.ParallelEnv]] = None,
+        training_environments: List[Environment] = None,
         *args,
         **kwargs,
     ):
@@ -90,8 +108,7 @@ class StableBaselinesAgent(RLAgent):
         after the agent has been trained.
 
         Args:
-            training_environments (List[gymnasium.Env, pettingzoo.ParallelEnv]):
-                List of environments on which the agent should be trained on.
+            training_environments (List[Environment]): List of environments on which the agent should be trained on.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
@@ -180,7 +197,8 @@ class StableBaselinesAgent(RLAgent):
 
             vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)
             vectorized_environment = VecMonitor(vectorized_environment)
-        else:
+
+        elif isinstance(training_environments[0], gymnasium.Env):
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
                 partial(make_env, training_environments, env_index) for env_index in range(len(training_environments))
@@ -189,6 +207,31 @@ class StableBaselinesAgent(RLAgent):
             # noinspection PyCallingNonCallable
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
 
+        elif isinstance(training_environments[0], VecEnv):
+            assert len(training_environments) == 1
+            vectorized_environment = training_environments[0]
+
+        # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
+        elif isinstance(training_environments[0], tuple):
+            environment_return_functions = []
+            stub_environment = None
+            for stub_env, env_func in training_environments:
+                environment_return_functions.append(env_func)
+                stub_environment = stub_env
+
+            # noinspection PyCallingNonCallable
+            vectorized_environment = self.to_vectorized_env(
+                env_fns=environment_return_functions, stub_env=stub_environment
+            )
+
+        else:
+            raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
+
+        if self.reset_optimizer:
+            reset_paths = reset_optimizer_state(self.algorithm)
+            logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
+
+        algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
             if self.features_extractor:
@@ -197,23 +240,57 @@ class StableBaselinesAgent(RLAgent):
                 parameters["policy_kwargs"] = get_sb3_policy_kwargs_for_features_extractor(
                     self.features_extractor, policy_class, parameters["policy_kwargs"]
                 )
-            self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
+            algorithm_kwargs.update(parameters)
+            self.algorithm = self.algorithm_class(**algorithm_kwargs)
             self.algorithm_needs_initialization = False
+            # Only a freshly created model gets the initial action bias, before learn() collects its first rollout.
+            if self.initial_action_bias is not None:
+                apply_action_bias(self.algorithm, self.initial_action_bias)
         else:
             with tempfile.TemporaryDirectory("w") as tmp_dir:
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
                 self.save_to_file(tmp_path)
-                self.algorithm = self.algorithm_class.load(
-                    path=tmp_path, env=vectorized_environment, custom_objects=self.algorithm_parameters
+                algorithm_kwargs["path"] = tmp_path
+                algorithm_kwargs["custom_objects"] = self.algorithm_parameters
+                # noinspection PyUnresolvedReferences
+                device = self.algorithm_parameters.get("device", None)
+                self.algorithm = (
+                    self.algorithm_class.load(**algorithm_kwargs)
+                    if not device
+                    else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
-        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
-        self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list)
+        callbacks = self.get_callbacks(connector=connector)
+        callback_list = CallbackList(callbacks)
 
+        sb3_logging_interval = self.callback_parameters.get("sb3_logging_interval", 1)
+        self.algorithm.learn(total_timesteps=total_timesteps, callback=callback_list, log_interval=sb3_logging_interval)
         vectorized_environment.close()
 
-    def to_vectorized_env(self, env_fns) -> VecEnv:
+    def to_vectorized_env(self, env_fns, stub_env=None) -> VecEnv:
         return SubprocVecEnv(env_fns)
+
+    def get_callbacks(self, connector: Connector) -> list[BaseCallback]:
+        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
+        callback_saving_interval = self.callback_parameters.get("callback_saving_interval", 500000)
+        callback_logging_interval = self.callback_parameters.get("callback_logging_interval", 1)
+        callback_log_distributions = self.callback_parameters.get("callback_log_distributions", False)
+
+        callbacks = [
+            SavingCallback(
+                self, connector=connector, checkpoint_frequency=callback_saving_interval, verbose=callback_verbosity
+            ),
+            LoggingCallback(
+                connector=connector,
+                logging_frequency=callback_logging_interval,
+                log_distributions=callback_log_distributions,
+            ),
+            ResetInfoCallback(connector=connector),
+        ]
+        if self.gamma_schedule is not None:
+            callbacks.append(GammaScheduleCallback(self.gamma_schedule, verbose=callback_verbosity))
+
+        return callbacks
 
     def choose_action(self, observation: object, deterministic: bool = False, *args, **kwargs):
         """
@@ -287,9 +364,32 @@ class StableBaselinesAgent(RLAgent):
                 Providing None leads to keeping the previously set parameters.
         """
         if algorithm_parameters:
-            self.algorithm_parameters = self._add_required_default_parameters(algorithm_parameters)
+            self.algorithm_parameters = self._add_required_default_parameters({**algorithm_parameters})
+            self._setup_gamma_schedule()
+            self._setup_initial_action_bias()
         self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
         self.algorithm_needs_initialization = False
+
+    def _setup_gamma_schedule(self) -> None:
+        """
+        Set `gamma_schedule` from `algorithm_parameters`. A callable `gamma` becomes the schedule (applied during
+        training by `GammaScheduleCallback`) and is replaced by its start value, since SB3 algorithms require a float.
+        A constant (or missing) `gamma` clears the schedule.
+        """
+        gamma_schedule = self.algorithm_parameters.get("gamma")
+        if not callable(gamma_schedule):
+            self.gamma_schedule = None
+        else:
+            self.gamma_schedule = gamma_schedule
+            self.algorithm_parameters["gamma"] = float(gamma_schedule(1.0))
+
+    def _setup_initial_action_bias(self) -> None:
+        """
+        Set `initial_action_bias` from `algorithm_parameters` (see `rl_framework.util.policy_init`), where it is
+        removed, since SB3 algorithms do not accept it. It is applied to freshly created models only.
+        """
+        initial_action_bias = self.algorithm_parameters.pop("initial_action_bias", None)
+        self.initial_action_bias = validate_initial_action_bias(initial_action_bias, self.algorithm_class)
 
     @staticmethod
     def _add_required_default_parameters(algorithm_parameters: Optional[Dict]):
@@ -306,6 +406,9 @@ class StableBaselinesAgent(RLAgent):
             algorithm_parameters (Dict): Parameter dictionary with filled up default parameter entries
 
         """
+        if not algorithm_parameters:
+            algorithm_parameters = {}
+
         if "policy" not in algorithm_parameters:
             algorithm_parameters.update({"policy": "MlpPolicy"})
 

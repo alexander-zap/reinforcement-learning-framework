@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, SupportsFloat, Text, Tuple
 
-import gymnasium as gym
+from rl_framework.util.types import Environment
 
 
 @dataclass
@@ -55,19 +55,59 @@ class Connector(ABC):
         NOTE: See individual connector package for the documented config dataclass attributes.
 
         self attributes:
-            logging_history: Dictionary mapping each logged value name to a list of logged values, e.g.:
+            histogram_sequences_to_log: Dictionary mapping histogram names to a list of logged histogram values, e.g.:
+            {
+                "action_distribution": [([0.1, 0.3, 0.6], 10), ([0.2, 0.5, 0.3], 20)]
+            }
+            Elements of each list are tuples of histogram-timestep-points.
+
+            value_sequences_to_log: Dictionary mapping value names to a list of logged values, e.g.:
             {
                 "Episode reward": [(50.6, 10), (90.5, 20), (150.3, 30), (200.0, 40)],
                 "Epsilon": [(1.0, 10), (0.74, 20), (0.46, 30), (0.15, 10)]
             }
-            Elements of each list are tuples of timestep-value-points.
+            Elements of each list are tuples of value-timestep-points.
+
+            values_to_log: Dictionary mapping each logged value name to a single logged value, e.g.:
+            {
+                "Mean episode reward": 150.3,
+                "Max episode reward": 200.0
+            }
         """
         self.upload_config = upload_config
         self.download_config = download_config
+        self.histogram_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
         self.value_sequences_to_log: Dict[Text, List[Tuple]] = defaultdict(list)
         self.values_to_log: Dict[Text, SupportsFloat] = {}
+        self.dicts_to_log: Dict[Text, dict] = {}
 
-    def log_value_with_timestep(self, timestep: int, value_scalar: SupportsFloat, value_name: Text) -> None:
+    def log_dict(self, dict_to_log: dict, dict_name: Text) -> None:
+        """
+        Log a dictionary to the ClearML task, which appears in the "Artifacts" section of the ClearML experiment page.
+
+        Args:
+            dict_to_log: Dictionary of values to log (e.g., {"game_version": 1.0, "num_sensors": 10})
+            dict_name: Name of the dictionary (e.g., "game settings")
+        """
+        self.dicts_to_log[dict_name] = dict_to_log
+
+    def log_histogram_with_timestep(
+        self, timestep: int, histogram_values: List[SupportsFloat], histogram_name: Text
+    ) -> None:
+        """
+        Log histogram values to create a sequence of histograms over time steps.
+        Can be used afterward for visualization (e.g., plotting of histogram over time).
+
+        Args:
+            timestep: Time step which the histogram corresponds to
+            histogram_values: Values which should be logged as histogram
+            histogram_name: Name of histogram (e.g., "action_distribution")
+        """
+        self.histogram_sequences_to_log[histogram_name].append((histogram_values, timestep))
+
+    def log_value_with_timestep(
+        self, timestep: int, value_scalar: SupportsFloat, value_name: Text, title_name: Text = None
+    ) -> None:
         """
         Log scalar value to create a sequence of values over time steps.
         Can be used afterward for visualization (e.g., plotting of value over time).
@@ -75,7 +115,9 @@ class Connector(ABC):
         Args:
             timestep: Time step which the scalar value corresponds to (x-value)
             value_scalar: Scalar value which should be logged (y-value)
-            value_name: Name of scalar value (e.g., "episode_reward")
+            value_name: Name of scalar value (e.g., "avg. sum of reward")
+            title_name: Name of the graph (e.g., "various reward metrics"); if None, value_name is used
+                # NOTE: title_name is not used in this base implementation, but may be used in subclasses
         """
         self.value_sequences_to_log[value_name].append((timestep, value_scalar))
 
@@ -93,7 +135,7 @@ class Connector(ABC):
     def upload(
         self,
         agent,
-        video_recording_environment: Optional[gym.Env] = None,
+        video_recording_environment: Optional[Environment] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,

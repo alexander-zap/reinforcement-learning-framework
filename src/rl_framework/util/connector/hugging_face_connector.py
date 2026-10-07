@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Text
 
-import gymnasium as gym
 import stable_baselines3
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 from huggingface_hub.repocard import metadata_eval_result, metadata_save
 
+from rl_framework.util.types import Environment
 from rl_framework.util.video_recording import record_video
 
 from .base_connector import Connector, DownloadConfig, UploadConfig
@@ -58,7 +58,7 @@ class HuggingFaceConnector(Connector):
     def upload(
         self,
         agent,
-        video_recording_environment: Optional[gym.Env] = None,
+        video_recording_environment: Optional[Environment] = None,
         checkpoint_id: Optional[int] = None,
         *args,
         **kwargs,
@@ -136,14 +136,17 @@ class HuggingFaceConnector(Connector):
             for key, value in self.values_to_log.items():
                 result_data[key] = value
 
-            # Write a JSON file called "results.json" that will contain the
-            # evaluation results
+            # Write a JSON file called "results.json" that will contain the evaluation results
             with open(repo_local_path / "results.json", "w") as outfile:
                 json.dump(result_data, outfile)
 
-            # Additionally write a JSON file for all manually logged training metrics
-            with open(repo_local_path / "training_metrics.json", "w") as outfile:
+            # Additionally write a JSON file for all manually logged sequences
+            with open(repo_local_path / "logged_values.json", "w") as outfile:
                 json.dump(self.value_sequences_to_log, outfile)
+            with open(repo_local_path / "logged_histograms.json", "w") as outfile:
+                json.dump(self.histogram_sequences_to_log, outfile)
+            with open(repo_local_path / "logged_dicts.json", "w") as outfile:
+                json.dump(self.dicts_to_log, outfile)
 
             # Step 5: Create a system info file
             with open(repo_local_path / "system.json", "w") as outfile:

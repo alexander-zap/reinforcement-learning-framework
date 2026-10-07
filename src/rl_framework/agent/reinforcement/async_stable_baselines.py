@@ -1,12 +1,25 @@
-from typing import Dict, Optional, Type
+from typing import Dict, List, Optional, Type
 
+import numpy as np
 import stable_baselines3
 from async_gym_agents.agents.async_agent import get_injected_agent
+from async_gym_agents.callback_batching import (
+    resolve_episode_action_field,
+    resolve_episode_reward_field,
+)
+from async_gym_agents.data_classes import EpisodeCallbackContext
 from async_gym_agents.envs.multi_env import IndexableMultiEnv
+from async_gym_agents.episode_codec import (
+    get_episode_infos,
+    get_episode_reset_infos,
+    slice_episode_field,
+)
 from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.callbacks import BaseCallback
 
 from rl_framework.agent.reinforcement.stable_baselines import StableBaselinesAgent
-from rl_framework.util import FeaturesExtractor
+from rl_framework.util import Connector, Environment, FeaturesExtractor
+from rl_framework.util.sb3_training_callbacks import EpisodeBatchableCallbackMixin
 
 
 class AsyncStableBaselinesAgent(StableBaselinesAgent):
@@ -18,5 +31,126 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
     ):
         super().__init__(get_injected_agent(algorithm_class), algorithm_parameters, features_extractor)
 
-    def to_vectorized_env(self, env_fns):
-        return IndexableMultiEnv(env_fns)
+    def to_vectorized_env(self, env_fns, stub_env=None):
+        return IndexableMultiEnv(env_fns, stub_env)
+
+    def get_callbacks(self, connector: Connector) -> list[BaseCallback]:
+        class AsyncSBUtilizationLoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
+            """
+            A custom callback that logs after every n episodes:
+                - buffer utilization
+                - buffer emptiness
+                - buffer fullness
+                - buffer worker fullness wait time
+                - discarded episodes
+                - main profiler stats
+                - worker profiler stats
+            """
+
+            def __init__(self, connector, logging_frequency=1000, verbose=0):
+                """
+                Args:
+                    verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
+                """
+                super().__init__(verbose)
+                self.connector = connector
+                self.logging_frequency = logging_frequency
+                self.shared_episode_counter: int = 0
+
+            def process_episode(self, context: EpisodeCallbackContext) -> bool:
+                """Invoke this terminal-only callback once with the episode's last row."""
+                batch = context.batch
+                terminal_index = batch.transition_count - 1
+                self.update_locals(
+                    {
+                        "new_obs": slice_episode_field(batch, "new_obs", terminal_index),
+                        "actions": slice_episode_field(
+                            batch,
+                            resolve_episode_action_field(batch.episode_kind),
+                            terminal_index,
+                        ),
+                        "rewards": slice_episode_field(
+                            batch,
+                            resolve_episode_reward_field(batch.episode_kind),
+                            terminal_index,
+                        ),
+                        "dones": slice_episode_field(batch, "dones", terminal_index),
+                        "infos": get_episode_infos(batch, terminal_index),
+                        "reset_infos": get_episode_reset_infos(batch, terminal_index),
+                    }
+                )
+                self.num_timesteps = context.end_timestep
+                return self._on_step()
+
+            def _on_step(self) -> bool:
+                done_indices = np.where(self.locals["dones"] == True)[0]
+                if done_indices.size != 0:
+                    for _ in done_indices:
+                        self.shared_episode_counter += 1
+                        log_this_episode = self.shared_episode_counter % self.logging_frequency == 0
+
+                        if log_this_episode:
+                            report: Dict[str, object] = self.model.get_profiler_report()
+
+                            main_stats = report["main"]
+
+                            for phase in main_stats.keys():
+                                for key, value in main_stats[phase].items():
+                                    self.connector.log_value_with_timestep(
+                                        self.num_timesteps,
+                                        value,
+                                        value_name=f"{phase}",
+                                        title_name=f"Main Profiler Stats / {key}",
+                                    )
+
+                            worker_stats = report["worker"]
+
+                            for phase in worker_stats.keys():
+                                for key, value in worker_stats[phase].items():
+                                    self.connector.log_value_with_timestep(
+                                        self.num_timesteps,
+                                        value,
+                                        value_name=f"{phase}",
+                                        title_name=f"Worker Profiler Stats / {key}",
+                                    )
+
+                            for section_title, section_stats in (
+                                ("Buffer Profiler Stats", report["buffer"]),
+                                ("Worker Sync Profiler Stats", report["worker_sync"]),
+                                ("Transport Profiler Stats", report["transport"]),
+                                ("Assembly Profiler Stats", report["assembly"]),
+                                ("Policy Profiler Stats", report["policy"]),
+                            ):
+                                for key, value in section_stats.items():
+                                    if value is None:
+                                        continue
+                                    self.connector.log_value_with_timestep(
+                                        self.num_timesteps,
+                                        value,
+                                        value_name=key,
+                                        title_name=section_title,
+                                    )
+                return True
+
+        callbacks = super().get_callbacks(connector)
+        callback_async_utilization_logging_frequency = self.callback_parameters.get(
+            "callback_async_utilization_logging_interval", 1000
+        )
+        callbacks.append(
+            AsyncSBUtilizationLoggingCallback(connector, logging_frequency=callback_async_utilization_logging_frequency)
+        )
+        return callbacks
+
+    def train(
+        self,
+        total_timesteps: int = 100000,
+        connector: Optional[Connector] = None,
+        training_environments: List[Environment] = None,
+        *args,
+        **kwargs,
+    ):
+        super().train(total_timesteps, connector, training_environments, *args, **kwargs)
+        # base sb3 algorithm class doesn't have an implementation of the shutdown method,
+        # only our custom implementation of it - has it
+        if hasattr(self.algorithm, "shutdown"):
+            self.algorithm.shutdown()

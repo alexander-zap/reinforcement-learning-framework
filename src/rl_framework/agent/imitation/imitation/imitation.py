@@ -2,7 +2,7 @@ import logging
 import shutil
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
 import pettingzoo
@@ -36,6 +36,7 @@ from rl_framework.agent.imitation_learning_agent import ILAgent
 from rl_framework.util import (
     Connector,
     DummyConnector,
+    Environment,
     FeaturesExtractor,
     LoggingCallback,
     SavingCallback,
@@ -97,7 +98,7 @@ class ImitationAgent(ILAgent):
         episode_sequence: EpisodeSequence,
         validation_episode_sequence: Optional[EpisodeSequence] = None,
         connector: Optional[Connector] = None,
-        training_environments: Optional[List[Union[gym.Env, pettingzoo.ParallelEnv]]] = None,
+        training_environments: Optional[List[Environment]] = None,
         *args,
         **kwargs,
     ):
@@ -187,12 +188,19 @@ class ImitationAgent(ILAgent):
                 )
 
             vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
-        else:
+
+        elif isinstance(training_environments[0], gym.Env):
             training_environments = [Monitor(env) for env in training_environments]
             environment_return_functions = [
                 partial(make_env, env_index) for env_index in range(len(training_environments))
             ]
             vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
+
+        else:
+            raise TypeError(
+                f"Training environment of unsupported type {type(training_environments[0])} "
+                f"provided to imitation learning agent."
+            )
 
         if not self.algorithm:
             self.algorithm = self.algorithm_wrapper.build_algorithm(
