@@ -49,8 +49,8 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         """
         self.venv = vectorized_environment
         if self.features_extractor:
-            self.policy_kwargs.update(
-                get_sb3_policy_kwargs_for_features_extractor(self.features_extractor, self.policy_class)
+            self.policy_kwargs = get_sb3_policy_kwargs_for_features_extractor(
+                self.features_extractor, self.policy_class, self.policy_kwargs
             )
         parameters = {
             "observation_space": vectorized_environment.observation_space,

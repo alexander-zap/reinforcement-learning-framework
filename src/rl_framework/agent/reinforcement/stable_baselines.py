@@ -194,8 +194,8 @@ class StableBaselinesAgent(RLAgent):
             if self.features_extractor:
                 policy = parameters["policy"]
                 policy_class = self.algorithm_class.policy_aliases.get(policy) if isinstance(policy, str) else policy
-                parameters["policy_kwargs"].update(
-                    get_sb3_policy_kwargs_for_features_extractor(self.features_extractor, policy_class)
+                parameters["policy_kwargs"] = get_sb3_policy_kwargs_for_features_extractor(
+                    self.features_extractor, policy_class, parameters["policy_kwargs"]
                 )
             self.algorithm = self.algorithm_class(env=vectorized_environment, **parameters)
             self.algorithm_needs_initialization = False

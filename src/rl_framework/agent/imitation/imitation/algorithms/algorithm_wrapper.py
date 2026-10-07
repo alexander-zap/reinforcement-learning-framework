@@ -96,7 +96,12 @@ class AlgorithmWrapper(ABC):
             "algorithm_wrapper (but should, since policy_kwargs are created from the algorithm_wrapper attribute)"
         )
 
-        policy.save((folder_path / FILE_NAME_POLICY).as_posix())
+        # Mirrors BasePolicy.save, but also stores `share_features_extractor`, which e.g. SACPolicy does not save.
+        #  Otherwise, loading would fall back to a shared features extractor.
+        data = policy._get_constructor_parameters()
+        if hasattr(policy, "share_features_extractor"):
+            data["share_features_extractor"] = policy.share_features_extractor
+        torch.save({"state_dict": policy.state_dict(), "data": data}, (folder_path / FILE_NAME_POLICY).as_posix())
         if features_extractor_from_kwargs:
             policy.features_extractor_kwargs.update({"features_extractor": features_extractor_from_kwargs})
 
@@ -116,8 +121,8 @@ class AlgorithmWrapper(ABC):
         )
 
         if self.features_extractor:
-            saved_variables["data"].update(
-                get_sb3_policy_kwargs_for_features_extractor(self.features_extractor, self.policy_class)
+            saved_variables["data"] = get_sb3_policy_kwargs_for_features_extractor(
+                self.features_extractor, self.policy_class, saved_variables["data"]
             )
 
         policy: BasePolicy = self.policy_class(**saved_variables["data"])

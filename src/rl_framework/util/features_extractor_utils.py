@@ -93,25 +93,30 @@ def wrap_environment_with_features_extractor_preprocessor(
 
 
 def get_sb3_policy_kwargs_for_features_extractor(
-    features_extractor: FeaturesExtractor, policy_class: Optional[Type[BasePolicy]] = None
+    features_extractor: FeaturesExtractor,
+    policy_class: Optional[Type[BasePolicy]] = None,
+    policy_kwargs: Optional[dict] = None,
 ) -> dict:
     """
     Build SB3 `policy_kwargs` which make the policy use the given features extractor.
 
     Args:
         features_extractor: Features extractor to be used by the policy.
-        policy_class: SB3 policy class the kwargs are built for. `share_features_extractor` is only set if the policy
-            class accepts it (e.g., `DQNPolicy` does not). If None, the policy class is assumed to accept it.
+        policy_class: SB3 policy class the kwargs are built for. `share_features_extractor` defaults to True only if
+            the policy class accepts it (e.g., `DQNPolicy` does not). If None, the policy class is assumed to accept it.
+        policy_kwargs: Existing policy kwargs to extend (not modified in place). An explicitly provided
+            `share_features_extractor` is kept.
 
     Returns:
         policy_kwargs (dict): Keyword arguments to be passed to the policy constructor.
     """
     policy_kwargs = {
+        **(policy_kwargs or {}),
         "features_extractor_class": StableBaselinesFeaturesExtractor,
         "features_extractor_kwargs": {"features_extractor": features_extractor},
     }
     if policy_class is None or "share_features_extractor" in inspect.signature(policy_class.__init__).parameters:
-        policy_kwargs["share_features_extractor"] = True
+        policy_kwargs.setdefault("share_features_extractor", True)
     return policy_kwargs
 
 
