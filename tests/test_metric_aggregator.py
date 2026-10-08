@@ -4,7 +4,6 @@ Strict xfails document unresolved findings; they assert the desired behavior.
 """
 
 import numpy as np
-import pytest
 
 from rl_framework.util import DummyConnector, MetricAggregator
 
@@ -19,20 +18,10 @@ def test_discarded_episode_of_last_env_is_not_recorded():
     assert finish_one_episode([False, True], [{}, {"discard": True}]) == {}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="metric_logging_utils.py:66 checks infos[agent_index] "
-    "(stale loop variable = last env) not infos[done_index]",
-)
 def test_discarded_episode_of_first_env_is_not_recorded():
     assert finish_one_episode([True, False], [{"discard": True}, {}]) == {}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="metric_logging_utils.py:66-70 only resets episode_reward for kept episodes, "
-    "so a discarded episode's reward is added to the next episode",
-)
 def test_discarded_episode_reward_does_not_leak_into_next_episode():
     aggregator = MetricAggregator(connector=DummyConnector())
     aggregator.aggregate_step(None, [0], np.array([5.0]), np.array([True]), [{"discard": True}])

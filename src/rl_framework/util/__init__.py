@@ -28,5 +28,10 @@ from .sb3_training_callbacks import (
     add_callbacks_to_callback,
 )
 from .types import Environment, EnvironmentFactory
-from .util import patch_d3rlpy, patch_datasets, patch_imitation_safe_to_tensor
+from .util import (
+    patch_d3rlpy,
+    patch_datasets,
+    patch_imitation_safe_to_tensor,
+    patch_imitation_sqil_replay_buffer,
+)
 from .video_recording import record_video

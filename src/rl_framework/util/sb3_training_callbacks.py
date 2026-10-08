@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Callable, Deque, Union
+from typing import Callable, Deque, List, Union
 
 import numpy as np
 from async_gym_agents import constants
@@ -18,15 +18,32 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from .metric_logging_utils import MetricAggregator
 
 
-def add_callbacks_to_callback(callbacks_to_add: CallbackList, callback_to_be_added_to: BaseCallback):
-    if callback_to_be_added_to is None:
-        callback_to_be_added_to = CallbackList([])
-    elif not isinstance(callback_to_be_added_to, CallbackList):
-        callback_to_be_added_to = CallbackList([callback_to_be_added_to])
+def add_callbacks_to_callback(
+    callbacks_to_add: CallbackList,
+    callback_to_be_added_to: Union[BaseCallback, List[BaseCallback], None],
+) -> CallbackList:
+    """
+    Combine callbacks without modifying the arguments.
 
-    for callback in callbacks_to_add.callbacks:
-        if callback not in callback_to_be_added_to.callbacks:
-            callback_to_be_added_to.callbacks.append(callback)
+    Args:
+        callbacks_to_add: Callbacks to append.
+        callback_to_be_added_to: None, a single callback, a list of callbacks or a CallbackList.
+
+    Returns:
+        A new CallbackList with the callbacks of `callback_to_be_added_to`, followed by those of `callbacks_to_add`
+            which it does not contain yet. It has to be used in place of `callback_to_be_added_to`.
+    """
+    if callback_to_be_added_to is None:
+        existing_callbacks = []
+    elif isinstance(callback_to_be_added_to, CallbackList):
+        existing_callbacks = list(callback_to_be_added_to.callbacks)
+    elif isinstance(callback_to_be_added_to, list):
+        existing_callbacks = list(callback_to_be_added_to)
+    else:
+        existing_callbacks = [callback_to_be_added_to]
+
+    new_callbacks = [callback for callback in callbacks_to_add.callbacks if callback not in existing_callbacks]
+    return CallbackList(existing_callbacks + new_callbacks)
 
 
 class EpisodeBatchableCallbackMixin:
@@ -85,7 +102,7 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         # Log metrics at end of episode
         done_indices = np.where(self.locals["dones"] == True)[0]
         for done_index in done_indices:
-            self._log_if_due(done_index, self.num_timesteps)
+            self._log_if_due(done_index, self.num_timesteps, self.locals["infos"][done_index])
 
         return True
 
@@ -100,13 +117,11 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         for transition_index in range(batch.transition_count):
             self._process_transition(batch, transition_index)
 
-        terminal_dones = slice_episode_field(
-            batch,
-            "dones",
-            batch.transition_count - 1,
-        )
+        terminal_index = batch.transition_count - 1
+        terminal_dones = slice_episode_field(batch, "dones", terminal_index)
+        terminal_infos = get_episode_infos(batch, terminal_index)
         for done_index in np.flatnonzero(terminal_dones):
-            self._log_if_due(done_index, context.end_timestep)
+            self._log_if_due(done_index, context.end_timestep, terminal_infos[done_index])
 
         return True
 
@@ -136,12 +151,15 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
             if key.startswith(constants.META_INFO_PREFIX):
                 self._log_metadata(key, value)
 
-    def _log_if_due(self, done_index: int, num_timesteps: int) -> None:
+    def _log_if_due(self, done_index: int, num_timesteps: int, info: dict) -> None:
         """Log and reset one agent's aggregated metrics if its logging_frequency is met.
 
         Shared by both `_on_step` (one done agent at a time) and `process_episode`
         (looping the batch's terminal `dones`, since an episode batch can only end once).
+        Discarded episodes are not recorded by the metric aggregator, so they do not count towards logging.
         """
+        if info.get(constants.DISCARD_INFO_KEY, False):
+            return
         self.episode_counter[done_index] = self.episode_counter.get(done_index, 0) + 1
         if self.episode_counter[done_index] % self.logging_frequency == 0:
             self.metric_aggregator.log_aggregated_metrics(

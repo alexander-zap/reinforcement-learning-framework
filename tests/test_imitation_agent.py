@@ -4,13 +4,13 @@ Strict xfails document unresolved findings; they assert the desired behavior.
 """
 
 import logging
-import pickle
 from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import onnx
 import pytest
+import torch as th
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.bc import BC
@@ -110,20 +110,7 @@ def test_training_rejects_unsupported_environment_types(demonstrations):
 # --- training ---
 
 
-# SQIL never updates its Q-network before `learning_starts`, which avoids the SQIL sampling incompatibility below.
-NO_LEARNING_SQIL = {"rl_algo_kwargs": {"learning_starts": 10_000}}
-
-SQIL_SAMPLING_XFAIL = pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="dependency incompatibility: stable-baselines3 2.7 added ReplayBufferSamples.discounts (None), and "
-    "imitation 1.0 SQILReplayBuffer.sample th.cat()s every field, so every SQIL gradient step fails",
-)
-
-
-@pytest.mark.parametrize(
-    "algorithm_class", [BC, GAIL, AIRL, DensityAlgorithm, pytest.param(SQIL, marks=SQIL_SAMPLING_XFAIL)]
-)
+@pytest.mark.parametrize("algorithm_class", [BC, GAIL, AIRL, DensityAlgorithm, SQIL])
 def test_every_algorithm_trains_and_acts(demonstrations, observations, algorithm_class):
     agent = train(make_agent(algorithm_class), demonstrations)
 
@@ -157,32 +144,25 @@ def test_bc_validation_does_not_run_out_of_batches(demonstrations):
     train(agent, demonstrations, total_timesteps=32 * 20, validation_episode_sequence=one_episode)
 
 
-@pytest.mark.parametrize(
-    "algorithm_class",
-    [
-        pytest.param(
-            algorithm_class,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=f"{name}.py:{line} add_callbacks_to_callback(callback_list, algorithm.{attribute}) gets a "
-                "single callback and drops the framework callbacks (sb3_training_callbacks.py:22-29)",
-            ),
-        )
-        for algorithm_class, name, line, attribute in [
-            (GAIL, "gail", 82, "gen_callback"),
-            (AIRL, "airl", 82, "gen_callback"),
-            (DensityAlgorithm, "density", 64, "wrapper_callback"),
-        ]
-    ]
-    + [SQIL],
-)
+@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL, DensityAlgorithm, SQIL])
 def test_environment_interacting_algorithms_log_episodes_to_the_connector(demonstrations, algorithm_class):
     connector = RecordingConnector()
-    parameters = NO_LEARNING_SQIL if algorithm_class is SQIL else {}
 
-    train(make_agent(algorithm_class, **parameters), demonstrations, total_timesteps=256, connector=connector)
+    train(make_agent(algorithm_class), demonstrations, total_timesteps=256, connector=connector)
 
     assert connector.value_sequences_to_log["Episode reward"]
+
+
+@pytest.mark.parametrize("algorithm_class", [GAIL, DensityAlgorithm])
+def test_training_again_logs_only_to_the_new_connector(demonstrations, algorithm_class):
+    first, second = RecordingConnector(), RecordingConnector()
+    agent = train(make_agent(algorithm_class), demonstrations, total_timesteps=256, connector=first)
+    logged_by_first = len(first.value_sequences_to_log["Episode reward"])
+
+    train(agent, demonstrations, total_timesteps=256, connector=second)
+
+    assert len(first.value_sequences_to_log["Episode reward"]) == logged_by_first
+    assert second.value_sequences_to_log["Episode reward"]
 
 
 def test_training_on_pettingzoo_environment_shares_the_policy_between_agents():
@@ -276,25 +256,6 @@ def test_bc_save_and_load_round_trip_continues_training(demonstrations, observat
 
 @pytest.mark.parametrize("algorithm_class", [DensityAlgorithm, SQIL])
 def test_save_and_load_round_trip_keeps_the_policy(demonstrations, observations, tmp_path, algorithm_class):
-    parameters = NO_LEARNING_SQIL if algorithm_class is SQIL else {}
-    agent = train(make_agent(algorithm_class, **parameters), demonstrations)
-    agent.save_to_file(tmp_path / "agent.zip")
-
-    loaded = make_agent(algorithm_class, **parameters)
-    loaded.load_from_file(tmp_path / "agent.zip")
-
-    assert actions(loaded, observations) == actions(agent, observations)
-    train(loaded, demonstrations, total_timesteps=64)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=pickle.UnpicklingError,
-    reason="gail.py:96/airl.py:96 torch.load the pickled reward net module without weights_only=False, "
-    "which torch>=2.6 refuses by default",
-)
-@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL])
-def test_adversarial_save_and_load_round_trip_keeps_the_policy(demonstrations, observations, tmp_path, algorithm_class):
     agent = train(make_agent(algorithm_class), demonstrations)
     agent.save_to_file(tmp_path / "agent.zip")
 
@@ -302,6 +263,23 @@ def test_adversarial_save_and_load_round_trip_keeps_the_policy(demonstrations, o
     loaded.load_from_file(tmp_path / "agent.zip")
 
     assert actions(loaded, observations) == actions(agent, observations)
+    train(loaded, demonstrations, total_timesteps=64)
+
+
+@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL])
+def test_adversarial_save_and_load_round_trip_keeps_the_policy_and_reward_net(
+    demonstrations, observations, tmp_path, algorithm_class
+):
+    agent = train(make_agent(algorithm_class), demonstrations)
+    agent.save_to_file(tmp_path / "agent.zip")
+
+    loaded = make_agent(algorithm_class)
+    loaded.load_from_file(tmp_path / "agent.zip")
+
+    assert actions(loaded, observations) == actions(agent, observations)
+    saved_reward_net = agent.algorithm._reward_net.state_dict()
+    loaded_reward_net = loaded.algorithm_wrapper.loaded_parameters["reward_net"].state_dict()
+    assert all(th.equal(saved_reward_net[name], loaded_reward_net[name]) for name in saved_reward_net)
     train(loaded, demonstrations, total_timesteps=64)
 
 

@@ -13,7 +13,6 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.util import (
     FeaturesExtractor,
-    add_callbacks_to_callback,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -79,7 +78,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         return algorithm
 
     def train(self, algorithm: AIRL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
-        add_callbacks_to_callback(callback_list, algorithm.gen_callback)
+        algorithm.gen_callback = self.combine_with_library_callback(algorithm, "gen_callback", callback_list)
         algorithm.gen_train_timesteps = min(algorithm.gen_train_timesteps, total_timesteps)
         algorithm._gen_replay_buffer = buffer.ReplayBuffer(
             algorithm.gen_train_timesteps,
@@ -93,5 +92,6 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
 
     def load_algorithm(self, folder_path: Path):
         gen_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
-        reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET)
+        # The reward net is saved as whole module (not only weights), which torch>=2.6 does not unpickle by default
+        reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET, weights_only=False)
         self.loaded_parameters.update({"gen_algo": gen_algo, "reward_net": reward_net})

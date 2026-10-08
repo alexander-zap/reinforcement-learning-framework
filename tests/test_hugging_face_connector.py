@@ -108,22 +108,25 @@ def test_final_upload_records_video_into_the_repo(hub):
     assert hub["videos"][0]["file_path"] == hub["snapshot"] / "replay.mp4"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="hugging_face_connector.py:144-147 json.dumps the logged sequences, but the training callbacks log "
-    "numpy histograms (metric_logging_utils.py:124-142) and numpy float32 scalars",
-)
 def test_final_upload_serializes_numpy_values_logged_during_training(hub):
     connector = make_connector()
     connector.log_histogram_with_timestep(10, np.array([0, 1, 1]), "Action distribution")
-    connector.log_value_with_timestep(10, np.float32(1.5), "Episode reward")
+    connector.log_value_with_timestep(np.int64(10), np.float32(1.5), "Episode reward")
 
     connector.upload(agent=make_agent())
 
     assert json.loads((hub["snapshot"] / "logged_histograms.json").read_text()) == {
         "Action distribution": [[[0, 1, 1], 10]]
     }
+    assert json.loads((hub["snapshot"] / "logged_values.json").read_text()) == {"Episode reward": [[10, 1.5]]}
+
+
+def test_final_upload_still_rejects_values_which_are_not_json_serializable(hub):
+    connector = make_connector()
+    connector.log_dict({"callback": object()}, "settings")
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        connector.upload(agent=make_agent())
 
 
 def test_upload_requires_complete_upload_config(hub):

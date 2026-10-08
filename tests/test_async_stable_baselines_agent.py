@@ -88,11 +88,6 @@ def test_train_shuts_down_workers_after_training(monkeypatch):
     agent.algorithm.shutdown.assert_called_once()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="async_stable_baselines.py:152-156 calls algorithm.shutdown() only after a successful train, so failed "
-    "training leaves the async workers running (downstream: the process hangs)",
-)
 def test_train_shuts_down_workers_when_training_fails(monkeypatch):
     def failing_train(self, *args, **kwargs):
         raise RuntimeError("worker failed")

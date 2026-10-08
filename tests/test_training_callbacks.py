@@ -70,28 +70,30 @@ def scalars(connector, name="Episode reward"):
 # --- add_callbacks_to_callback ---
 
 
-def test_add_callbacks_appends_missing_callbacks_to_a_callback_list():
+def test_add_callbacks_appends_missing_callbacks_to_a_callback_list_without_modifying_it():
     first, second = Noop(), Noop()
     target = CallbackList([first])
 
-    add_callbacks_to_callback(CallbackList([first, second]), target)
+    result = add_callbacks_to_callback(CallbackList([first, second]), target)
 
-    assert target.callbacks == [first, second]
+    assert result.callbacks == [first, second]
+    assert target.callbacks == [first]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="sb3_training_callbacks.py:22-29 wraps a None/single target in a new local CallbackList and returns "
-    "nothing, so the callbacks are dropped (GAIL/AIRL gen_callback and Density wrapper_callback are single callbacks)",
-)
-def test_add_callbacks_to_a_single_callback_makes_them_reachable():
+@pytest.mark.parametrize("make_target", [lambda single: single, lambda single: [single]], ids=["single", "list"])
+def test_add_callbacks_to_a_single_callback_makes_them_reachable(make_target):
     single = Noop()
     added = Noop()
 
-    result = add_callbacks_to_callback(CallbackList([added]), single)
+    result = add_callbacks_to_callback(CallbackList([added]), make_target(single))
 
     assert isinstance(result, CallbackList)
     assert result.callbacks == [single, added]
+
+
+def test_add_callbacks_to_no_callback():
+    added = Noop()
+    assert add_callbacks_to_callback(CallbackList([added]), None).callbacks == [added]
 
 
 # --- LoggingCallback ---
@@ -153,12 +155,6 @@ def test_logging_callback_logs_action_distributions_when_requested():
     ] == [([1, 0], 2)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=KeyError,
-    reason="sb3_training_callbacks.py:139-152 logs on every done, but metric_logging_utils.py:79 indexes "
-    "episode_rewards[agent_index], which a discarded first episode never creates",
-)
 def test_logging_callback_survives_a_discarded_first_episode():
     connector = RecordingConnector()
     callback = LoggingCallback(connector)
@@ -168,18 +164,33 @@ def test_logging_callback_survives_a_discarded_first_episode():
     assert scalars(connector) == [(2, 2.0)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="sb3_training_callbacks.py:139-152 logs on every done, also discarded ones; after a log reset the "
-    "discarded episode leaves episode_rewards empty and metric_logging_utils.py:79 logs np.mean([]) = NaN",
-)
 def test_logging_callback_logs_no_nan_reward_for_a_discarded_episode():
     connector = RecordingConnector()
     callback = LoggingCallback(connector)
     set_step(callback, [1], [True], num_timesteps=1)
     set_step(callback, [2], [True], infos=[{"discard": True}], num_timesteps=2)
 
-    assert not np.isnan([reward for _, reward in scalars(connector)]).any()
+    assert scalars(connector) == [(1, 1.0)]
+
+
+def test_discarded_episodes_do_not_count_towards_the_logging_frequency():
+    connector = RecordingConnector()
+    callback = LoggingCallback(connector, logging_frequency=2)
+    set_step(callback, [1], [True], num_timesteps=1)
+    set_step(callback, [5], [True], infos=[{"discard": True}], num_timesteps=2)
+    set_step(callback, [3], [True], num_timesteps=3)
+
+    assert scalars(connector) == [(3, 2.0)]
+
+
+def test_logging_callback_process_episode_skips_discarded_episodes():
+    connector = RecordingConnector()
+    callback = LoggingCallback(connector)
+
+    callback.process_episode(episode([1, 2], infos={1: [{"discard": True}]}))
+    callback.process_episode(episode([4], start_timestep=2))
+
+    assert scalars(connector) == [(3, 4.0)]
 
 
 def test_logging_callback_process_episode_matches_step_wise_logging():

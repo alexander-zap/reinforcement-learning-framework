@@ -4,7 +4,7 @@
 **Base:** `save_as_onnx` @ 827c39b (rl_framework 0.11.4). Locked dependencies: stable-baselines3 2.7.1, imitation 1.0.0, d3rlpy 2.6.1, torch 2.7.1, gymnasium 0.29.1.
 **Downstream reference:** `../synthetic-player-experiment-space` (usage survey below).
 
-No source code was changed. Each bug has a **strict xfail** test that asserts the desired behavior and states the cause in its `reason`. A fix makes the test XPASS, which strict mode reports as a failure, so the marker has to be removed together with the fix.
+The test suite itself changed no source code (see "Fix status" for the follow-up fixes). Each bug has a **strict xfail** test that asserts the desired behavior and states the cause in its `reason`. A fix makes the test XPASS, which strict mode reports as a failure, so the marker has to be removed together with the fix.
 
 ## Summary
 
@@ -17,6 +17,20 @@ No source code was changed. Each bug has a **strict xfail** test that asserts th
 Run with `uv run pytest tests --cov=rl_framework --cov-branch`. Run with `--runxfail` to see every bug reproduce: each xfail fails at the line its `reason` names.
 
 The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`), the wait-for-file `time.sleep` loops in the ClearML connector, and the dead `LoggingCallback._supports_episode_aggregation`.
+
+## Fix status (follow-up, uncommitted)
+
+Fixed in the working tree after this report; their xfail markers are removed. Now: 275 passed, 24 xfailed, 1 skipped.
+
+| Finding | Fix |
+|---|---|
+| B-01 PettingZoo returns | `AutoResetSB3VecEnvWrapper` passes `MarkovVectorEnv`'s step results through (it already auto-resets when all agents are done) and only adds `TimeLimit.truncated` / `terminal_observation`. An agent finishing before the others still fails inside supersuit (`MarkovVectorEnv` asserts on missing agents), as before. |
+| B-02 dropped imitation callbacks | `add_callbacks_to_callback` returns a new `CallbackList` (arguments unchanged); `AlgorithmWrapper.combine_with_library_callback` assigns it to `gen_callback` / `wrapper_callback`, remembering the library's own callback so retraining does not accumulate earlier callbacks. |
+| B-03 SQIL | `patch_imitation_sqil_replay_buffer` (in `util/util.py`, applied on import like the other patches) concatenates only non-None sample fields. No dependency pin changed. |
+| B-04 GAIL/AIRL load | Reward net loaded with `torch.load(..., weights_only=False)` (the file is written by the framework itself). |
+| B-06, B-07 and the known stale-index finding | `MetricAggregator` resets the episode reward for every finished episode, checks `infos[done_index]`, and skips logging an empty reward window; `LoggingCallback` ignores discarded episodes for its logging frequency. |
+| B-08 HuggingFace JSON | `json.dump(..., default=_numpy_to_json)` converts numpy scalars and arrays. |
+| B-09 async shutdown | `shutdown()` in a `finally` block. |
 
 ### New test files
 

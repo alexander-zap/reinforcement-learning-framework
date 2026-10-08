@@ -11,6 +11,7 @@ import pytest
 import torch as th
 from gymnasium import spaces
 from stable_baselines3 import DQN, PPO, SAC
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from rl_framework.util import (
@@ -153,12 +154,6 @@ class CountingParallel(ToyParallel):
         return observations, {agent: float(self.t) for agent in rewards}, terminations, truncations, infos
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="stable_baselines.py:163-196 AutoResetSB3VecEnvWrapper reports each done one step late with repeated "
-    "rewards: the step before done is counted twice and the first reward of the next episode is replaced, "
-    "so returns of 15 are trained and logged as 19, then 18",
-)
 def test_pettingzoo_training_sees_the_true_episode_returns():
     agent = SB3Agent(PPO, {"n_steps": 64, "batch_size": 64, "n_epochs": 1, "device": "cpu"})
     connector = RecordingConnector()
@@ -169,6 +164,33 @@ def test_pettingzoo_training_sees_the_true_episode_returns():
     assert returns
     assert set(returns) == {15.0}
     assert {episode["l"] for episode in agent.algorithm.ep_info_buffer} == {5}
+
+
+class TruncatingParallel(ToyParallel):
+    """Every episode is truncated (not terminated) after 5 steps."""
+
+    def step(self, actions):
+        observations, rewards, terminations, truncations, infos = super().step(actions)
+        return observations, rewards, truncations, terminations, infos
+
+
+def test_pettingzoo_training_marks_truncated_episodes_with_their_terminal_observation():
+    done_infos = []
+
+    class DoneInfoRecorder(BaseCallback):
+        def _on_step(self):
+            done_infos.extend(info for done, info in zip(self.locals["dones"], self.locals["infos"]) if done)
+            return True
+
+    class RecordingAgent(SB3Agent):
+        def get_callbacks(self, connector):
+            return super().get_callbacks(connector) + [DoneInfoRecorder()]
+
+    RecordingAgent(PPO, PPO_PARAMETERS).train(total_timesteps=32, training_environments=[TruncatingParallel()])
+
+    assert done_infos
+    assert all(info["TimeLimit.truncated"] is True for info in done_infos)
+    assert all(BOX.contains(info["terminal_observation"]) for info in done_infos)
 
 
 def test_saving_interval_uploads_checkpoints_during_training():
