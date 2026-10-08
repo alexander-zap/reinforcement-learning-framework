@@ -85,6 +85,41 @@ class ToyParallel(pettingzoo.ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
 
+class RestartingParallel(ToyParallel):
+    """
+    Agents restart on their own, following gymnasium's auto-reset convention: a done step returns the START
+    observation of the agent's next episode and passes the FINAL observation of the finished one as
+    `final_observation` info. The episodes of the i-th agent last `lengths[i]` steps and have a return of `returns[i]`
+    (the same reward at every step).
+    """
+
+    FINAL = np.full(3, 0.9, np.float32)
+    START = np.full(3, -0.9, np.float32)
+
+    def __init__(self, lengths=(3, 4), returns=(3.0, 3.0)):
+        super().__init__()
+        self.lengths = dict(zip(self.possible_agents, lengths))
+        self.returns = dict(zip(self.possible_agents, returns))
+
+    def reset(self, seed=None, options=None):
+        self.agents = list(self.possible_agents)
+        self.k = {agent: 0 for agent in self.agents}
+        return {agent: self.START.copy() for agent in self.agents}, {agent: {} for agent in self.agents}
+
+    def step(self, actions):
+        observations, rewards, terminations, truncations, infos = {}, {}, {}, {}, {}
+        for agent in self.agents:
+            self.k[agent] += 1
+            done = self.k[agent] == self.lengths[agent]
+            observations[agent] = self.START.copy() if done else np.zeros(3, np.float32)
+            rewards[agent] = self.returns[agent] / self.lengths[agent]
+            terminations[agent], truncations[agent] = done, False
+            infos[agent] = {"final_observation": self.FINAL.copy()} if done else {}
+            if done:
+                self.k[agent] = 0
+        return observations, rewards, terminations, truncations, infos
+
+
 class Linear(FeaturesExtractor):
     output_dim = 4
 
