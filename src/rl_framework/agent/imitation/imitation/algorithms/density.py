@@ -60,7 +60,7 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
     def train(self, algorithm: DensityAlgorithm, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         algorithm.train()
         # NOTE: All callbacks concerning reward calculation will use the density reward and not the environment reward
-        algorithm.wrapper_callback = self.combine_with_library_callback(algorithm, "wrapper_callback", callback_list)
+        self.set_additional_callbacks(algorithm, "wrapper_callback", callback_list)
         algorithm.train_policy(n_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: DensityAlgorithm, folder_path: Path):

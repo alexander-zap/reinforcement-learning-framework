@@ -66,7 +66,7 @@ class AlgorithmWrapper(ABC):
                 used before the action/value prediction network.
         """
         self.loaded_parameters: dict = {}
-        # Callback of the imitation library on the algorithm (see `combine_with_library_callback`), and its algorithm
+        # Callback of the imitation library on the algorithm (see `set_additional_callbacks`), and its algorithm
         self._library_callback_owner: Optional[DemonstrationAlgorithm] = None
         self._library_callback = None
         self.algorithm_parameters: dict = {}
@@ -93,26 +93,23 @@ class AlgorithmWrapper(ABC):
     ):
         raise NotImplementedError
 
-    def combine_with_library_callback(
+    def set_additional_callbacks(
         self, algorithm: DemonstrationAlgorithm, library_callback_attribute: str, callback_list: CallbackList
-    ) -> CallbackList:
+    ) -> None:
         """
-        Combine the imitation library's own callback of the algorithm (e.g., `gen_callback`) with the framework
-        callbacks. The library's callback is remembered per algorithm, so that training the same algorithm again
-        replaces the framework callbacks of the previous training instead of accumulating them.
+        Set the callbacks which the algorithm runs in addition to the imitation library's own callback (e.g., in
+        `gen_callback`). The library's callback is remembered per algorithm, so that training the same algorithm again
+        replaces the additional callbacks of the previous training instead of accumulating them.
 
         Args:
-            algorithm: Imitation algorithm whose callback attribute is extended.
+            algorithm: Imitation algorithm whose callback attribute is set.
             library_callback_attribute: Name of the algorithm attribute holding the library's callback.
-            callback_list: Framework callbacks (e.g., logging and saving) to add.
-
-        Returns:
-            CallbackList to be set as the algorithm's callback attribute.
+            callback_list: Additional callbacks (e.g., logging and saving) to use for this training.
         """
         if self._library_callback_owner is not algorithm:
             self._library_callback_owner = algorithm
             self._library_callback = getattr(algorithm, library_callback_attribute)
-        return add_callbacks_to_callback(callback_list, self._library_callback)
+        setattr(algorithm, library_callback_attribute, add_callbacks_to_callback(callback_list, self._library_callback))
 
     def save_policy(self, policy: BasePolicy, folder_path: Path):
         features_extractor_from_kwargs = policy.features_extractor_kwargs.pop("features_extractor", None)

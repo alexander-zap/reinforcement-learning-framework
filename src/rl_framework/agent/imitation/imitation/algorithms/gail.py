@@ -78,7 +78,7 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
         return algorithm
 
     def train(self, algorithm: GAIL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
-        algorithm.gen_callback = self.combine_with_library_callback(algorithm, "gen_callback", callback_list)
+        self.set_additional_callbacks(algorithm, "gen_callback", callback_list)
         algorithm.gen_train_timesteps = min(algorithm.gen_train_timesteps, total_timesteps)
         algorithm._gen_replay_buffer = buffer.ReplayBuffer(
             algorithm.gen_train_timesteps,
