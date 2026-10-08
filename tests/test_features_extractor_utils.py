@@ -14,7 +14,7 @@ from rl_framework.util import (
     get_sb3_policy_kwargs_for_features_extractor,
     wrap_environment_with_features_extractor_preprocessor,
 )
-from tests.toys import BOX, Linear, Toy
+from tests.toys import BOX, Linear, Toy, ToyParallel
 
 DOUBLED_SPACE = spaces.Box(-2, 2, (3,), np.float32)
 
@@ -70,6 +70,22 @@ def test_gym_wrapper_preprocesses_reset_and_step_observations():
 def test_gym_wrapper_keeps_observation_space_without_preprocessed_space():
     wrapped = wrap_environment_with_features_extractor_preprocessor(Toy(), Linear())
     assert wrapped.observation_space == BOX
+
+
+def test_pettingzoo_wrapper_preprocesses_final_observations_of_self_restarting_agents():
+    class FinalObservationParallel(ToyParallel):
+        def step(self, actions):
+            observations, rewards, terminations, truncations, infos = super().step(actions)
+            infos["a"]["final_observation"] = np.full(3, 0.5, np.float32)
+            return observations, rewards, terminations, truncations, infos
+
+    wrapped = wrap_environment_with_features_extractor_preprocessor(FinalObservationParallel(), Doubling())
+    wrapped.reset()
+
+    *_, infos = wrapped.step({"a": 0, "b": 0})
+
+    np.testing.assert_array_equal(infos["a"]["final_observation"], [1, 1, 1])
+    assert "final_observation" not in infos["b"]
 
 
 def test_wrapping_other_environment_types_is_rejected():

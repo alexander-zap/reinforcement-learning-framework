@@ -85,6 +85,13 @@ def wrap_environment_with_features_extractor_preprocessor(
 
         def step(self, actions: dict):
             observations, rewards, terminations, truncations, infos = self.env.step(actions)
+            # Last observation of a finished episode of an agent which restarted on its own (gymnasium's auto-reset
+            #   convention, see StableBaselinesAgent.train); it is preprocessed like the returned observations
+            final_observations = {
+                agent: info["final_observation"] for agent, info in infos.items() if "final_observation" in info
+            }
+            for agent, final_observation in self._preprocess(final_observations).items():
+                infos[agent]["final_observation"] = final_observation
             return self._preprocess(observations), rewards, terminations, truncations, infos
 
     if isinstance(environment, pettingzoo.ParallelEnv):

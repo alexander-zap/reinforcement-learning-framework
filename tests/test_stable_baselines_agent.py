@@ -20,7 +20,15 @@ from rl_framework.util import (
     ResetInfoCallback,
     SavingCallback,
 )
-from tests.toys import BOX, Linear, RecordingConnector, SB3Agent, Toy, ToyParallel
+from tests.toys import (
+    BOX,
+    Linear,
+    RecordingConnector,
+    RestartingParallel,
+    SB3Agent,
+    Toy,
+    ToyParallel,
+)
 
 PPO_PARAMETERS = {"n_steps": 16, "batch_size": 16, "n_epochs": 1, "device": "cpu"}
 
@@ -191,6 +199,34 @@ def test_pettingzoo_training_marks_truncated_episodes_with_their_terminal_observ
     assert done_infos
     assert all(info["TimeLimit.truncated"] is True for info in done_infos)
     assert all(BOX.contains(info["terminal_observation"]) for info in done_infos)
+
+
+def test_pettingzoo_training_with_self_restarting_agents_uses_their_final_observation():
+    done_steps = []
+
+    class DoneStepRecorder(BaseCallback):
+        def _on_step(self):
+            for i, done in enumerate(self.locals["dones"]):
+                if done:
+                    done_steps.append(
+                        (self.locals["new_obs"][i].copy(), self.locals["infos"][i]["terminal_observation"])
+                    )
+            return True
+
+    class RecordingAgent(SB3Agent):
+        def get_callbacks(self, connector):
+            return super().get_callbacks(connector) + [DoneStepRecorder()]
+
+    agent = RecordingAgent(PPO, PPO_PARAMETERS)
+    # 'a' restarts every 3 steps, 'b' every 4, so both finish together every 12 steps (when MarkovVectorEnv resets)
+    agent.train(total_timesteps=48, training_environments=[RestartingParallel(lengths=(3, 4))])
+
+    assert len(done_steps) >= 12
+    for new_observation, terminal_observation in done_steps:
+        np.testing.assert_array_equal(terminal_observation, RestartingParallel.FINAL)
+        np.testing.assert_array_equal(new_observation, RestartingParallel.START)
+    assert {episode["l"] for episode in agent.algorithm.ep_info_buffer} == {3, 4}
+    assert {episode["r"] for episode in agent.algorithm.ep_info_buffer} == {3.0}
 
 
 def test_saving_interval_uploads_checkpoints_during_training():

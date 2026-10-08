@@ -1,12 +1,20 @@
 """Agent.evaluate on every supported environment type, with features extractor preprocessing and metric logging."""
 
 import numpy as np
+import pettingzoo
+import pettingzoo.utils
 import pytest
 from gymnasium import spaces
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from rl_framework.util import FeaturesExtractor
-from tests.toys import ConstantActionAgent, RecordingConnector, Toy, ToyParallel
+from tests.toys import (
+    ConstantActionAgent,
+    RecordingConnector,
+    RestartingParallel,
+    Toy,
+    ToyParallel,
+)
 
 ONES = spaces.Box(1, 1, (3,), np.float32)
 
@@ -57,6 +65,45 @@ def test_environment_factories_are_instantiated(factory):
 
 def test_pettingzoo_environments_count_each_agent_episode():
     assert evaluate([ToyParallel()]) == (5.0, 0.0)
+
+
+class EpisodeRecorder(pettingzoo.utils.BaseParallelWrapper):
+    """Records the return of every agent episode the wrapped environment completes."""
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.returns, self.running = [], {}
+
+    def reset(self, seed=None, options=None):
+        self.running = {}
+        return self.env.reset(seed=seed, options=options)
+
+    def step(self, actions):
+        observations, rewards, terminations, truncations, infos = self.env.step(actions)
+        for agent, reward in rewards.items():
+            self.running[agent] = self.running.get(agent, 0.0) + reward
+            if terminations[agent] or truncations[agent]:
+                self.returns.append(self.running.pop(agent))
+        return observations, rewards, terminations, truncations, infos
+
+
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        pytest.param((3, 4), id="restarting-agents"),
+        pytest.param((1, 4), id="restarting-agents-with-one-step-episodes"),
+    ],
+)
+def test_pettingzoo_self_restarting_agents_count_every_episode(lengths):
+    environment = EpisodeRecorder(RestartingParallel(lengths=lengths, returns=(1.0, 3.0)))
+
+    mean_reward, std_reward = evaluate([environment])
+
+    assert len(environment.returns) >= 4
+    assert (mean_reward, std_reward) == (
+        pytest.approx(np.mean(environment.returns)),
+        pytest.approx(np.std(environment.returns)),
+    )
 
 
 def test_unsupported_environment_types_are_rejected():

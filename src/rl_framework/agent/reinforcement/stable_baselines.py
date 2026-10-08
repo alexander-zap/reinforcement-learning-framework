@@ -108,6 +108,10 @@ class StableBaselinesAgent(RLAgent):
 
         Args:
             training_environments (List[Environment]): List of environments on which the agent should be trained on.
+                PettingZoo ParallelEnvs are reset once all agents are done. Agents which restart on their own while the
+                other agents continue follow gymnasium's auto-reset convention: the done step returns the first
+                observation of the agent's next episode and passes the last observation of the finished episode as
+                `infos[agent]["final_observation"]`. Without this info, the returned observation is used as both.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
@@ -148,8 +152,12 @@ class StableBaselinesAgent(RLAgent):
                 MarkovVectorEnv resets the environment automatically once all agents are done and returns the done
                 flags and rewards of the final step together with the observations of the new episode.
                 Sets infos for each done agent on step (as SB3 expects from auto-resetting vectorized environments):
-                    - `infos["terminal_observation"] = observation` (if not already set by MarkovVectorEnv)
+                    - `infos["terminal_observation"]`: the last observation of the finished episode
                     - `infos["TimeLimit.truncated"] = True` when truncated (else False)
+
+                For agents which restart on their own, the `final_observation` info (gymnasium's auto-reset convention,
+                see `train`) is the last observation of the finished episode. It takes precedence, also over the
+                `terminal_observation` which MarkovVectorEnv sets to the returned observation when all agents are done.
                 """
 
                 def step_wait(self):
@@ -157,7 +165,10 @@ class StableBaselinesAgent(RLAgent):
                     dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
                     for i in np.flatnonzero(dones):
                         infos[i]["TimeLimit.truncated"] = bool(truncations[i] and not terminations[i])
-                        infos[i].setdefault("terminal_observation", observations[i])
+                        if "final_observation" in infos[i]:
+                            infos[i]["terminal_observation"] = infos[i]["final_observation"]
+                        else:
+                            infos[i].setdefault("terminal_observation", observations[i])
                     return observations, rewards, dones, infos
 
             vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)

@@ -60,6 +60,11 @@ class Agent(ABC):
 
         Args:
             evaluation_environments (List[Environment]): The evaluation environments.
+                For PettingZoo ParallelEnvs, every agent episode counts as one episode. The environment is reset once
+                all agents are done. Agents which restart on their own while the other agents continue follow
+                gymnasium's auto-reset convention: the done step returns the first observation of the agent's next
+                episode (on which its next action is chosen) and passes the last observation of the finished episode
+                as `infos[agent]["final_observation"]`.
             n_eval_episodes (int): Number of episode to evaluate the agent.
             connector (Connector): Connector for logging evaluation metrics.
             logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
@@ -122,7 +127,13 @@ class Agent(ABC):
                         }
 
                         for agent in rewards.keys():
-                            if agent not in episode_reward and not (terminations[agent] or truncations[agent]):
+                            done = terminations[agent] or truncations[agent]
+                            # A done agent without a running episode is either a dead agent still reported (ignore) or
+                            #   a restarted agent whose new episode lasted one step (count).
+                            #   Only a restarted agent passes the last observation of its finished episode as
+                            #   `final_observation` info (see the docstring), which tells the two cases apart.
+                            restarted = "final_observation" in infos.get(agent, {})
+                            if agent not in episode_reward and (not done or restarted):
                                 episode_reward[agent] = rewards[agent]
                             elif agent in episode_reward:
                                 episode_reward[agent] += rewards[agent]
