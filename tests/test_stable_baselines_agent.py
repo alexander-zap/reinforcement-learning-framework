@@ -15,6 +15,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from rl_framework.util import (
+    FeaturesExtractor,
     GammaScheduleCallback,
     LoggingCallback,
     ResetInfoCallback,
@@ -290,6 +291,115 @@ def test_loading_with_features_extractor_and_policy_kwargs_works(tmp_path):
     observations = [BOX.sample() for _ in range(20)]
     assert [agent.choose_action(o, True) for o in observations] == [loaded.choose_action(o, True) for o in observations]
     loaded.train(total_timesteps=16, training_environments=[Toy()])
+
+
+def save_agent(tmp_path, features_extractor=None, **parameters):
+    agent = make_agent(features_extractor=features_extractor, **parameters)
+    agent.train(total_timesteps=16, training_environments=[Toy()])
+    agent.save_to_file(tmp_path / "agent.zip")
+    return tmp_path / "agent.zip"
+
+
+def test_loading_with_features_extractor_and_default_policy_kwargs_works(tmp_path):
+    path = save_agent(tmp_path, features_extractor=Linear())
+
+    loaded = make_agent(features_extractor=Linear())
+    loaded.load_from_file(path)
+
+    assert loaded.algorithm.policy.features_extractor.features_dim == Linear.output_dim
+
+
+@pytest.mark.parametrize("make_features_extractor", [lambda: None, Linear], ids=["without", "with-features-extractor"])
+def test_loading_rejects_another_network_architecture(tmp_path, make_features_extractor):
+    path = save_agent(tmp_path, features_extractor=make_features_extractor(), policy_kwargs={"net_arch": [8]})
+    expected_message = r"architecture cannot be changed: `net_arch`: stored \[8\], specified \[16\]$"
+
+    loaded = make_agent(features_extractor=make_features_extractor(), policy_kwargs={"net_arch": [16]})
+    with pytest.raises(ValueError, match=expected_message):
+        loaded.load_from_file(path)
+    with pytest.raises(ValueError, match=expected_message):
+        loaded.load_from_file(path, {**PPO_PARAMETERS, "policy_kwargs": {"net_arch": [16]}})
+
+
+@pytest.mark.parametrize("make_features_extractor", [lambda: None, Linear], ids=["without", "with-features-extractor"])
+def test_loading_without_specified_policy_kwargs_keeps_the_saved_architecture(tmp_path, make_features_extractor):
+    path = save_agent(tmp_path, features_extractor=make_features_extractor(), policy_kwargs={"net_arch": [8]})
+
+    loaded = make_agent(features_extractor=make_features_extractor())
+    loaded.load_from_file(path)
+
+    hidden_layers = [layer.out_features for layer in loaded.algorithm.policy.mlp_extractor.policy_net[::2]]
+    assert hidden_layers == [8]
+    loaded.train(total_timesteps=16, training_environments=[Toy()])
+
+
+class Hidden(FeaturesExtractor):
+    """Features extractor with a configurable hidden layer size (and the same output_dim as Linear)."""
+
+    output_dim = 4
+
+    def __init__(self, hidden_dim=8):
+        super().__init__()
+        self.net = th.nn.Sequential(th.nn.Linear(3, hidden_dim), th.nn.ReLU(), th.nn.Linear(hidden_dim, 4))
+
+    def forward(self, observations):
+        return self.net(observations.float())
+
+
+@pytest.mark.parametrize(
+    "saved_extractor, loaded_extractor, message",
+    [
+        (
+            Linear(),
+            Hidden(),
+            r"class: stored tests\.toys\.Linear, specified tests\.test_stable_baselines_agent\.Hidden$",
+        ),
+        (Hidden(8), Hidden(16), r"shape of `net\.0\.weight`: stored \(8, 3\), specified \(16, 3\)"),
+        (Linear(), None, "The loaded model has a features extractor, but the agent has none"),
+        (None, Linear(), "The loaded model has no features extractor, but the agent has one"),
+    ],
+    ids=["other-class", "other-hidden-size", "agent-without", "model-without"],
+)
+def test_loading_rejects_another_features_extractor(tmp_path, saved_extractor, loaded_extractor, message):
+    path = save_agent(tmp_path, features_extractor=saved_extractor)
+
+    loaded = make_agent(features_extractor=loaded_extractor)
+    with pytest.raises(ValueError, match=message):
+        loaded.load_from_file(path)
+
+
+def test_loading_accepts_the_same_features_extractor_configuration(tmp_path):
+    path = save_agent(tmp_path, features_extractor=Hidden(16))
+
+    loaded = make_agent(features_extractor=Hidden(16))
+    loaded.load_from_file(path)
+
+    loaded.train(total_timesteps=16, training_environments=[Toy()])
+
+
+@pytest.mark.parametrize(
+    "saved_share, loaded_share, accepted", [(False, False, True), (False, None, True), (False, True, False)]
+)
+def test_loading_with_features_extractor_compares_share_features_extractor(
+    tmp_path, saved_share, loaded_share, accepted
+):
+    def make_sac_agent(policy_kwargs):
+        return SB3Agent(
+            SAC, {"learning_starts": 8, "batch_size": 8, "device": "cpu", "policy_kwargs": policy_kwargs}, Linear()
+        )
+
+    agent = make_sac_agent({"share_features_extractor": saved_share})
+    agent.train(total_timesteps=16, training_environments=[Toy(action_space=spaces.Box(-1, 1, (2,)))])
+    path = tmp_path / "agent.zip"
+    agent.save_to_file(path)
+    loaded = make_sac_agent({} if loaded_share is None else {"share_features_extractor": loaded_share})
+
+    if accepted:  # Not specified keeps the saved value
+        loaded.load_from_file(path)
+        assert loaded.algorithm.policy.share_features_extractor is saved_share
+    else:
+        with pytest.raises(ValueError, match=r"`share_features_extractor`: stored False, specified True$"):
+            loaded.load_from_file(path)
 
 
 def test_evaluate_trained_agent_on_gym_environment():

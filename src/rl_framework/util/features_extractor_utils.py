@@ -134,6 +134,55 @@ def get_sb3_policy_kwargs_for_features_extractor(
     return policy_kwargs
 
 
+def check_saved_features_extractor(saved_policy_kwargs: dict, features_extractor: Optional[FeaturesExtractor]) -> None:
+    """
+    Raise if the features extractor of a loaded SB3 model does not match the agent's one: the model keeps its saved
+    features extractor network, while the agent preprocesses the observations with its own features extractor.
+    Since the saved features extractor is an unpickled copy, it is compared by class (name), `output_dim`,
+    `preprocessed_observation_space` and the shapes of its parameters (their values change in training).
+
+    Args:
+        saved_policy_kwargs: `policy_kwargs` of the loaded model.
+        features_extractor: Features extractor of the agent (None if it has none).
+    """
+    saved = (saved_policy_kwargs.get("features_extractor_kwargs") or {}).get("features_extractor")
+    specified = features_extractor
+    if saved is None and specified is None:
+        return
+    if saved is None or specified is None:
+        raise ValueError(
+            f"The loaded model {'has no' if saved is None else 'has a'} features extractor, but the agent "
+            f"{'has one' if saved is None else 'has none'}."
+        )
+
+    def class_name(extractor: FeaturesExtractor) -> str:
+        return f"{type(extractor).__module__}.{type(extractor).__qualname__}"
+
+    def parameter_shapes(extractor: FeaturesExtractor) -> dict:
+        return {name: tuple(value.shape) for name, value in extractor.state_dict().items()}
+
+    differences = []
+    if class_name(saved) != class_name(specified):
+        differences.append(f"class: stored {class_name(saved)}, specified {class_name(specified)}")
+    else:
+        for attribute in ("output_dim", "preprocessed_observation_space"):
+            if getattr(saved, attribute) != getattr(specified, attribute):
+                differences.append(
+                    f"`{attribute}`: stored {getattr(saved, attribute)!r}, specified {getattr(specified, attribute)!r}"
+                )
+        saved_shapes, specified_shapes = parameter_shapes(saved), parameter_shapes(specified)
+        differences += [
+            f"shape of `{name}`: stored {saved_shapes.get(name, 'not set')}, "
+            f"specified {specified_shapes.get(name, 'not set')}"
+            for name in sorted(saved_shapes.keys() | specified_shapes.keys())
+            if saved_shapes.get(name) != specified_shapes.get(name)
+        ]
+    if differences:
+        raise ValueError(
+            f"The agent's features extractor does not match the one of the loaded model: {'; '.join(differences)}"
+        )
+
+
 class StableBaselinesFeaturesExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Space, features_extractor: FeaturesExtractor):
         super().__init__(observation_space=observation_space, features_dim=features_extractor.output_dim)

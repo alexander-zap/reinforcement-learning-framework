@@ -67,5 +67,5 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
         algorithm.rl_algo.save(folder_path / FILE_NAME_SB3_ALGORITHM)
 
     def load_algorithm(self, folder_path: Path):
-        rl_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
+        rl_algo = self._load_rl_algo(folder_path, **self.rl_algo_kwargs)
         self.loaded_parameters.update({"rl_algo": rl_algo})

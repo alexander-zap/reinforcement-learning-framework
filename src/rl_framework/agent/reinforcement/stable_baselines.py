@@ -1,6 +1,5 @@
 import logging
 import tempfile
-from collections import defaultdict
 from functools import partial
 from os import cpu_count
 from pathlib import Path
@@ -31,6 +30,8 @@ from rl_framework.util import (
     ResetInfoCallback,
     SavingCallback,
     apply_action_bias,
+    check_saved_features_extractor,
+    check_specified_policy_kwargs,
     get_sb3_policy_kwargs_for_features_extractor,
     reset_optimizer_state,
     validate_initial_action_bias,
@@ -213,13 +214,9 @@ class StableBaselinesAgent(RLAgent):
 
         algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:
-            parameters = defaultdict(dict, {**self.algorithm_parameters})
+            parameters = {**self.algorithm_parameters}
             if self.features_extractor:
-                policy = parameters["policy"]
-                policy_class = self.algorithm_class.policy_aliases.get(policy) if isinstance(policy, str) else policy
-                parameters["policy_kwargs"] = get_sb3_policy_kwargs_for_features_extractor(
-                    self.features_extractor, policy_class, parameters["policy_kwargs"]
-                )
+                parameters["policy_kwargs"] = self._get_policy_kwargs()
             algorithm_kwargs.update(parameters)
             self.algorithm = self.algorithm_class(**algorithm_kwargs)
             self.algorithm_needs_initialization = False
@@ -231,7 +228,7 @@ class StableBaselinesAgent(RLAgent):
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
                 self.save_to_file(tmp_path)
                 algorithm_kwargs["path"] = tmp_path
-                algorithm_kwargs["custom_objects"] = self._parameters_for_loading()
+                algorithm_kwargs["custom_objects"] = self._get_parameters_for_loading()
                 # noinspection PyUnresolvedReferences
                 device = self.algorithm_parameters.get("device", None)
                 self.algorithm = (
@@ -350,7 +347,10 @@ class StableBaselinesAgent(RLAgent):
         if algorithm_parameters:
             self.algorithm_parameters = self._add_required_default_parameters({**algorithm_parameters})
             self._setup_framework_parameters()
-        self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self._parameters_for_loading())
+        algorithm = self.algorithm_class.load(path=file_path, env=None, **self._get_parameters_for_loading())
+        check_saved_features_extractor(algorithm.policy_kwargs, self.features_extractor)
+        check_specified_policy_kwargs(algorithm.policy_kwargs, self.algorithm_parameters.get("policy_kwargs") or {})
+        self.algorithm = algorithm
         self.algorithm_needs_initialization = False
 
     def _setup_framework_parameters(self) -> None:
@@ -362,15 +362,23 @@ class StableBaselinesAgent(RLAgent):
         self._setup_gamma_schedule()
         self._setup_initial_action_bias()
 
-    def _parameters_for_loading(self) -> Dict:
+    def _get_policy_kwargs(self) -> Dict:
         """
-        Algorithm parameters to apply to a saved model when loading it.
-        With a features extractor, the saved `policy_kwargs` are kept: they contain the features extractor, which the
-        user's `policy_kwargs` do not (SB3 rejects differing `policy_kwargs` on load, or replaces the saved ones when
-        given as `custom_objects`).
+        `policy_kwargs` for creating the model: the user's ones, extended by the features extractor (if provided).
         """
+        policy_kwargs = self.algorithm_parameters.get("policy_kwargs") or {}
         if not self.features_extractor:
-            return self.algorithm_parameters
+            return policy_kwargs
+        policy = self.algorithm_parameters["policy"]
+        policy_class = self.algorithm_class.policy_aliases.get(policy) if isinstance(policy, str) else policy
+        return get_sb3_policy_kwargs_for_features_extractor(self.features_extractor, policy_class, policy_kwargs)
+
+    def _get_parameters_for_loading(self) -> Dict:
+        """
+        Algorithm parameters to apply to a saved model when loading it: all except `policy_kwargs`.
+        A saved model keeps its `policy_kwargs` (its architecture; with a features extractor, they contain it), since
+        its saved weights only fit them. `check_specified_policy_kwargs` compares the specified ones instead.
+        """
         return {key: value for key, value in self.algorithm_parameters.items() if key != "policy_kwargs"}
 
     def _setup_gamma_schedule(self) -> None:

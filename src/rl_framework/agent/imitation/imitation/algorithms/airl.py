@@ -91,7 +91,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         torch.save(algorithm._reward_net, folder_path / FILE_NAME_REWARD_NET)
 
     def load_algorithm(self, folder_path: Path):
-        gen_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
+        gen_algo = self._load_rl_algo(folder_path, **self.rl_algo_kwargs)
         # The reward net is saved as whole module (not only weights), which torch>=2.6 does not unpickle by default
         reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET, weights_only=False)
         self.loaded_parameters.update({"gen_algo": gen_algo, "reward_net": reward_net})

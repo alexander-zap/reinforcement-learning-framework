@@ -224,6 +224,98 @@ def test_environment_interacting_algorithms_train_with_features_extractor(demons
     assert agent.algorithm_policy.features_extractor.features_dim == Linear.output_dim
 
 
+def extractor_weights(policy):
+    return policy.features_extractor.features_extractor.layer.weight.detach().clone()
+
+
+def save_trained_agent_with_features_extractor(tmp_path, demonstrations, algorithm_class, **parameters):
+    agent = train(make_agent(algorithm_class, features_extractor=Linear(input_dim=4), **parameters), demonstrations)
+    agent.save_to_file(tmp_path / "agent.zip")
+    return agent, tmp_path / "agent.zip"
+
+
+@pytest.mark.parametrize(
+    "algorithm_class, new_parameters, applied",
+    [
+        (BC, {"batch_size": 16}, lambda agent: agent.algorithm.batch_size == 16),
+        (
+            GAIL,
+            {"rl_algo_kwargs": {**RL_ALGO_KWARGS, "learning_rate": 1e-3}},
+            lambda agent: agent.algorithm.gen_algo.learning_rate == 1e-3,
+        ),
+    ],
+    ids=["BC", "GAIL"],
+)
+def test_loading_keeps_the_trained_features_extractor_and_applies_new_parameters(
+    demonstrations, tmp_path, algorithm_class, new_parameters, applied
+):
+    saved_parameters = {**ALGORITHM_PARAMETERS[algorithm_class], "policy_kwargs": {"net_arch": [8]}}
+    agent, path = save_trained_agent_with_features_extractor(
+        tmp_path, demonstrations, algorithm_class, **saved_parameters
+    )
+
+    loaded = make_agent(algorithm_class, features_extractor=Linear(input_dim=4), **saved_parameters)
+    loaded.load_from_file(path, {**saved_parameters, **new_parameters})
+
+    th.testing.assert_close(extractor_weights(loaded.algorithm_policy), extractor_weights(agent.algorithm_policy))
+    train(loaded, demonstrations, total_timesteps=64)
+    assert applied(loaded)
+
+
+@pytest.mark.parametrize("algorithm_class", [BC, GAIL])
+def test_loading_rejects_another_network_architecture(demonstrations, tmp_path, algorithm_class):
+    saved_parameters = {**ALGORITHM_PARAMETERS[algorithm_class], "policy_kwargs": {"net_arch": [8]}}
+    _, path = save_trained_agent_with_features_extractor(tmp_path, demonstrations, algorithm_class, **saved_parameters)
+
+    loaded = make_agent(algorithm_class, features_extractor=Linear(input_dim=4), **saved_parameters)
+    with pytest.raises(
+        ValueError, match=r"architecture cannot be changed: `net_arch`: stored \[8\], specified \[16\]$"
+    ):
+        loaded.load_from_file(path, {**saved_parameters, "policy_kwargs": {"net_arch": [16]}})
+
+
+class Negated(Linear):
+    """Features extractor with the same parameters as Linear, but other features (so loading its weights works)."""
+
+    def forward(self, observations):
+        return -super().forward(observations)
+
+
+@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL, DensityAlgorithm, SQIL])
+def test_loading_rejects_another_features_extractor_class_for_training_again(demonstrations, tmp_path, algorithm_class):
+    _, path = save_trained_agent_with_features_extractor(tmp_path, demonstrations, algorithm_class)
+
+    loaded = make_agent(algorithm_class, features_extractor=Negated(input_dim=4))
+    with pytest.raises(
+        ValueError,
+        match=r"one of the loaded model: class: stored tests\.toys\.Linear, "
+        r"specified tests\.test_imitation_agent\.Negated$",
+    ):
+        loaded.load_from_file(path)
+
+
+@pytest.mark.parametrize(
+    "algorithm_class, saved_extractor, loaded_extractor, message",
+    [
+        (BC, Linear(input_dim=4), None, "The loaded policy has a features extractor, but the agent has none"),
+        (BC, None, Linear(input_dim=4), "The loaded policy has no features extractor, but the agent has one"),
+        (GAIL, Linear(input_dim=4), None, "The loaded model has a features extractor, but the agent has none"),
+        (GAIL, None, Linear(input_dim=4), "The loaded model has no features extractor, but the agent has one"),
+    ],
+    ids=["BC-agent-without", "BC-model-without", "GAIL-agent-without", "GAIL-model-without"],
+)
+def test_loading_rejects_a_missing_or_unexpected_features_extractor(
+    demonstrations, tmp_path, algorithm_class, saved_extractor, loaded_extractor, message
+):
+    train(make_agent(algorithm_class, features_extractor=saved_extractor), demonstrations).save_to_file(
+        tmp_path / "agent.zip"
+    )
+
+    loaded = make_agent(algorithm_class, features_extractor=loaded_extractor)
+    with pytest.raises(ValueError, match=message):
+        loaded.load_from_file(tmp_path / "agent.zip")
+
+
 def test_bc_trains_with_features_extractor(demonstrations, observations, tmp_path):
     agent = train(make_agent(features_extractor=Linear(input_dim=4)), demonstrations)
     agent.save_to_file(tmp_path / "agent.zip")

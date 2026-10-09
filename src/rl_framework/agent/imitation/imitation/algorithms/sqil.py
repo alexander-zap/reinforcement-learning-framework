@@ -74,16 +74,19 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         algorithm.rl_algo.save(folder_path / FILE_NAME_SB3_ALGORITHM, exclude=["replay_buffer_kwargs"])
 
     def load_algorithm(self, folder_path: Path):
-        rl_algo = self.rl_algo_class.load(
-            folder_path / FILE_NAME_SB3_ALGORITHM,
-            replay_buffer_kwargs={
-                "demonstrations": Transitions(
-                    obs=np.array([]),
-                    next_obs=np.array([]),
-                    acts=np.array([]),
-                    dones=np.array([], dtype=bool),
-                    infos=np.array([]),
-                )
+        rl_algo = self._load_rl_algo(
+            folder_path,
+            **{
+                **self.rl_algo_kwargs,
+                "replay_buffer_kwargs": {
+                    "demonstrations": Transitions(
+                        obs=np.array([]),
+                        next_obs=np.array([]),
+                        acts=np.array([]),
+                        dones=np.array([], dtype=bool),
+                        infos=np.array([]),
+                    )
+                },
             },
         )
         self.loaded_parameters.update({"rl_algo": rl_algo})
