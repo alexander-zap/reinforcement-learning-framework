@@ -99,11 +99,8 @@ def test_pettingzoo_self_restarting_agents_count_every_episode(lengths):
 
     mean_reward, std_reward = evaluate([environment])
 
-    assert len(environment.returns) >= 4
-    assert (mean_reward, std_reward) == (
-        pytest.approx(np.mean(environment.returns)),
-        pytest.approx(np.std(environment.returns)),
-    )
+    # Each of the two agents contributes 2 of the 4 episodes, also one-step episodes after a restart.
+    assert (mean_reward, std_reward) == (pytest.approx(2.0), pytest.approx(1.0))
 
 
 def test_unsupported_environment_types_are_rejected():
