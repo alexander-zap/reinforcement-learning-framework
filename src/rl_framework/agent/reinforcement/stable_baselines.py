@@ -63,23 +63,31 @@ class StableBaselinesAgent(RLAgent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
-                `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule the
-                discount factor over training.
-                `initial_action_bias` may give the initial biases of the policy's action output layer (PPO, A2C, TRPO,
-                SAC, TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
+                `policy` defaults to "MlpPolicy", `tensorboard_log` to a new temporary directory.
+                Additionally, these framework parameters are applied by the agent (and not passed to SB3):
+                    - `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule
+                      the discount factor over training.
+                    - `initial_action_bias`: initial biases of the policy's action output layer (PPO, A2C, TRPO, SAC,
+                      TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
+                    - `reset_optimizer` (bool, default False): reset the optimizer state before each training, e.g.,
+                      to fine-tune a loaded model with fresh optimizer statistics.
+                    - `callback_kwargs` (Dict): parameters of the training callbacks: `callback_saving_interval`
+                      (default 500000 steps), `callback_logging_interval` (default 1 episode),
+                      `callback_log_distributions` (default False), `callback_verbosity` (default 0),
+                      `sb3_logging_interval` (default 1) and, for AsyncStableBaselinesAgent,
+                      `callback_async_utilization_logging_interval` (default 1000 episodes).
+                The same applies to the parameters given to `load_from_file` (or `download`), which replace these.
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
-        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
-        # Optionally reset optimizer state for fresh fine-tuning
-        self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self.callback_parameters: Dict = {}
+        self.reset_optimizer: bool = False
         self.gamma_schedule: Optional[Callable[[float], float]] = None
-        self._setup_gamma_schedule()
         self.initial_action_bias: Optional[np.ndarray] = None
-        self._setup_initial_action_bias()
+        self._setup_framework_parameters()
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -203,10 +211,6 @@ class StableBaselinesAgent(RLAgent):
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
 
-        if self.reset_optimizer:
-            reset_paths = reset_optimizer_state(self.algorithm)
-            logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
-
         algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:
             parameters = defaultdict(dict, {**self.algorithm_parameters})
@@ -227,7 +231,7 @@ class StableBaselinesAgent(RLAgent):
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
                 self.save_to_file(tmp_path)
                 algorithm_kwargs["path"] = tmp_path
-                algorithm_kwargs["custom_objects"] = self.algorithm_parameters
+                algorithm_kwargs["custom_objects"] = self._parameters_for_loading()
                 # noinspection PyUnresolvedReferences
                 device = self.algorithm_parameters.get("device", None)
                 self.algorithm = (
@@ -235,6 +239,10 @@ class StableBaselinesAgent(RLAgent):
                     if not device
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
+
+        if self.reset_optimizer:
+            reset_paths = reset_optimizer_state(self.algorithm)
+            logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
 
         callbacks = self.get_callbacks(connector=connector)
         callback_list = CallbackList(callbacks)
@@ -341,10 +349,29 @@ class StableBaselinesAgent(RLAgent):
         """
         if algorithm_parameters:
             self.algorithm_parameters = self._add_required_default_parameters({**algorithm_parameters})
-            self._setup_gamma_schedule()
-            self._setup_initial_action_bias()
-        self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
+            self._setup_framework_parameters()
+        self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self._parameters_for_loading())
         self.algorithm_needs_initialization = False
+
+    def _setup_framework_parameters(self) -> None:
+        """
+        Move the framework parameters (see `__init__`) out of `algorithm_parameters`, since SB3 does not accept them.
+        """
+        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
+        self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self._setup_gamma_schedule()
+        self._setup_initial_action_bias()
+
+    def _parameters_for_loading(self) -> Dict:
+        """
+        Algorithm parameters to apply to a saved model when loading it.
+        With a features extractor, the saved `policy_kwargs` are kept: they contain the features extractor, which the
+        user's `policy_kwargs` do not (SB3 rejects differing `policy_kwargs` on load, or replaces the saved ones when
+        given as `custom_objects`).
+        """
+        if not self.features_extractor:
+            return self.algorithm_parameters
+        return {key: value for key, value in self.algorithm_parameters.items() if key != "policy_kwargs"}
 
     def _setup_gamma_schedule(self) -> None:
         """

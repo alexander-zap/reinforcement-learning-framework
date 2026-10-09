@@ -273,16 +273,23 @@ def test_retraining_with_features_extractor_works():
     agent.train(total_timesteps=16, training_environments=[Toy()])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=RuntimeError,
-    reason="stable_baselines.py:254 reloads with custom_objects=algorithm_parameters, whose user policy_kwargs "
-    "replace the saved ones that carry the features extractor, so the saved state_dict no longer fits",
-)
 def test_retraining_with_features_extractor_and_policy_kwargs_works():
     agent = make_agent(features_extractor=Linear(), policy_kwargs={"net_arch": [8]})
     agent.train(total_timesteps=16, training_environments=[Toy()])
     agent.train(total_timesteps=16, training_environments=[Toy()])
+
+
+def test_loading_with_features_extractor_and_policy_kwargs_works(tmp_path):
+    agent = make_agent(features_extractor=Linear(), policy_kwargs={"net_arch": [8]})
+    agent.train(total_timesteps=16, training_environments=[Toy()])
+    agent.save_to_file(tmp_path / "agent.zip")
+
+    loaded = make_agent(features_extractor=Linear(), policy_kwargs={"net_arch": [8]})
+    loaded.load_from_file(tmp_path / "agent.zip")
+
+    observations = [BOX.sample() for _ in range(20)]
+    assert [agent.choose_action(o, True) for o in observations] == [loaded.choose_action(o, True) for o in observations]
+    loaded.train(total_timesteps=16, training_environments=[Toy()])
 
 
 def test_evaluate_trained_agent_on_gym_environment():
