@@ -167,7 +167,25 @@ class StableBaselinesAgent(RLAgent):
                 For agents which restart on their own, the `final_observation` info (gymnasium's auto-reset convention,
                 see `train`) is the last observation of the finished episode. It takes precedence, also over the
                 `terminal_observation` which MarkovVectorEnv sets to the returned observation when all agents are done.
+
+                Seeding (SB3 calls `seed` when the algorithm gets a `seed`): the seed is applied at the next reset,
+                each PettingZoo environment being reset with `seed + index` (by supersuit's vectorized environments).
                 """
+
+                def __init__(self, venv):
+                    super().__init__(venv)
+                    self._seed_for_next_reset: Optional[int] = None
+
+                def seed(self, seed: Optional[int] = None):
+                    self._seed_for_next_reset = seed
+                    return [None if seed is None else seed + index for index in range(self.num_envs)]
+
+                def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+                    seed = self._seed_for_next_reset if seed is None else seed
+                    self._seed_for_next_reset = None
+                    # Note: SB3's vector envs return only observations on reset, and store infos in `self.reset_infos`
+                    observations, self.reset_infos = self.venv.reset(seed=seed, options=options)
+                    return observations
 
                 def step_wait(self):
                     observations, rewards, terminations, truncations, infos = self.venv.step_wait()

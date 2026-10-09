@@ -175,6 +175,60 @@ def test_pettingzoo_training_sees_the_true_episode_returns():
     assert {episode["l"] for episode in agent.algorithm.ep_info_buffer} == {5}
 
 
+class SeededParallel(ToyParallel):
+    """Observations and rewards drawn from a generator seeded by `reset(seed=...)`; records the reset seeds."""
+
+    def __init__(self):
+        super().__init__()
+        self.reset_seeds = []
+        self.rng = np.random.default_rng()
+
+    def reset(self, seed=None, options=None):
+        self.reset_seeds.append(seed)
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        observations, infos = super().reset(seed=seed, options=options)
+        return {agent: self.rng.uniform(-1, 1, 3).astype(np.float32) for agent in observations}, infos
+
+    def step(self, actions):
+        observations, _, terminations, truncations, infos = super().step(actions)
+        observations = {agent: self.rng.uniform(-1, 1, 3).astype(np.float32) for agent in observations}
+        rewards = {agent: float(self.rng.uniform()) for agent in observations}
+        return observations, rewards, terminations, truncations, infos
+
+
+def test_pettingzoo_training_with_seed():
+    agent = make_agent(seed=0)
+    agent.train(total_timesteps=16, training_environments=[ToyParallel()])
+    assert agent.algorithm.num_timesteps >= 16
+
+
+def test_pettingzoo_training_with_seed_on_several_environments():
+    agent = make_agent(seed=0)
+    agent.train(total_timesteps=16, training_environments=[ToyParallel(), ToyParallel()])
+    assert agent.algorithm.num_timesteps >= 16
+
+
+def test_pettingzoo_training_seeds_the_environment_at_the_first_reset():
+    environment = SeededParallel()
+    make_agent(seed=7).train(total_timesteps=16, training_environments=[environment])
+
+    assert environment.reset_seeds[0] == 7
+    assert all(seed is None for seed in environment.reset_seeds[1:])
+
+
+def test_pettingzoo_training_with_the_same_seed_is_reproducible():
+    def train_weights(seed):
+        agent = make_agent(seed=seed)
+        agent.train(total_timesteps=32, training_environments=[SeededParallel()])
+        return policy_weights(agent)
+
+    first, second, other_seed = train_weights(3), train_weights(3), train_weights(4)
+
+    assert all(th.equal(first[name], second[name]) for name in first)
+    assert not all(th.equal(first[name], other_seed[name]) for name in first)
+
+
 class TruncatingParallel(ToyParallel):
     """Every episode is truncated (not terminated) after 5 steps."""
 
