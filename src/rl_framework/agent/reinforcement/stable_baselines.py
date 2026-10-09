@@ -1,18 +1,17 @@
 import logging
 import tempfile
-from collections import defaultdict
-from copy import deepcopy
 from functools import partial
 from os import cpu_count
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Type
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
 import gymnasium
 import numpy as np
 import pettingzoo
 import stable_baselines3
+import torch
 import torch.onnx
-from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.base_class import BaseAlgorithm, BasePolicy
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -31,6 +30,8 @@ from rl_framework.util import (
     ResetInfoCallback,
     SavingCallback,
     apply_action_bias,
+    check_saved_features_extractor,
+    check_specified_policy_kwargs,
     get_sb3_policy_kwargs_for_features_extractor,
     reset_optimizer_state,
     validate_initial_action_bias,
@@ -63,23 +64,31 @@ class StableBaselinesAgent(RLAgent):
                 See https://stable-baselines3.readthedocs.io/en/master/modules/base.html for details on common params.
                 See individual docs (e.g., https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html)
                 for algorithm-specific params.
-                `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule the
-                discount factor over training.
-                `initial_action_bias` may give the initial biases of the policy's action output layer (PPO, A2C, TRPO,
-                SAC, TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
+                `policy` defaults to "MlpPolicy", `tensorboard_log` to a new temporary directory.
+                Additionally, these framework parameters are applied by the agent (and not passed to SB3):
+                    - `gamma` may be a callable `progress_remaining -> gamma` (like SB3's `learning_rate`) to schedule
+                      the discount factor over training.
+                    - `initial_action_bias`: initial biases of the policy's action output layer (PPO, A2C, TRPO, SAC,
+                      TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
+                    - `reset_optimizer` (bool, default False): reset the optimizer state before each training, e.g.,
+                      to fine-tune a loaded model with fresh optimizer statistics.
+                    - `callback_kwargs` (Dict): parameters of the training callbacks: `callback_saving_interval`
+                      (default 500000 steps), `callback_logging_interval` (default 1 episode),
+                      `callback_log_distributions` (default False), `callback_verbosity` (default 0),
+                      `sb3_logging_interval` (default 1) and, for AsyncStableBaselinesAgent,
+                      `callback_async_utilization_logging_interval` (default 1000 episodes).
+                The same applies to the parameters given to `load_from_file` (or `download`), which replace these.
             features_extractor: When provided, specifies the observation processor to be
                     used before the action/value prediction network.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
 
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
-        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
-        # Optionally reset optimizer state for fresh fine-tuning
-        self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self.callback_parameters: Dict = {}
+        self.reset_optimizer: bool = False
         self.gamma_schedule: Optional[Callable[[float], float]] = None
-        self._setup_gamma_schedule()
         self.initial_action_bias: Optional[np.ndarray] = None
-        self._setup_initial_action_bias()
+        self._setup_framework_parameters()
 
         additional_parameters = (
             {"_init_setup_model": False} if (getattr(self.algorithm_class, "_setup_model", None)) else {}
@@ -108,6 +117,10 @@ class StableBaselinesAgent(RLAgent):
 
         Args:
             training_environments (List[Environment]): List of environments on which the agent should be trained on.
+                PettingZoo ParallelEnvs are reset once all agents are done. Agents which restart on their own while the
+                other agents continue follow gymnasium's auto-reset convention: the done step returns the first
+                observation of the agent's next episode and passes the last observation of the finished episode as
+                `infos[agent]["final_observation"]`. Without this info, the returned observation is used as both.
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
@@ -145,54 +158,45 @@ class StableBaselinesAgent(RLAgent):
             class AutoResetSB3VecEnvWrapper(SB3VecEnvWrapper):
                 """
                 A SB3VecEnvWrapper for Pettingzoo based vectorized environments (through MarkovVectorEnv).
-                "Automatically resets" episodes and sets infos on step:
-                    - `infos["terminal_observation"] = observation` when done
+                MarkovVectorEnv resets the environment automatically once all agents are done and returns the done
+                flags and rewards of the final step together with the observations of the new episode.
+                Sets infos for each done agent on step (as SB3 expects from auto-resetting vectorized environments):
+                    - `infos["terminal_observation"]`: the last observation of the finished episode
                     - `infos["TimeLimit.truncated"] = True` when truncated (else False)
+
+                For agents which restart on their own, the `final_observation` info (gymnasium's auto-reset convention,
+                see `train`) is the last observation of the finished episode. It takes precedence, also over the
+                `terminal_observation` which MarkovVectorEnv sets to the returned observation when all agents are done.
+
+                Seeding (SB3 calls `seed` when the algorithm gets a `seed`): the seed is applied at the next reset,
+                each PettingZoo environment being reset with `seed + index` (by supersuit's vectorized environments).
                 """
 
-                def __init__(self, vectorized_environment):
-                    super().__init__(vectorized_environment)
-                    self.last_observations = None
-                    self.last_terminations = None
-                    self.last_truncations = None
-                    self.last_rewards = None
-                    self.last_infos = None
-                    self.agents_to_reset = []
+                def __init__(self, venv):
+                    super().__init__(venv)
+                    self._seed_for_next_reset: Optional[int] = None
+
+                def seed(self, seed: Optional[int] = None):
+                    self._seed_for_next_reset = seed
+                    return [None if seed is None else seed + index for index in range(self.num_envs)]
+
+                def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+                    seed = self._seed_for_next_reset if seed is None else seed
+                    self._seed_for_next_reset = None
+                    # Note: SB3's vector envs return only observations on reset, and store infos in `self.reset_infos`
+                    observations, self.reset_infos = self.venv.reset(seed=seed, options=options)
+                    return observations
 
                 def step_wait(self):
                     observations, rewards, terminations, truncations, infos = self.venv.step_wait()
                     dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
-
-                    observations_to_return = deepcopy(observations)
-                    rewards_to_return = deepcopy(rewards)
-                    dones_to_return = deepcopy(dones)
-                    infos_to_return = deepcopy(infos)
-
-                    for i in range(len(dones)):
-                        if i in self.agents_to_reset:
-                            rewards_to_return[i] = self.last_rewards[i]
-                            dones_to_return[i] = 1
-                            infos_to_return[i] = self.last_infos[i]
-                            infos_to_return[i]["TimeLimit.truncated"] = (
-                                True if self.last_truncations[i] and not self.last_terminations[i] else False
-                            )
-                            infos_to_return[i]["terminal_observation"] = self.last_observations[i]
-                            self.agents_to_reset.remove(i)
-                        elif dones[i]:
-                            # repeat old observation (workaround; cannot reset agent independently in MarkovVectorEnv)
-                            observations_to_return[i] = self.last_observations[i]
-                            dones_to_return[i] = self.last_truncations[i] or self.last_terminations[i]
-                            rewards_to_return[i] = self.last_rewards[i]
-                            infos_to_return[i] = self.last_infos[i]
-                            self.agents_to_reset.append(i)
-
-                    self.last_observations = observations
-                    self.last_terminations = terminations
-                    self.last_truncations = truncations
-                    self.last_rewards = rewards
-                    self.last_infos = infos
-
-                    return observations_to_return, rewards_to_return, dones_to_return, infos_to_return
+                    for i in np.flatnonzero(dones):
+                        infos[i]["TimeLimit.truncated"] = bool(truncations[i] and not terminations[i])
+                        if "final_observation" in infos[i]:
+                            infos[i]["terminal_observation"] = infos[i]["final_observation"]
+                        else:
+                            infos[i].setdefault("terminal_observation", observations[i])
+                    return observations, rewards, dones, infos
 
             vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)
             vectorized_environment = VecMonitor(vectorized_environment)
@@ -226,18 +230,11 @@ class StableBaselinesAgent(RLAgent):
         else:
             raise TypeError(f"Environment type {type(training_environments[0])} not supported!")
 
-        if self.reset_optimizer:
-            reset_paths = reset_optimizer_state(self.algorithm)
-            logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
-
         algorithm_kwargs = {"env": vectorized_environment}
         if self.algorithm_needs_initialization:
-            parameters = defaultdict(dict, {**self.algorithm_parameters})
+            parameters = {**self.algorithm_parameters}
             if self.features_extractor:
-                parameters["policy_kwargs"] = {
-                    **parameters["policy_kwargs"],
-                    **get_sb3_policy_kwargs_for_features_extractor(self.features_extractor),
-                }
+                parameters["policy_kwargs"] = self._get_policy_kwargs()
             algorithm_kwargs.update(parameters)
             self.algorithm = self.algorithm_class(**algorithm_kwargs)
             self.algorithm_needs_initialization = False
@@ -249,7 +246,7 @@ class StableBaselinesAgent(RLAgent):
                 tmp_path = Path(tmp_dir) / "tmp_model.zip"
                 self.save_to_file(tmp_path)
                 algorithm_kwargs["path"] = tmp_path
-                algorithm_kwargs["custom_objects"] = self.algorithm_parameters
+                algorithm_kwargs["custom_objects"] = self._get_parameters_for_loading()
                 # noinspection PyUnresolvedReferences
                 device = self.algorithm_parameters.get("device", None)
                 self.algorithm = (
@@ -257,6 +254,10 @@ class StableBaselinesAgent(RLAgent):
                     if not device
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
+
+        if self.reset_optimizer:
+            reset_paths = reset_optimizer_state(self.algorithm)
+            logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
 
         callbacks = self.get_callbacks(connector=connector)
         callback_list = CallbackList(callbacks)
@@ -313,17 +314,37 @@ class StableBaselinesAgent(RLAgent):
             action = action.item()
         return action
 
-    def save_as_onnx(self, file_path: Path) -> None:
-        """Save the agent as ONNX model.
+    def save_policy_as_onnx(self, file_path: Path) -> None:
+        """Save the policy as ONNX model.
+
+            Details for SB3: https://stable-baselines3.readthedocs.io/en/master/guide/export.html
 
         Args:
-            file_path (Path): The file where the agent should be saved to.
+            file_path (Path): The file where the policy should be saved to.
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
+        class OnnxableSB3Policy(torch.nn.Module):
+            def __init__(self, policy: BasePolicy):
+                super().__init__()
+                self.policy = policy
+
+            # FIXME: policy() returns `actions, values, log_prob` for PPO
+            # FIXME: determinism should be set based on policy (and own preference; could be set in config)
+            def forward(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                # NOTE: policy includes the features_extractor.
+                #  Preprocessing is included, but postprocessing (clipping/inscaling actions) is not.
+                # NOTE: For Box action space you may have to postprocess (unnormalize) actions to the correct bounds
+                #   low, high = model.action_space.low, model.action_space.high
+                #   post_processed_action = low + (0.5 * (scaled_action + 1.0) * (high - low))
+                return self.policy(observation, deterministic=False)
+
+        # FIXME: for algorithms like SAC we need to input `self.algorithm.policy.actor`
+        onnx_policy = OnnxableSB3Policy(self.algorithm.policy)
         observation_size = self.algorithm.observation_space.shape
+        # FIXME: add support for batch size > 1
         dummy_input = torch.randn(1, *observation_size)
-        torch.onnx.export(self.algorithm.policy, dummy_input, file_path, opset_version=17, input_names=["input"])
+        torch.onnx.export(onnx_policy, dummy_input, file_path, opset_version=17, input_names=["input"])
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
@@ -343,10 +364,40 @@ class StableBaselinesAgent(RLAgent):
         """
         if algorithm_parameters:
             self.algorithm_parameters = self._add_required_default_parameters({**algorithm_parameters})
-            self._setup_gamma_schedule()
-            self._setup_initial_action_bias()
-        self.algorithm = self.algorithm_class.load(path=file_path, env=None, **self.algorithm_parameters)
+            self._setup_framework_parameters()
+        algorithm = self.algorithm_class.load(path=file_path, env=None, **self._get_parameters_for_loading())
+        check_saved_features_extractor(algorithm.policy_kwargs, self.features_extractor)
+        check_specified_policy_kwargs(algorithm.policy_kwargs, self.algorithm_parameters.get("policy_kwargs") or {})
+        self.algorithm = algorithm
         self.algorithm_needs_initialization = False
+
+    def _setup_framework_parameters(self) -> None:
+        """
+        Move the framework parameters (see `__init__`) out of `algorithm_parameters`, since SB3 does not accept them.
+        """
+        self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
+        self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self._setup_gamma_schedule()
+        self._setup_initial_action_bias()
+
+    def _get_policy_kwargs(self) -> Dict:
+        """
+        `policy_kwargs` for creating the model: the user's ones, extended by the features extractor (if provided).
+        """
+        policy_kwargs = self.algorithm_parameters.get("policy_kwargs") or {}
+        if not self.features_extractor:
+            return policy_kwargs
+        policy = self.algorithm_parameters["policy"]
+        policy_class = self.algorithm_class.policy_aliases.get(policy) if isinstance(policy, str) else policy
+        return get_sb3_policy_kwargs_for_features_extractor(self.features_extractor, policy_class, policy_kwargs)
+
+    def _get_parameters_for_loading(self) -> Dict:
+        """
+        Algorithm parameters to apply to a saved model when loading it: all except `policy_kwargs`.
+        A saved model keeps its `policy_kwargs` (its architecture; with a features extractor, they contain it), since
+        its saved weights only fit them. `check_specified_policy_kwargs` compares the specified ones instead.
+        """
+        return {key: value for key, value in self.algorithm_parameters.items() if key != "policy_kwargs"}
 
     def _setup_gamma_schedule(self) -> None:
         """

@@ -9,7 +9,6 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.util import (
     FeaturesExtractor,
-    add_callbacks_to_callback,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -38,7 +37,9 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
 
         """
         if self.features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
+            self.policy_kwargs = get_sb3_policy_kwargs_for_features_extractor(
+                self.features_extractor, self.policy_class, self.policy_kwargs
+            )
         parameters = {
             "venv": vectorized_environment,
             "rng": np.random.default_rng(0),
@@ -59,12 +60,12 @@ class DensityAlgorithmWrapper(AlgorithmWrapper):
     def train(self, algorithm: DensityAlgorithm, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
         algorithm.train()
         # NOTE: All callbacks concerning reward calculation will use the density reward and not the environment reward
-        add_callbacks_to_callback(callback_list, algorithm.wrapper_callback)
+        self.set_additional_callbacks(algorithm, "wrapper_callback", callback_list)
         algorithm.train_policy(n_timesteps=total_timesteps)
 
     def save_algorithm(self, algorithm: DensityAlgorithm, folder_path: Path):
         algorithm.rl_algo.save(folder_path / FILE_NAME_SB3_ALGORITHM)
 
     def load_algorithm(self, folder_path: Path):
-        rl_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
+        rl_algo = self._load_rl_algo(folder_path, **self.rl_algo_kwargs)
         self.loaded_parameters.update({"rl_algo": rl_algo})

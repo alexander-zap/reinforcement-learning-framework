@@ -41,7 +41,7 @@ class ConstantActionAgent(Agent):
     def choose_action(self, observation, deterministic, *args, **kwargs):
         return 0
 
-    save_as_onnx = save_to_file = load_from_file = None
+    save_policy_as_onnx = save_to_file = load_from_file = None
 
 
 class RecordingConnector(DummyConnector):
@@ -62,14 +62,62 @@ def evaluate(environments, n_eval_episodes, connector=None):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="base_agent.py:375 gives each env n_eval_episodes // len(envs) + 1 episodes and all count in mean/std",
-)
 def test_evaluate_averages_exactly_the_requested_episodes():
     mean_reward, _ = evaluate([CountingEnv()], n_eval_episodes=4)
 
     assert mean_reward == np.mean([0, 1, 2, 3])
+
+
+class FixedLengthEnv(gym.Env):
+    """Episodes of `length` steps, each with return `length`."""
+
+    observation_space = spaces.Box(-1, 1, (1,), np.float32)
+    action_space = spaces.Discrete(2)
+
+    def __init__(self, length):
+        self.length, self.t = length, 0
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.t = 0
+        return np.zeros(1, np.float32), {}
+
+    def step(self, action):
+        self.t += 1
+        return np.zeros(1, np.float32), 1.0, self.t >= self.length, False, {}
+
+
+@pytest.mark.parametrize(
+    "make_environments",
+    [
+        lambda: [FixedLengthEnv(1), FixedLengthEnv(5)],
+        lambda: [DummyVecEnv([lambda: FixedLengthEnv(1)]), DummyVecEnv([lambda: FixedLengthEnv(5)])],
+        lambda: [(FixedLengthEnv(1), lambda: FixedLengthEnv(1)), (FixedLengthEnv(5), lambda: FixedLengthEnv(5))],
+    ],
+    ids=["gym-envs", "vec-envs", "environment-factories"],
+)
+def test_environments_with_short_episodes_are_not_over_represented(make_environments):
+    mean_reward, std_reward = evaluate(make_environments(), n_eval_episodes=4)
+
+    assert (mean_reward, std_reward) == (3.0, 2.0)  # 2 episodes of return 1 and 2 of return 5
+
+
+def test_factories_without_episodes_to_contribute_are_not_instantiated():
+    created = []
+
+    def factory():
+        created.append(1)
+        return CountingEnv()
+
+    evaluate([(CountingEnv(), factory) for _ in range(5)], n_eval_episodes=2)
+
+    assert len(created) == 2
+
+
+@pytest.mark.parametrize("n_eval_episodes", [0, -1])
+def test_evaluate_requires_at_least_one_episode(n_eval_episodes):
+    with pytest.raises(ValueError, match="at least 1"):
+        evaluate([CountingEnv()], n_eval_episodes=n_eval_episodes)
 
 
 @pytest.mark.xfail(

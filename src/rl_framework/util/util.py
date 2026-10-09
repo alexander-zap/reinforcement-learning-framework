@@ -1,7 +1,9 @@
 import d3rlpy.torch_utility
 import datasets.filesystems
 import torch as th
+from imitation.algorithms import sqil
 from imitation.util import util
+from stable_baselines3.common import type_aliases
 
 
 # Monkey-patch the function since it fails to detect local file as tuple protocol
@@ -41,3 +43,22 @@ def patch_imitation_safe_to_tensor():
 
     old_safe_to_tensor = util.safe_to_tensor
     util.safe_to_tensor = patched_safe_to_tensor
+
+
+# stable-baselines3>=2.7 added the optional `discounts` field to ReplayBufferSamples (None unless n-step returns are
+#   used), but imitation's SQILReplayBuffer.sample concatenates every field, which fails for None.
+def patch_imitation_sqil_replay_buffer():
+    def sample(self, batch_size, env=None):
+        new_sample_size, expert_sample_size = util.split_in_half(batch_size)
+        new_sample = super(sqil.SQILReplayBuffer, self).sample(new_sample_size, env)
+        expert_sample = self.expert_buffer.sample(expert_sample_size, env)
+
+        def concatenate(name):
+            new_value, expert_value = getattr(new_sample, name), getattr(expert_sample, name)
+            if new_value is None and expert_value is None:
+                return None
+            return th.cat((new_value, expert_value))
+
+        return type_aliases.ReplayBufferSamples(*(concatenate(name) for name in new_sample._fields))
+
+    sqil.SQILReplayBuffer.sample = sample

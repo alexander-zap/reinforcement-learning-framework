@@ -13,7 +13,6 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.util import (
     FeaturesExtractor,
-    add_callbacks_to_callback,
     get_sb3_policy_kwargs_for_features_extractor,
 )
 
@@ -47,7 +46,9 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         """
         self.venv = vectorized_environment
         if self.features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
+            self.policy_kwargs = get_sb3_policy_kwargs_for_features_extractor(
+                self.features_extractor, self.policy_class, self.policy_kwargs
+            )
         parameters = {
             "venv": vectorized_environment,
             "demo_batch_size": 1024,
@@ -77,7 +78,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         return algorithm
 
     def train(self, algorithm: AIRL, total_timesteps: int, callback_list: CallbackList, *args, **kwargs):
-        add_callbacks_to_callback(callback_list, algorithm.gen_callback)
+        self.set_additional_callbacks(algorithm, "gen_callback", callback_list)
         algorithm.gen_train_timesteps = min(algorithm.gen_train_timesteps, total_timesteps)
         algorithm._gen_replay_buffer = buffer.ReplayBuffer(
             algorithm.gen_train_timesteps,
@@ -90,6 +91,7 @@ class AIRLAlgorithmWrapper(AlgorithmWrapper):
         torch.save(algorithm._reward_net, folder_path / FILE_NAME_REWARD_NET)
 
     def load_algorithm(self, folder_path: Path):
-        gen_algo = self.rl_algo_class.load(folder_path / FILE_NAME_SB3_ALGORITHM)
-        reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET)
+        gen_algo = self._load_rl_algo(folder_path, **self.rl_algo_kwargs)
+        # The reward net is saved as whole module (not only weights), which torch>=2.6 does not unpickle by default
+        reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET, weights_only=False)
         self.loaded_parameters.update({"gen_algo": gen_algo, "reward_net": reward_net})

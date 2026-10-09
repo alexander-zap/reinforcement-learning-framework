@@ -60,11 +60,24 @@ class Agent(ABC):
 
         Args:
             evaluation_environments (List[Environment]): The evaluation environments.
-            n_eval_episodes (int): Number of episode to evaluate the agent.
+                For PettingZoo ParallelEnvs, every agent episode counts as one episode. The environment is reset once
+                all agents are done. Agents which restart on their own while the other agents continue follow
+                gymnasium's auto-reset convention: the done step returns the first observation of the agent's next
+                episode (on which its next action is chosen) and passes the last observation of the finished episode
+                as `infos[agent]["final_observation"]`.
+            n_eval_episodes (int): Number of episodes to evaluate the agent on (at least 1).
+                They are split evenly between the environments (and their sub-environments, or PettingZoo agents),
+                each contributing a fixed number of episodes, so that environments with shorter episodes are not
+                over-represented. Environment factories without episodes to contribute are not instantiated.
             connector (Connector): Connector for logging evaluation metrics.
             logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
         """
+        if n_eval_episodes < 1:
+            raise ValueError(f"n_eval_episodes must be at least 1, got {n_eval_episodes}.")
+
+        def split_evenly(total: int, parts: int) -> List[int]:
+            return [(total + index) // parts for index in range(parts)]
 
         def envs_to_dummy_vec_env(environments: List[gym.Env]) -> VecEnv:
             def make_env(env_list: list, index: int):
@@ -100,8 +113,12 @@ class Agent(ABC):
 
                     episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
                     local_episode_rewards = []
+                    # Each agent contributes a fixed number of episodes (agents appearing later contribute none)
+                    possible_agents = list(evaluation_environment.possible_agents)
+                    episode_targets = dict(zip(possible_agents, split_evenly(n_episodes, len(possible_agents))))
+                    episode_counts = {agent: 0 for agent in possible_agents}
 
-                    while len(local_episode_rewards) < n_episodes:
+                    while any(episode_counts[agent] < episode_targets[agent] for agent in possible_agents):
                         (
                             observations,
                             rewards,
@@ -122,7 +139,13 @@ class Agent(ABC):
                         }
 
                         for agent in rewards.keys():
-                            if agent not in episode_reward and not (terminations[agent] or truncations[agent]):
+                            done = terminations[agent] or truncations[agent]
+                            # A done agent without a running episode is either a dead agent still reported (ignore) or
+                            #   a restarted agent whose new episode lasted one step (count).
+                            #   Only a restarted agent passes the last observation of its finished episode as
+                            #   `final_observation` info (see the docstring), which tells the two cases apart.
+                            restarted = "final_observation" in infos.get(agent, {})
+                            if agent not in episode_reward and (not done or restarted):
                                 episode_reward[agent] = rewards[agent]
                             elif agent in episode_reward:
                                 episode_reward[agent] += rewards[agent]
@@ -134,8 +157,10 @@ class Agent(ABC):
                             for done_index in done_indices:
                                 agent = list(terminations.keys())[done_index]
                                 if agent in episode_reward:
-                                    local_episode_rewards.append(episode_reward[agent])
-                                    pbar.update(1)
+                                    if episode_counts.get(agent, 0) < episode_targets.get(agent, 0):
+                                        local_episode_rewards.append(episode_reward[agent])
+                                        episode_counts[agent] += 1
+                                        pbar.update(1)
                                     del episode_reward[agent]
 
                         if env_done:
@@ -157,7 +182,11 @@ class Agent(ABC):
                 # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
                 if isinstance(evaluation_environments[0], tuple):
                     environments_from_callable = []
-                    for _, env_func in evaluation_environments:
+                    # Factories without episodes to contribute (more factories than episodes) are not instantiated
+                    factory_episodes = split_evenly(n_eval_episodes, len(evaluation_environments))
+                    for (_, env_func), n_factory_episodes in zip(evaluation_environments, factory_episodes):
+                        if n_factory_episodes == 0:
+                            continue
                         instantiated_environment = env_func()
                         if isinstance(instantiated_environment, list):
                             instantiated_environment = envs_to_dummy_vec_env(instantiated_environment)
@@ -185,8 +214,11 @@ class Agent(ABC):
 
                     current_rewards = np.zeros(n_envs)
                     local_episode_rewards = []
+                    # Each sub-environment contributes a fixed number of episodes
+                    episode_targets = np.array(split_evenly(n_episodes, n_envs))
+                    episode_counts = np.zeros(n_envs, dtype=int)
 
-                    while len(local_episode_rewards) < n_episodes:
+                    while (episode_counts < episode_targets).any():
                         observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
                         metric_aggregator.aggregate_step(observations, prev_actions, rewards, dones, infos)
                         actions = [
@@ -199,12 +231,15 @@ class Agent(ABC):
 
                         for i in range(n_envs):
                             if dones[i]:
-                                local_episode_rewards.append(current_rewards[i])
-                                pbar.update(1)
+                                counted = episode_counts[i] < episode_targets[i]
+                                if counted:
+                                    local_episode_rewards.append(current_rewards[i])
+                                    episode_counts[i] += 1
+                                    pbar.update(1)
                                 current_rewards[i] = 0
 
                                 log_episode = (len(metric_aggregator.episode_rewards.get(i, [])) % log_frequency) == 0
-                                if log_episode:
+                                if counted and log_episode:
                                     metric_aggregator.log_aggregated_metrics(
                                         agent_index=i,
                                         num_timesteps=len(local_episode_rewards),
@@ -221,11 +256,13 @@ class Agent(ABC):
                 )
 
             threads = []
-            for evaluation_environment in vectorized_environments:
-                episode_count_per_environment = (n_eval_episodes // len(vectorized_environments)) + 1
+            environment_episodes = split_evenly(n_eval_episodes, len(vectorized_environments))
+            for evaluation_environment, n_environment_episodes in zip(vectorized_environments, environment_episodes):
+                if n_environment_episodes == 0:
+                    continue
                 thread = threading.Thread(
                     target=evaluate_agent_on_environment,
-                    args=(evaluation_environment, episode_count_per_environment),
+                    args=(evaluation_environment, n_environment_episodes),
                 )
                 threads.append(thread)
                 thread.start()
@@ -245,12 +282,12 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def save_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
+    def save_policy_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
         """
         Save the agent as an ONNX model.
 
         Args:
-            file_path (Path): Path to save the ONNX model.
+            file_path (Path): Path to save the policy to (in ONNX format).
         """
         raise NotImplementedError
 
