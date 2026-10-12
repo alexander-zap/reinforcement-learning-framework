@@ -97,7 +97,7 @@ def test_sb3_recording_raises_agent_errors(tmp_path):
     assert not (tmp_path / "replay.mp4").exists()
 
 
-def test_interrupted_sb3_recording_saves_the_video_recorded_so_far(tmp_path, monkeypatch):
+def test_interrupted_sb3_recording_stops_closes_the_recorder_and_saves_no_video(tmp_path, monkeypatch):
     class InterruptingAgent(ConstantActionAgent):
         def choose_action(self, observation, deterministic=False, *args, **kwargs):
             if len(self.observations) == 3:
@@ -112,11 +112,15 @@ def test_interrupted_sb3_recording_saves_the_video_recorded_so_far(tmp_path, mon
 
     monkeypatch.setattr(video_recording.subprocess, "run", run)
     agent = InterruptingAgent()
+    environment = Toy(episode_length=10)
 
-    record_video(agent, Toy(episode_length=10), tmp_path / "replay.mp4", video_length=5)
+    with pytest.raises(KeyboardInterrupt):
+        record_video(agent, environment, tmp_path / "replay.mp4", video_length=5)
 
     assert len(agent.observations) == 3
-    assert len(commands) == 1
+    assert commands == []
+    assert environment.closed  # closing the recorder closes the environment it records
+    assert not (tmp_path / "replay.mp4").exists()
 
 
 @needs_ffmpeg

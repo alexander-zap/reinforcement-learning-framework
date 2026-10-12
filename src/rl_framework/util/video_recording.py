@@ -1,4 +1,3 @@
-import logging
 import subprocess
 import tempfile
 from pathlib import Path
@@ -34,8 +33,8 @@ def record_video(
     and evaluation) before the agent chooses its actions; the recorded frames (`render`) are unaffected. This requires
     a gym.Env: a VecEnv cannot be wrapped and is rejected with a ValueError.
 
-    Errors of the agent, the environment or the video conversion are raised (a failing ffmpeg as RuntimeError).
-    A KeyboardInterrupt during SB3 recording stops it early and saves the video recorded so far.
+    Errors of the agent, the environment or the video conversion are raised (a failing ffmpeg as RuntimeError), and so
+    are interrupts (KeyboardInterrupt): no video is saved then.
     """
     features_extractor = getattr(agent, "features_extractor", None)
     if isinstance(features_extractor, FeaturesExtractor):
@@ -78,11 +77,9 @@ def record_video(
                     action = agent.choose_action(vectorized_observation[0])
                     vectorized_action = np.array([action])
                     vectorized_observation, _, _, _ = env.step(vectorized_action)
-            except KeyboardInterrupt:
-                logging.warning("Video recording interrupted, saving the video recorded so far.")
-
-            # Save the video
-            env.close()
+            finally:
+                # Save the video (also releases the video writer when recording fails or is interrupted)
+                env.close()
 
             # Convert the video with x264 codec (argument list without a shell: paths may contain spaces)
             command = ["ffmpeg", "-y", "-i", str(env.video_path), "-vcodec", "h264", str(file_path)]
