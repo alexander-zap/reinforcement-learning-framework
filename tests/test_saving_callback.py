@@ -15,7 +15,9 @@ def uploads_for_episode(start_timestep, end_timestep, checkpoint_frequency=2):
     connector = Mock()
     callback = SavingCallback(agent=Mock(), connector=connector, checkpoint_frequency=checkpoint_frequency)
     callback.process_episode(
-        EpisodeCallbackContext(batch=None, start_timestep=start_timestep, end_timestep=end_timestep)
+        EpisodeCallbackContext(
+            batch=None, start_timestep=start_timestep, end_timestep=end_timestep, worker_index=0, env_index=0
+        )
     )
     return [call.kwargs["checkpoint_id"] for call in connector.upload.call_args_list]
 

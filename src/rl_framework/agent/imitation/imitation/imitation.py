@@ -41,10 +41,12 @@ from rl_framework.util import (
     LoggingCallback,
     SavingCallback,
     patch_imitation_safe_to_tensor,
+    patch_imitation_sqil_replay_buffer,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
 patch_imitation_safe_to_tensor()
+patch_imitation_sqil_replay_buffer()
 
 IMITATION_ALGORITHM_WRAPPER_REGISTRY: dict[Type[DemonstrationAlgorithm], Type[AlgorithmWrapper]] = {
     BC: BCAlgorithmWrapper,

@@ -55,10 +55,6 @@ def test_load_applies_algorithm_parameters(saved_model):
     assert load(saved_model, n_epochs=3).algorithm.n_epochs == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="stable_baselines.py:344-348 does not pop callback_kwargs; it goes to SB3 load(**kwargs) -> model.__dict__",
-)
 def test_load_applies_callback_kwargs_to_agent_not_model(saved_model):
     agent = load(saved_model, callback_kwargs={"callback_saving_interval": 7})
 
@@ -66,10 +62,6 @@ def test_load_applies_callback_kwargs_to_agent_not_model(saved_model):
     assert not hasattr(agent.algorithm, "callback_kwargs")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="stable_baselines.py:344-348 does not pop reset_optimizer; it goes to SB3 load(**kwargs) -> model.__dict__",
-)
 def test_load_applies_reset_optimizer_to_agent_not_model(saved_model):
     agent = load(saved_model, reset_optimizer=True)
 

@@ -149,8 +149,11 @@ class AsyncStableBaselinesAgent(StableBaselinesAgent):
         *args,
         **kwargs,
     ):
-        super().train(total_timesteps, connector, training_environments, *args, **kwargs)
-        # base sb3 algorithm class doesn't have an implementation of the shutdown method,
-        # only our custom implementation of it - has it
-        if hasattr(self.algorithm, "shutdown"):
-            self.algorithm.shutdown()
+        try:
+            super().train(total_timesteps, connector, training_environments, *args, **kwargs)
+        finally:
+            # Also shut down after failed training, otherwise the async workers keep the process alive.
+            # base sb3 algorithm class doesn't have an implementation of the shutdown method,
+            # only our custom implementation of it - has it
+            if hasattr(self.algorithm, "shutdown"):
+                self.algorithm.shutdown()

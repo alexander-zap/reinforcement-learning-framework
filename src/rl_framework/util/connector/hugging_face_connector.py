@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Text
 
+import numpy as np
 import stable_baselines3
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 from huggingface_hub.repocard import metadata_eval_result, metadata_save
@@ -14,6 +15,15 @@ from rl_framework.util.types import Environment
 from rl_framework.util.video_recording import record_video
 
 from .base_connector import Connector, DownloadConfig, UploadConfig
+
+
+def _numpy_to_json(value):
+    """`default` for json.dump: logged values are often numpy scalars or arrays (e.g., float32 rewards)."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 @dataclass
@@ -138,15 +148,15 @@ class HuggingFaceConnector(Connector):
 
             # Write a JSON file called "results.json" that will contain the evaluation results
             with open(repo_local_path / "results.json", "w") as outfile:
-                json.dump(result_data, outfile)
+                json.dump(result_data, outfile, default=_numpy_to_json)
 
             # Additionally write a JSON file for all manually logged sequences
             with open(repo_local_path / "logged_values.json", "w") as outfile:
-                json.dump(self.value_sequences_to_log, outfile)
+                json.dump(self.value_sequences_to_log, outfile, default=_numpy_to_json)
             with open(repo_local_path / "logged_histograms.json", "w") as outfile:
-                json.dump(self.histogram_sequences_to_log, outfile)
+                json.dump(self.histogram_sequences_to_log, outfile, default=_numpy_to_json)
             with open(repo_local_path / "logged_dicts.json", "w") as outfile:
-                json.dump(self.dicts_to_log, outfile)
+                json.dump(self.dicts_to_log, outfile, default=_numpy_to_json)
 
             # Step 5: Create a system info file
             with open(repo_local_path / "system.json", "w") as outfile:

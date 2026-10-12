@@ -1,6 +1,6 @@
 [project]
 name = "reinforcement-learning-framework"
-version = "0.11.3"
+version = "0.11.4"
 description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and utilities."
 authors = [{ name = "Alexander Zap" }]
 requires-python = ">=3.9,<4"
@@ -40,7 +40,7 @@ dependencies = [
     "pyarrow-hotfix>=0.6,<0.7",
     "pyarrow<=20.0.0",
     "d3rlpy>=2.6,<3",
-    "async-gym-agents>=0.4.1,<0.5",
+    "async-gym-agents>=0.5.0,<0.6",
     "supersuit>=3.9.3,<4",
     "onnx>=1.15.0,<2",
     "seaborn>=0.13,<0.14",

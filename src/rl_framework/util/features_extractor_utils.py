@@ -85,6 +85,13 @@ def wrap_environment_with_features_extractor_preprocessor(
 
         def step(self, actions: dict):
             observations, rewards, terminations, truncations, infos = self.env.step(actions)
+            # Last observation of a finished episode of an agent which restarted on its own (gymnasium's auto-reset
+            #   convention, see StableBaselinesAgent.train); it is preprocessed like the returned observations
+            final_observations = {
+                agent: info["final_observation"] for agent, info in infos.items() if "final_observation" in info
+            }
+            for agent, final_observation in self._preprocess(final_observations).items():
+                infos[agent]["final_observation"] = final_observation
             return self._preprocess(observations), rewards, terminations, truncations, infos
 
     if isinstance(environment, pettingzoo.ParallelEnv):
@@ -125,6 +132,55 @@ def get_sb3_policy_kwargs_for_features_extractor(
     if policy_class is None or "share_features_extractor" in inspect.signature(policy_class.__init__).parameters:
         policy_kwargs.setdefault("share_features_extractor", True)
     return policy_kwargs
+
+
+def check_saved_features_extractor(saved_policy_kwargs: dict, features_extractor: Optional[FeaturesExtractor]) -> None:
+    """
+    Raise if the features extractor of a loaded SB3 model does not match the agent's one: the model keeps its saved
+    features extractor network, while the agent preprocesses the observations with its own features extractor.
+    Since the saved features extractor is an unpickled copy, it is compared by class (name), `output_dim`,
+    `preprocessed_observation_space` and the shapes of its parameters (their values change in training).
+
+    Args:
+        saved_policy_kwargs: `policy_kwargs` of the loaded model.
+        features_extractor: Features extractor of the agent (None if it has none).
+    """
+    saved = (saved_policy_kwargs.get("features_extractor_kwargs") or {}).get("features_extractor")
+    specified = features_extractor
+    if saved is None and specified is None:
+        return
+    if saved is None or specified is None:
+        raise ValueError(
+            f"The loaded model {'has no' if saved is None else 'has a'} features extractor, but the agent "
+            f"{'has one' if saved is None else 'has none'}."
+        )
+
+    def class_name(extractor: FeaturesExtractor) -> str:
+        return f"{type(extractor).__module__}.{type(extractor).__qualname__}"
+
+    def parameter_shapes(extractor: FeaturesExtractor) -> dict:
+        return {name: tuple(value.shape) for name, value in extractor.state_dict().items()}
+
+    differences = []
+    if class_name(saved) != class_name(specified):
+        differences.append(f"class: stored {class_name(saved)}, specified {class_name(specified)}")
+    else:
+        for attribute in ("output_dim", "preprocessed_observation_space"):
+            if getattr(saved, attribute) != getattr(specified, attribute):
+                differences.append(
+                    f"`{attribute}`: stored {getattr(saved, attribute)!r}, specified {getattr(specified, attribute)!r}"
+                )
+        saved_shapes, specified_shapes = parameter_shapes(saved), parameter_shapes(specified)
+        differences += [
+            f"shape of `{name}`: stored {saved_shapes.get(name, 'not set')}, "
+            f"specified {specified_shapes.get(name, 'not set')}"
+            for name in sorted(saved_shapes.keys() | specified_shapes.keys())
+            if saved_shapes.get(name) != specified_shapes.get(name)
+        ]
+    if differences:
+        raise ValueError(
+            f"The agent's features extractor does not match the one of the loaded model: {'; '.join(differences)}"
+        )
 
 
 class StableBaselinesFeaturesExtractor(BaseFeaturesExtractor):

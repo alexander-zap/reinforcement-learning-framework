@@ -63,11 +63,13 @@ class MetricAggregator:
         done_indices = np.where(dones == True)[0]
         if done_indices.size != 0:
             for done_index in done_indices:
-                if not infos[agent_index].get("discard", False):
+                episode_reward = self.episode_reward[done_index]
+                # Reset for every finished episode, so that a discarded episode's reward does not leak into the next
+                self.episode_reward[done_index] = 0
+                if not infos[done_index].get("discard", False):
                     if done_index not in self.episode_rewards:
                         self.episode_rewards[done_index] = []
-                    self.episode_rewards[done_index].append(self.episode_reward[done_index])
-                    self.episode_reward[done_index] = 0
+                    self.episode_rewards[done_index].append(episode_reward)
 
                     if infos[done_index].get("episode_end_reason", None) is not None:
                         if done_index not in self.episode_end_reasons:
@@ -75,9 +77,11 @@ class MetricAggregator:
                         self.episode_end_reasons[done_index].append(infos[done_index]["episode_end_reason"])
 
     def log_aggregated_metrics(self, agent_index, num_timesteps, log_distributions=False, metric_name_prefix=""):
-        self.connector.log_value_with_timestep(
-            num_timesteps, np.mean(self.episode_rewards[agent_index]), f"{metric_name_prefix}Episode reward"
-        )
+        # No recorded (non-discarded) episode since the last reset: nothing to average
+        if self.episode_rewards.get(agent_index):
+            self.connector.log_value_with_timestep(
+                num_timesteps, np.mean(self.episode_rewards[agent_index]), f"{metric_name_prefix}Episode reward"
+            )
         # Log other tracked step metrics
         for metric_name, per_agent_values in self.episode_step_metrics.items():
             if per_agent_values[agent_index]:

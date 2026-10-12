@@ -8,6 +8,11 @@ import imageio
 import numpy as np
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecVideoRecorder
 
+from rl_framework.util.features_extractor_utils import (
+    FeaturesExtractor,
+    wrap_environment_with_features_extractor_preprocessor,
+)
+
 
 def record_video(
     agent, video_recording_environment, file_path: Path, fps: int = 1, video_length=1000, sb3_replay: bool = True
@@ -24,7 +29,21 @@ def record_video(
         sb3_replay (bool): Determines recording mode
             If True: Use SB3's VecVideoRecorder and FFMPEG to record video
             If False: Use simple recording method (saving RGB outputs from environment render)
+
+    If the agent has a features extractor, the environment's observations are preprocessed with it (like in training
+    and evaluation) before the agent chooses its actions; the recorded frames (`render`) are unaffected. This requires
+    a gym.Env: a VecEnv cannot be wrapped and is rejected with a ValueError.
     """
+    features_extractor = getattr(agent, "features_extractor", None)
+    if isinstance(features_extractor, FeaturesExtractor):
+        if not isinstance(video_recording_environment, gym.Env):
+            raise ValueError(
+                "Recording an agent with a features extractor requires a gym.Env as video recording environment "
+                f"(to preprocess its observations), got {type(video_recording_environment).__name__}."
+            )
+        video_recording_environment = wrap_environment_with_features_extractor_preprocessor(
+            video_recording_environment, features_extractor
+        )
 
     if sb3_replay:
         # Create a Stable-baselines3 vector environment (VecEnv)
