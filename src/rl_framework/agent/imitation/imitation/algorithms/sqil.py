@@ -46,7 +46,9 @@ class SQILAlgorithmWrapper(AlgorithmWrapper):
         ), "SQILReplayBuffer does not support Dict observation spaces."
 
         if self.features_extractor:
-            self.policy_kwargs.update(get_sb3_policy_kwargs_for_features_extractor(self.features_extractor))
+            self.policy_kwargs = get_sb3_policy_kwargs_for_features_extractor(
+                self.features_extractor, self.policy_class, self.policy_kwargs
+            )
 
         parameters = {
             "venv": vectorized_environment,

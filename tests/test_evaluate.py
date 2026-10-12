@@ -53,7 +53,7 @@ class ConstantActionAgent(Agent):
     def choose_action(self, observation, deterministic, *args, **kwargs):
         return 0
 
-    def save_as_onnx(self, file_path, *args, **kwargs):
+    def save_policy_as_onnx(self, file_path, *args, **kwargs):
         raise NotImplementedError
 
     def save_to_file(self, file_path, *args, **kwargs):
