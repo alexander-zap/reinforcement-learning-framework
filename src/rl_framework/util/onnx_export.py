@@ -11,16 +11,24 @@ values and log-probabilities of actor-critic policies:
       channel-last images in `predict` and with `VecTransposeImage` in training).
     - MaskablePPO only: `action_masks` (batch, number of action logits), 1 for allowed and 0 for masked actions,
       like SB3-contrib's `action_masks` (all ones: no masking).
+    - RecurrentPPO only: `episode_starts` (batch,), 1 at the first step of an episode (resets the LSTM states), and
+      the LSTM states `lstm_actor_h`, `lstm_actor_c` and, with a separate critic LSTM (`enable_critic_lstm`),
+      `lstm_critic_h`, `lstm_critic_c`, each (n_lstm_layers, batch, lstm_hidden_size), i.e. batch axis 1.
+      Zeros at the start; afterward the `*_out` outputs of the previous step.
     - Stochastic export only: external noise instead of random number nodes, so that sampling is reproducible:
       `noise_u` (Uniform(0, 1)) for discrete action spaces, one value per action logit (Gumbel-max sampling) or per
       binary action (MultiBinary: action 1 if the noise is below its probability);
-      `noise_eps` (Normal(0, 1), one value per action dimension; reparameterization) for Box action spaces.
+      `noise_eps` (Normal(0, 1), one value per action dimension; reparameterization) for Box action spaces. For
+      policies trained with gSDE, the action is sampled from gSDE's per-step distribution (its state-dependent
+      standard deviation), i.e. like gSDE resampling its exploration matrix at every step.
 - Outputs (dynamic batch axis `batch`):
     - `action`: Discrete/MultiDiscrete/MultiBinary actions as int64 of shape (batch, number of action heads), i.e.
       (batch, 1) for Discrete; Box actions postprocessed like SB3's `predict` (clipped to the action space, or
       unscaled for squashing policies).
-    - Actor-critic policies (PPO, A2C, TRPO, MaskablePPO): `values` (batch, 1) and `log_prob` (batch,) of the
-      (unpostprocessed) action, like SB3's `policy.forward`.
+    - Actor-critic policies (PPO, A2C, TRPO, MaskablePPO, RecurrentPPO): `values` (batch, 1) and `log_prob` (batch,)
+      of the (unpostprocessed) action, like SB3's `policy.forward`.
+    - RecurrentPPO: the new LSTM states `lstm_actor_h_out`, `lstm_actor_c_out` (and `lstm_critic_h_out`,
+      `lstm_critic_c_out`), batch axis 1.
     - SAC, TQC, CrossQ: `log_prob` (batch,) of the squashed action.
     - DQN, QR-DQN: `q_values` (batch, number of actions); for QR-DQN the mean over the quantiles.
 - The graph includes the observation preprocessing and the features extractor, but not the agent's
@@ -34,12 +42,14 @@ from typing import Dict, List, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 import torch
+from sb3_contrib.ars.policies import ARSPolicy
 from sb3_contrib.common.maskable.distributions import (
     MaskableBernoulliDistribution,
     MaskableCategoricalDistribution,
     MaskableMultiCategoricalDistribution,
 )
 from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
+from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 from sb3_contrib.crossq.policies import CrossQPolicy
 from sb3_contrib.qrdqn.policies import QRDQNPolicy
 from sb3_contrib.tqc.policies import TQCPolicy
@@ -48,6 +58,7 @@ from stable_baselines3.common.distributions import (
     CategoricalDistribution,
     DiagGaussianDistribution,
     MultiCategoricalDistribution,
+    StateDependentNoiseDistribution,
 )
 from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
 from stable_baselines3.dqn.policies import DQNPolicy
@@ -67,11 +78,10 @@ def export_sb3_policy_as_onnx(policy: BasePolicy, file_path: Path, deterministic
     Export an SB3 policy to ONNX (see the module docstring for the exported inputs and outputs).
 
     Supported policies:
-        - actor-critic policies (PPO, A2C, TRPO, MaskablePPO) with Discrete, MultiDiscrete, MultiBinary or Box action
-          spaces (without gSDE),
-        - SAC, TQC, CrossQ (without gSDE),
-        - TD3/DDPG, DQN and QR-DQN (deterministic only: their exploration is added by the algorithm).
-    Recurrent policies (RecurrentPPO) and ARS are not supported.
+        - actor-critic policies (PPO, A2C, TRPO, MaskablePPO, RecurrentPPO) with Discrete, MultiDiscrete, MultiBinary
+          or Box action spaces (also trained with gSDE),
+        - SAC, TQC, CrossQ (also trained with gSDE),
+        - TD3/DDPG, DQN, QR-DQN and ARS (deterministic only: their exploration is added by the algorithm).
     The policy's training mode is restored after the export.
 
     Args:
@@ -96,13 +106,15 @@ def export_sb3_policy_as_onnx(policy: BasePolicy, file_path: Path, deterministic
             opset_version=17,
             input_names=input_names,
             output_names=output_names,
-            dynamic_axes={name: {0: "batch"} for name in input_names + output_names},
+            dynamic_axes={name: {onnx_policy.batch_axis(name): "batch"} for name in input_names + output_names},
         )
     finally:
         policy.set_training_mode(policy_was_training)
 
 
 def _build_onnx_policy(policy: BasePolicy, deterministic: bool) -> "OnnxPolicy":
+    if isinstance(policy, RecurrentActorCriticPolicy):
+        return RecurrentActorCriticOnnxPolicy(policy, deterministic)
     if isinstance(policy, (ActorCriticPolicy, MaskableActorCriticPolicy)):
         return ActorCriticOnnxPolicy(policy, deterministic)
     if isinstance(policy, (SACPolicy, TQCPolicy, CrossQPolicy)):
@@ -111,6 +123,8 @@ def _build_onnx_policy(policy: BasePolicy, deterministic: bool) -> "OnnxPolicy":
         return TD3OnnxPolicy(policy, deterministic)
     if isinstance(policy, (DQNPolicy, QRDQNPolicy)):
         return QValueOnnxPolicy(policy, deterministic)
+    if isinstance(policy, ARSPolicy):
+        return ARSOnnxPolicy(policy, deterministic)
     raise NotImplementedError(f"ONNX export is not supported for policies of type {type(policy).__name__}.")
 
 
@@ -134,9 +148,14 @@ class OnnxPolicy(torch.nn.Module):
     def output_names(self) -> List[str]:
         raise NotImplementedError
 
-    def extra_input_dims(self) -> Dict[str, int]:
-        """Inputs between the observations and the noise (name: size per batch entry)."""
+    def extra_inputs(self) -> Dict[str, Tuple[Tuple[int, ...], float]]:
+        """
+        Inputs between the observations and the noise: name -> (shape for a batch of 1, value of the dummy input).
+        """
         return {}
+
+    def batch_axis(self, name: str) -> int:
+        return 0
 
     def noise_name(self) -> str:
         return "noise_eps" if isinstance(self.action_space, gym.spaces.Box) else "noise_u"
@@ -146,7 +165,7 @@ class OnnxPolicy(torch.nn.Module):
 
     def input_names(self) -> List[str]:
         noise_names = [] if self.deterministic else [self.noise_name()]
-        return self.observation_names + list(self.extra_input_dims()) + noise_names
+        return self.observation_names + list(self.extra_inputs()) + noise_names
 
     def dummy_inputs(self) -> Tuple[torch.Tensor, ...]:
         device = self.policy.device
@@ -157,7 +176,8 @@ class OnnxPolicy(torch.nn.Module):
         )
         inputs = [torch.zeros((1, *space.shape), dtype=torch.float32, device=device) for space in spaces]
         inputs += [
-            torch.ones((1, size), dtype=torch.float32, device=device) for size in self.extra_input_dims().values()
+            torch.full(shape, value, dtype=torch.float32, device=device)
+            for shape, value in self.extra_inputs().values()
         ]
         if not self.deterministic:
             inputs.append(torch.zeros((1, self.noise_dim()), dtype=torch.float32, device=device))
@@ -166,11 +186,9 @@ class OnnxPolicy(torch.nn.Module):
     # --- forward ---
 
     def forward(self, *inputs: torch.Tensor):
-        observations = inputs[: len(self.observation_names)]
-        extra_names = list(self.extra_input_dims())
-        extras = dict(
-            zip(extra_names, inputs[len(self.observation_names) : len(self.observation_names) + len(extra_names)])
-        )
+        n_observations, extra_names = len(self.observation_names), list(self.extra_inputs())
+        observations = inputs[:n_observations]
+        extras = dict(zip(extra_names, inputs[n_observations : n_observations + len(extra_names)]))
         noise = None if self.deterministic else inputs[-1]
         observation = dict(zip(self.observation_names, observations)) if self.is_dict_observation else observations[0]
         return self.forward_policy(observation, extras, noise)
@@ -188,8 +206,10 @@ class OnnxPolicy(torch.nn.Module):
         """Rescale actions from [-1, 1] to the action space (SB3 `predict` for squashing policies)."""
         return self.action_low + 0.5 * (scaled_action + 1.0) * (self.action_high - self.action_low)
 
-    def reshape_box_action(self, action: torch.Tensor) -> torch.Tensor:
-        return action.reshape((-1, *self.action_space.shape))
+    def postprocess_box_action(self, action: torch.Tensor) -> torch.Tensor:
+        """Shape of the action space, then unscaled (squashing policies) or clipped, like SB3's `predict`."""
+        action = action.reshape((-1, *self.action_space.shape))
+        return self.unscale_action(action) if self.policy.squash_output else self.clip_action(action)
 
 
 def categorical_actions_and_log_prob(
@@ -229,10 +249,30 @@ def bernoulli_actions_and_log_prob(
     return actions, log_prob.sum(dim=1)
 
 
-def gaussian_log_prob(action: torch.Tensor, mean: torch.Tensor, log_std: torch.Tensor) -> torch.Tensor:
-    """Log-probability of a diagonal Gaussian, summed over the action dimensions (batch,)."""
-    log_probabilities = -((action - mean) ** 2) / (2 * torch.exp(2 * log_std)) - log_std - 0.5 * math.log(2 * math.pi)
-    return log_probabilities.sum(dim=1)
+def gaussian_actions_and_log_prob(
+    mean: torch.Tensor, std: torch.Tensor, noise_eps: Optional[torch.Tensor], squash: bool
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Gaussian actions (the mean without noise, otherwise `mean + std * noise_eps`) and their log-probability, summed
+    over the action dimensions. With `squash`, the actions are squashed with tanh and the log-probability corrected
+    accordingly (like SB3's squashed Gaussian distributions).
+    """
+    action = mean if noise_eps is None else mean + std * noise_eps
+    log_prob = (-((action - mean) ** 2) / (2 * std**2) - torch.log(std) - 0.5 * math.log(2 * math.pi)).sum(dim=1)
+    if squash:
+        action = torch.tanh(action)
+        log_prob = log_prob - torch.log(1 - action**2 + SQUASH_EPSILON).sum(dim=1)
+    return action, log_prob
+
+
+def gsde_std(action_distribution: StateDependentNoiseDistribution, log_std: torch.Tensor, latent_sde: torch.Tensor):
+    """
+    Standard deviation of gSDE's per-step action distribution: the noise `latent_sde @ exploration_matrix` with
+    `exploration_matrix ~ N(0, std^2)` has the variance `latent_sde^2 @ std^2` (like
+    `StateDependentNoiseDistribution.proba_distribution`).
+    """
+    variance = torch.mm(latent_sde**2, action_distribution.get_std(log_std) ** 2)
+    return torch.sqrt(variance + action_distribution.epsilon)
 
 
 class ActorCriticOnnxPolicy(OnnxPolicy):
@@ -240,14 +280,11 @@ class ActorCriticOnnxPolicy(OnnxPolicy):
 
     def __init__(self, policy: BasePolicy, deterministic: bool):
         super().__init__(policy, deterministic)
-        if getattr(policy, "use_sde", False):
-            raise NotImplementedError("ONNX export of policies with gSDE (use_sde=True) is not supported.")
-        if hasattr(policy, "lstm_actor"):
-            raise NotImplementedError("ONNX export of recurrent policies is not supported.")
         self.is_maskable = isinstance(policy, MaskableActorCriticPolicy)
         action_distribution = policy.action_dist
         self.head_dims: Optional[List[int]] = None
         self.is_bernoulli = False
+        self.is_gsde = isinstance(action_distribution, StateDependentNoiseDistribution)
         # Maskable MultiBinary actions are categorical heads with two choices each (MaskableBernoulliDistribution)
         if isinstance(action_distribution, MaskableBernoulliDistribution):
             self.head_dims = [2] * int(np.prod(self.action_space.shape))
@@ -257,7 +294,7 @@ class ActorCriticOnnxPolicy(OnnxPolicy):
             self.head_dims = [int(n) for n in self.action_space.nvec]
         elif isinstance(action_distribution, BernoulliDistribution):
             self.is_bernoulli = True
-        elif not isinstance(action_distribution, DiagGaussianDistribution):
+        elif not isinstance(action_distribution, (DiagGaussianDistribution, StateDependentNoiseDistribution)):
             raise NotImplementedError(
                 f"ONNX export is not supported for the action distribution {type(action_distribution).__name__}."
             )
@@ -265,15 +302,15 @@ class ActorCriticOnnxPolicy(OnnxPolicy):
     def output_names(self) -> List[str]:
         return ["action", "values", "log_prob"]
 
-    def extra_input_dims(self) -> Dict[str, int]:
-        return {"action_masks": sum(self.head_dims)} if self.is_maskable else {}
+    def extra_inputs(self) -> Dict[str, Tuple[Tuple[int, ...], float]]:
+        return {"action_masks": ((1, sum(self.head_dims)), 1.0)} if self.is_maskable else {}
 
     def noise_dim(self) -> int:
         return sum(self.head_dims) if self.head_dims else int(np.prod(self.action_space.shape))
 
-    def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
+    def latents(self, observation, extras: Dict[str, torch.Tensor]):
+        """Latent codes of the actor and critic, and further outputs (like `ActorCriticPolicy.forward`)."""
         policy = self.policy
-        # Like `ActorCriticPolicy.forward`
         features = policy.extract_features(observation)
         if policy.share_features_extractor:
             latent_pi, latent_vf = policy.mlp_extractor(features)
@@ -281,6 +318,11 @@ class ActorCriticOnnxPolicy(OnnxPolicy):
             pi_features, vf_features = features
             latent_pi = policy.mlp_extractor.forward_actor(pi_features)
             latent_vf = policy.mlp_extractor.forward_critic(vf_features)
+        return latent_pi, latent_vf, ()
+
+    def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
+        policy = self.policy
+        latent_pi, latent_vf, further_outputs = self.latents(observation, extras)
         values = policy.value_net(latent_vf)
         action_output = policy.action_net(latent_pi)
 
@@ -289,18 +331,73 @@ class ActorCriticOnnxPolicy(OnnxPolicy):
                 masked_logit = torch.full_like(action_output, MASKED_LOGIT)
                 action_output = torch.where(extras["action_masks"] > 0.5, action_output, masked_logit)
             action, log_prob = categorical_actions_and_log_prob(action_output, self.head_dims, noise)
-            return action, values, log_prob
-
-        if self.is_bernoulli:
+        elif self.is_bernoulli:
             action, log_prob = bernoulli_actions_and_log_prob(action_output, noise)
-            return action, values, log_prob
+        else:
+            if self.is_gsde:
+                std = gsde_std(policy.action_dist, policy.log_std, latent_pi)
+                squash = policy.action_dist.bijector is not None
+            else:
+                std, squash = torch.exp(policy.log_std).expand_as(action_output), False
+            action, log_prob = gaussian_actions_and_log_prob(action_output, std, noise, squash)
+            action = self.postprocess_box_action(action)
+        return (action, values, log_prob) + tuple(further_outputs)
 
-        mean, log_std = action_output, policy.log_std.expand_as(action_output)
-        action = mean if noise is None else mean + torch.exp(log_std) * noise
-        log_prob = gaussian_log_prob(action, mean, log_std)
-        action = self.reshape_box_action(action)
-        action = self.unscale_action(action) if policy.squash_output else self.clip_action(action)
-        return action, values, log_prob
+
+class RecurrentActorCriticOnnxPolicy(ActorCriticOnnxPolicy):
+    """
+    RecurrentPPO (`RecurrentActorCriticPolicy`): one step per call, with `episode_starts` and the LSTM states as
+    inputs and the new LSTM states as further outputs.
+    """
+
+    def __init__(self, policy: RecurrentActorCriticPolicy, deterministic: bool):
+        super().__init__(policy, deterministic)
+        lstm = policy.lstm_actor
+        self.state_shape = (lstm.num_layers, 1, lstm.hidden_size)
+        self.state_names = ["lstm_actor_h", "lstm_actor_c"]
+        if policy.lstm_critic is not None:
+            self.state_names += ["lstm_critic_h", "lstm_critic_c"]
+
+    def output_names(self) -> List[str]:
+        return super().output_names() + [f"{name}_out" for name in self.state_names]
+
+    def extra_inputs(self) -> Dict[str, Tuple[Tuple[int, ...], float]]:
+        return {"episode_starts": ((1,), 0.0), **{name: (self.state_shape, 0.0) for name in self.state_names}}
+
+    def batch_axis(self, name: str) -> int:
+        return 1 if name.startswith("lstm_") else 0
+
+    @staticmethod
+    def lstm_step(lstm: torch.nn.LSTM, features, hidden, cell, episode_starts):
+        """
+        One LSTM step, with the states reset at episode starts (like `RecurrentActorCriticPolicy._process_sequence`,
+        without its branching on tensor values, which tracing would fix).
+        """
+        keep = (1.0 - episode_starts).view(1, -1, 1)
+        output, (hidden, cell) = lstm(features.unsqueeze(0), (keep * hidden, keep * cell))
+        return output.squeeze(0), hidden, cell
+
+    def latents(self, observation, extras: Dict[str, torch.Tensor]):
+        policy = self.policy
+        features = policy.extract_features(observation)
+        pi_features, vf_features = (features, features) if policy.share_features_extractor else features
+        episode_starts = extras["episode_starts"]
+        latent_pi, actor_h, actor_c = self.lstm_step(
+            policy.lstm_actor, pi_features, extras["lstm_actor_h"], extras["lstm_actor_c"], episode_starts
+        )
+        states = [actor_h, actor_c]
+        if policy.lstm_critic is not None:
+            latent_vf, critic_h, critic_c = self.lstm_step(
+                policy.lstm_critic, vf_features, extras["lstm_critic_h"], extras["lstm_critic_c"], episode_starts
+            )
+            states += [critic_h, critic_c]
+        elif policy.shared_lstm:
+            latent_vf = latent_pi
+        else:
+            latent_vf = policy.critic(vf_features)
+        latent_pi = policy.mlp_extractor.forward_actor(latent_pi)
+        latent_vf = policy.mlp_extractor.forward_critic(latent_vf)
+        return latent_pi, latent_vf, states
 
 
 class SquashedGaussianActorOnnxPolicy(OnnxPolicy):
@@ -309,11 +406,6 @@ class SquashedGaussianActorOnnxPolicy(OnnxPolicy):
     actor's `action_log_prob`).
     """
 
-    def __init__(self, policy: BasePolicy, deterministic: bool):
-        super().__init__(policy, deterministic)
-        if policy.actor.use_sde:
-            raise NotImplementedError("ONNX export of policies with gSDE (use_sde=True) is not supported.")
-
     def output_names(self) -> List[str]:
         return ["action", "log_prob"]
 
@@ -321,43 +413,40 @@ class SquashedGaussianActorOnnxPolicy(OnnxPolicy):
         return int(np.prod(self.action_space.shape))
 
     def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
-        mean, log_std, _ = self.policy.actor.get_action_dist_params(observation)
-        gaussian_action = mean if noise is None else mean + torch.exp(log_std) * noise
-        squashed_action = torch.tanh(gaussian_action)
-        log_prob = gaussian_log_prob(gaussian_action, mean, log_std) - torch.log(
-            1 - squashed_action**2 + SQUASH_EPSILON
-        ).sum(dim=1)
-        return self.unscale_action(self.reshape_box_action(squashed_action)), log_prob
+        actor = self.policy.actor
+        mean, log_std, distribution_kwargs = actor.get_action_dist_params(observation)
+        if actor.use_sde:
+            std = gsde_std(actor.action_dist, log_std, distribution_kwargs["latent_sde"])
+        else:
+            std = torch.exp(log_std)
+        action, log_prob = gaussian_actions_and_log_prob(mean, std, noise, squash=True)
+        return self.postprocess_box_action(action), log_prob
 
 
-class TD3OnnxPolicy(OnnxPolicy):
-    """TD3, DDPG (`TD3Policy`): outputs `action`. The exploration noise is not part of the policy."""
+class DeterministicOnnxPolicy(OnnxPolicy):
+    """Policies without policy-side sampling (their exploration is added by the algorithm)."""
 
-    def __init__(self, policy: TD3Policy, deterministic: bool):
+    def __init__(self, policy: BasePolicy, deterministic: bool):
         if not deterministic:
             raise ValueError(
-                "TD3/DDPG policies are deterministic (their exploration noise is added by the algorithm); "
+                f"{type(policy).__name__} policies are deterministic (their exploration is added by the algorithm); "
                 "export them with deterministic=True."
             )
         super().__init__(policy, deterministic)
+
+
+class TD3OnnxPolicy(DeterministicOnnxPolicy):
+    """TD3, DDPG (`TD3Policy`): outputs `action`."""
 
     def output_names(self) -> List[str]:
         return ["action"]
 
     def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
-        return self.unscale_action(self.reshape_box_action(self.policy.actor(observation)))
+        return self.postprocess_box_action(self.policy.actor(observation))
 
 
-class QValueOnnxPolicy(OnnxPolicy):
+class QValueOnnxPolicy(DeterministicOnnxPolicy):
     """DQN (`DQNPolicy`), QR-DQN (`QRDQNPolicy`): outputs the greedy `action` (batch, 1) and the `q_values`."""
-
-    def __init__(self, policy: BasePolicy, deterministic: bool):
-        if not deterministic:
-            raise ValueError(
-                "DQN/QR-DQN policies are greedy (epsilon-greedy exploration is added by the algorithm); "
-                "export them with deterministic=True."
-            )
-        super().__init__(policy, deterministic)
 
     def output_names(self) -> List[str]:
         return ["action", "q_values"]
@@ -369,3 +458,17 @@ class QValueOnnxPolicy(OnnxPolicy):
         else:
             q_values = self.policy.q_net(observation)
         return q_values.argmax(dim=1, keepdim=True), q_values
+
+
+class ARSOnnxPolicy(DeterministicOnnxPolicy):
+    """ARS (`ARSPolicy`, `ARSLinearPolicy`): outputs `action` (like `ARSPolicy.forward` and `predict`)."""
+
+    def output_names(self) -> List[str]:
+        return ["action"]
+
+    def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
+        policy = self.policy
+        output = policy.action_net(policy.extract_features(observation, policy.features_extractor))
+        if isinstance(self.action_space, gym.spaces.Box):
+            return self.postprocess_box_action(output)
+        return output.argmax(dim=1, keepdim=True)

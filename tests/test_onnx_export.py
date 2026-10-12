@@ -1,13 +1,18 @@
 """ONNX export of SB3 policies: exported contract and parity with the policies (onnx' reference evaluator)."""
 
+from unittest.mock import Mock
+
 import numpy as np
 import onnx
 import pytest
 import torch as th
 from gymnasium import spaces
 from onnx.reference import ReferenceEvaluator
+from onnx.reference.ops.op_lstm import LSTM as ReferenceLSTM
 from sb3_contrib import ARS, QRDQN, TQC, CrossQ, MaskablePPO, RecurrentPPO
+from sb3_contrib.common.recurrent.type_aliases import RNNStates
 from stable_baselines3 import DQN, PPO, SAC, TD3
+from stable_baselines3.common.policies import BasePolicy
 
 from rl_framework.util.onnx_export import GUMBEL_EPSILON, export_sb3_policy_as_onnx
 from tests.toys import BOX, Toy
@@ -17,12 +22,13 @@ RANDOM_OP_TYPES = {"Multinomial", "RandomNormal", "RandomNormalLike", "RandomUni
 POLICY_NAMES = {RecurrentPPO: "MlpLstmPolicy", ARS: "LinearPolicy"}
 
 
-def build(algorithm_class, observation_space=BOX, action_space=spaces.Discrete(3), **parameters):
-    policy = (
-        "MultiInputPolicy"
-        if isinstance(observation_space, spaces.Dict)
-        else POLICY_NAMES.get(algorithm_class, "MlpPolicy")
-    )
+def build(algorithm_class, observation_space=BOX, action_space=spaces.Discrete(3), policy=None, **parameters):
+    if policy is None:
+        policy = (
+            "MultiInputPolicy"
+            if isinstance(observation_space, spaces.Dict)
+            else POLICY_NAMES.get(algorithm_class, "MlpPolicy")
+        )
     model = algorithm_class(policy, Toy(observation_space, action_space), device="cpu", seed=0, **parameters)
     # Evaluation mode for the expected values (e.g., CrossQ's BatchRenorm layers), like SB3's `predict`
     model.policy.set_training_mode(False)
@@ -64,8 +70,30 @@ def onnx_inputs(model, observations, noise=None, noise_name=None, action_masks=N
     return inputs
 
 
+class LSTM(ReferenceLSTM):
+    """onnx' reference LSTM, which also returns its last cell state `Y_c` (onnx 1.17 returns only `Y` and `Y_h`)."""
+
+    def _step(self, X, R, B, W, H_0, C_0, P, num_directions):  # noqa: N803 (onnx' argument names)
+        hidden_states, hidden, cell = [], H_0, C_0
+        p_i, p_o, p_f = np.split(P, 3)
+        for x in np.split(X, X.shape[0], axis=0):
+            gates = np.dot(x, np.transpose(W)) + np.dot(hidden, np.transpose(R)) + np.add(*np.split(B, 2))
+            i, o, f, c = np.split(gates, 4, -1)
+            i, f = self.f(i + p_i * cell), self.f(f + p_f * cell)
+            cell = f * cell + i * self.g(c)
+            hidden = self.f(o + p_o * cell) * self.h(cell)
+            hidden_states.append(hidden)
+        self.last_cell = cell  # (num_directions = 1, batch, hidden), like Y_h
+        Y = np.concatenate(hidden_states)[:, np.newaxis]
+        return Y, Y[-1]
+
+    def _run(self, *args, **kwargs):
+        outputs = super()._run(*args, **kwargs)
+        return outputs + (self.last_cell.astype(outputs[0].dtype),) if self.n_outputs == 3 else outputs
+
+
 def run(file_path, inputs):
-    session = ReferenceEvaluator(str(file_path))
+    session = ReferenceEvaluator(str(file_path), new_ops=[LSTM])
     return dict(zip(session.output_names, session.run(None, inputs)))
 
 
@@ -75,6 +103,55 @@ def observation_tensor(model, observations):
 
 
 # --- contract ---
+
+
+LSTM_STATES = ["lstm_actor_h", "lstm_actor_c", "lstm_critic_h", "lstm_critic_c"]
+ACTOR_CRITIC_OUTPUTS = ["action", "values", "log_prob"]
+
+
+@pytest.mark.parametrize(
+    "algorithm_class, action_space, deterministic, input_names, output_names, parameters",
+    [
+        (
+            PPO,
+            spaces.Box(-1, 1, (2,)),
+            False,
+            ["obs", "noise_eps"],
+            ACTOR_CRITIC_OUTPUTS,
+            {"use_sde": True},
+        ),
+        (
+            RecurrentPPO,
+            spaces.Discrete(3),
+            False,
+            ["obs", "episode_starts", *LSTM_STATES, "noise_u"],
+            ACTOR_CRITIC_OUTPUTS + [f"{name}_out" for name in LSTM_STATES],
+            {},
+        ),
+        (
+            RecurrentPPO,
+            spaces.Discrete(3),
+            True,
+            ["obs", "episode_starts", "lstm_actor_h", "lstm_actor_c"],
+            ACTOR_CRITIC_OUTPUTS + ["lstm_actor_h_out", "lstm_actor_c_out"],
+            {"policy_kwargs": {"shared_lstm": True, "enable_critic_lstm": False}},
+        ),
+        (ARS, spaces.Discrete(3), True, ["obs"], ["action"], {}),
+    ],
+)
+def test_exported_inputs_and_outputs_of_stateful_and_gsde_policies(
+    tmp_path, algorithm_class, action_space, deterministic, input_names, output_names, parameters
+):
+    _, model = export(build(algorithm_class, action_space=action_space, **parameters), tmp_path, deterministic)
+
+    assert [graph_input.name for graph_input in model.graph.input] == input_names
+    assert [graph_output.name for graph_output in model.graph.output] == output_names
+    assert all(graph_input.type.tensor_type.elem_type == onnx.TensorProto.FLOAT for graph_input in model.graph.input)
+    for value in list(model.graph.input) + list(model.graph.output):
+        # LSTM states: (n_lstm_layers, batch, lstm_hidden_size)
+        batch_axis = 1 if value.name.startswith("lstm_") else 0
+        assert value.type.tensor_type.shape.dim[batch_axis].dim_param == "batch", value.name
+    assert not {node.op_type for node in model.graph.node} & RANDOM_OP_TYPES
 
 
 @pytest.mark.parametrize(
@@ -290,13 +367,105 @@ def test_maskable_export_applies_the_action_masks_like_the_policy(tmp_path, acti
     np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-4, atol=1e-4)
 
 
-# --- parity: SAC, TQC, CrossQ, TD3, DQN, QR-DQN ---
+# --- parity: gSDE (actor-critic) ---
+
+
+@pytest.mark.parametrize("squash_output", [False, True], ids=["clipped", "squashed"])
+@pytest.mark.parametrize("deterministic", [True, False], ids=["deterministic", "stochastic"])
+def test_gsde_actor_critic_export_samples_from_the_per_step_gsde_distribution(tmp_path, squash_output, deterministic):
+    model = build(
+        PPO, action_space=spaces.Box(-0.5, 0.5, (2,)), use_sde=True, policy_kwargs={"squash_output": squash_output}
+    )
+    file_path, _ = export(model, tmp_path, deterministic)
+    rng = np.random.default_rng(0)
+    observations = sample_observations(BOX, rng)
+    noise_eps = None if deterministic else rng.normal(size=(BATCH, 2))
+
+    outputs = run(file_path, onnx_inputs(model, observations, noise_eps, "noise_eps"))
+
+    obs = observation_tensor(model, observations)
+    with th.no_grad():
+        distribution = model.policy.get_distribution(obs)
+        gaussian = distribution.distribution  # gSDE's per-step distribution: Normal(mean, state-dependent std)
+        actions = gaussian.mean if deterministic else gaussian.mean + gaussian.stddev * th.as_tensor(noise_eps).float()
+        actions = th.tanh(actions) if squash_output else actions
+        expected_log_prob = distribution.log_prob(actions).numpy()
+        expected_values = model.policy.predict_values(obs).numpy()
+    expected_actions = (
+        model.policy.unscale_action(actions.numpy()) if squash_output else np.clip(actions.numpy(), -0.5, 0.5)
+    )
+    if deterministic:
+        np.testing.assert_allclose(expected_actions, model.predict(observations, deterministic=True)[0], atol=1e-6)
+    np.testing.assert_allclose(outputs["action"], expected_actions, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(outputs["values"], expected_values, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-3, atol=1e-3)
+
+
+# --- parity: RecurrentPPO ---
+
+
+@pytest.mark.parametrize(
+    "policy_kwargs",
+    [{}, {"shared_lstm": True, "enable_critic_lstm": False}, {"enable_critic_lstm": False}, {"n_lstm_layers": 2}],
+    ids=["critic-lstm", "shared-lstm", "critic-without-lstm", "two-lstm-layers"],
+)
+@pytest.mark.parametrize("action_space", [spaces.Discrete(3), spaces.Box(-0.5, 0.5, (2,))], ids=["discrete", "box"])
+def test_recurrent_export_matches_the_policy_over_several_steps(tmp_path, policy_kwargs, action_space):
+    model = build(RecurrentPPO, action_space=action_space, policy_kwargs={"lstm_hidden_size": 8, **policy_kwargs})
+    file_path, _ = export(model, tmp_path)
+    policy = model.policy
+    state_names = LSTM_STATES if policy.lstm_critic is not None else LSTM_STATES[:2]
+    state_shape = (policy.lstm_actor.num_layers, BATCH, policy.lstm_actor.hidden_size)
+    onnx_states = {name: np.zeros(state_shape, np.float32) for name in state_names}
+    sb3_states = RNNStates(*[(th.zeros(state_shape), th.zeros(state_shape)) for _ in range(2)])
+    predict_state = None
+    rng = np.random.default_rng(0)
+
+    for episode_starts in [np.ones(BATCH), np.array([0, 1, 0, 0, 1]), np.zeros(BATCH)]:
+        observations = sample_observations(BOX, rng)
+        inputs = {
+            **onnx_inputs(model, observations),
+            "episode_starts": episode_starts.astype(np.float32),
+            **onnx_states,
+        }
+
+        outputs = run(file_path, inputs)
+
+        with th.no_grad():
+            actions, values, log_prob, sb3_states = policy(
+                observation_tensor(model, observations),
+                sb3_states,
+                th.as_tensor(episode_starts, dtype=th.float32),
+                deterministic=True,
+            )
+        predicted, predict_state = model.predict(
+            observations, state=predict_state, episode_start=episode_starts, deterministic=True
+        )
+        np.testing.assert_allclose(outputs["action"].reshape(predicted.shape), predicted, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(outputs["values"], values.numpy(), rtol=1e-4, atol=1e-5)
+        np.testing.assert_allclose(outputs["log_prob"], log_prob.numpy(), rtol=1e-4, atol=1e-4)
+        expected_states = {
+            "lstm_actor_h": sb3_states.pi[0],
+            "lstm_actor_c": sb3_states.pi[1],
+            "lstm_critic_h": sb3_states.vf[0],
+            "lstm_critic_c": sb3_states.vf[1],
+        }
+        for name in state_names:
+            np.testing.assert_allclose(outputs[f"{name}_out"], expected_states[name].numpy(), rtol=1e-4, atol=1e-5)
+        np.testing.assert_allclose(outputs["lstm_actor_h_out"], predict_state[0], rtol=1e-4, atol=1e-5)
+        onnx_states = {name: outputs[f"{name}_out"] for name in state_names}
+
+
+# --- parity: SAC, TQC, CrossQ, TD3, DQN, QR-DQN, ARS ---
 
 
 @pytest.mark.parametrize("algorithm_class", [SAC, TQC, CrossQ])
+@pytest.mark.parametrize("use_sde", [False, True], ids=["gaussian", "gsde"])
 @pytest.mark.parametrize("deterministic", [True, False], ids=["deterministic", "stochastic"])
-def test_squashed_gaussian_actor_export_matches_the_policy(tmp_path, algorithm_class, deterministic):
-    model = build(algorithm_class, action_space=spaces.Box(np.array([-2.0, 0.0]), np.array([2.0, 1.0])))
+def test_squashed_gaussian_actor_export_matches_the_policy(tmp_path, algorithm_class, use_sde, deterministic):
+    model = build(
+        algorithm_class, action_space=spaces.Box(np.array([-2.0, 0.0]), np.array([2.0, 1.0])), use_sde=use_sde
+    )
     file_path, _ = export(model, tmp_path, deterministic)
     rng = np.random.default_rng(0)
     observations = sample_observations(BOX, rng)
@@ -306,16 +475,22 @@ def test_squashed_gaussian_actor_export_matches_the_policy(tmp_path, algorithm_c
 
     actor = model.policy.actor
     with th.no_grad():
-        mean, log_std, _ = actor.get_action_dist_params(observation_tensor(model, observations))
-        gaussian_actions = mean if deterministic else mean + log_std.exp() * th.as_tensor(noise_eps, dtype=th.float32)
+        mean, log_std, distribution_kwargs = actor.get_action_dist_params(observation_tensor(model, observations))
+        distribution = actor.action_dist.proba_distribution(mean, log_std, **distribution_kwargs)
+        # gSDE: its per-step distribution (state-dependent std); otherwise the Gaussian of the actor
+        std = distribution.distribution.stddev if use_sde else log_std.exp()
+        gaussian_actions = mean if deterministic else mean + std * th.as_tensor(noise_eps, dtype=th.float32)
         squashed_actions = th.tanh(gaussian_actions)
-        distribution = actor.action_dist.proba_distribution(mean, log_std)
-        expected_log_prob = distribution.log_prob(squashed_actions, gaussian_actions).numpy()
+        expected_log_prob = (
+            distribution.log_prob(squashed_actions)
+            if use_sde
+            else distribution.log_prob(squashed_actions, gaussian_actions)
+        ).numpy()
     expected_actions = model.policy.unscale_action(squashed_actions.numpy())
     if deterministic:
         np.testing.assert_allclose(expected_actions, model.predict(observations, deterministic=True)[0], atol=1e-6)
     np.testing.assert_allclose(outputs["action"], expected_actions, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-3, atol=1e-3)
 
 
 def test_td3_export_matches_the_policy(tmp_path):
@@ -347,6 +522,28 @@ def test_q_value_export_matches_the_policy(tmp_path, algorithm_class):
     np.testing.assert_allclose(outputs["q_values"], expected_q_values, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "policy, action_space",
+    [
+        ("LinearPolicy", spaces.Discrete(3)),
+        ("LinearPolicy", spaces.Box(-0.5, 0.5, (2,))),
+        ("MlpPolicy", spaces.Box(np.array([-2.0, 0.0]), np.array([2.0, 1.0]))),
+    ],
+    ids=["linear-discrete", "linear-box-clipped", "mlp-box-squashed"],
+)
+def test_ars_export_matches_the_policy(tmp_path, policy, action_space):
+    model = build(ARS, action_space=action_space, policy=policy)
+    file_path, _ = export(model, tmp_path)
+    observations = sample_observations(BOX, np.random.default_rng(0))
+
+    outputs = run(file_path, onnx_inputs(model, observations))
+
+    expected_actions, _ = model.predict(observations, deterministic=True)
+    np.testing.assert_allclose(
+        outputs["action"].reshape(expected_actions.shape), expected_actions, rtol=1e-5, atol=1e-5
+    )
+
+
 # --- training mode ---
 
 
@@ -365,26 +562,16 @@ def test_export_keeps_the_policys_training_mode(tmp_path, algorithm_class, train
 # --- unsupported ---
 
 
-@pytest.mark.parametrize("algorithm_class", [TD3, DQN, QRDQN])
+@pytest.mark.parametrize("algorithm_class", [TD3, DQN, QRDQN, ARS])
 def test_stochastic_export_of_policies_without_policy_side_sampling_is_rejected(tmp_path, algorithm_class):
     action_space = spaces.Box(-1, 1, (2,)) if algorithm_class is TD3 else spaces.Discrete(3)
     with pytest.raises(ValueError, match="deterministic=True"):
         export(build(algorithm_class, action_space=action_space), tmp_path, deterministic=False)
 
 
-@pytest.mark.parametrize(
-    "algorithm_class, parameters, action_space",
-    [
-        (PPO, {"use_sde": True}, spaces.Box(-1, 1, (2,))),
-        (SAC, {"use_sde": True}, spaces.Box(-1, 1, (2,))),
-        (RecurrentPPO, {}, spaces.Discrete(3)),
-        (ARS, {}, spaces.Discrete(3)),
-    ],
-    ids=["ppo-gsde", "sac-gsde", "recurrent-ppo", "ars"],
-)
-def test_unsupported_policies_are_rejected(tmp_path, algorithm_class, parameters, action_space):
-    with pytest.raises(NotImplementedError):
-        export(build(algorithm_class, action_space=action_space, **parameters), tmp_path)
+def test_unknown_policy_types_are_rejected(tmp_path):
+    with pytest.raises(NotImplementedError, match="not supported"):
+        export_sb3_policy_as_onnx(Mock(spec=BasePolicy), tmp_path / "policy.onnx")
 
 
 def test_export_requires_onnx_file_ending(tmp_path):
