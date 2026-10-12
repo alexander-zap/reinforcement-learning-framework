@@ -1,7 +1,4 @@
-"""CustomAgent with the QLearning algorithm: Q-table updates, epsilon-greedy training, saving/loading.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""CustomAgent with the QLearning algorithm: Q-table updates, epsilon-greedy training, saving/loading."""
 
 import logging
 import os
@@ -204,15 +201,15 @@ def test_save_and_load_round_trip_restores_q_table_and_parameters(tmp_path):
     assert not hasattr(loaded.algorithm, "unknown")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=FileNotFoundError,
-    reason="q_learning.py:221 calls os.makedirs(os.path.dirname(file_path)), which fails for a bare file name",
-)
 def test_save_to_a_bare_file_name_in_the_working_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    make_agent().save_to_file("q.pkl")
+    agent = make_agent()
+    agent.save_to_file("q.pkl")
     assert os.path.exists(tmp_path / "q.pkl")
+
+    loaded = make_agent()
+    loaded.load_from_file("q.pkl")
+    np.testing.assert_array_equal(loaded.algorithm.q_table, agent.algorithm.q_table)
 
 
 def test_onnx_export_is_not_supported(tmp_path):
