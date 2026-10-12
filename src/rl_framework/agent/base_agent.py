@@ -54,6 +54,7 @@ class Agent(ABC):
         connector: Connector = DummyConnector(),
         logging_frequency: int = 10,
         deterministic: bool = False,
+        close_environments: bool = True,
     ) -> Tuple[float, float]:
         """
         Evaluate the agent for ``n_eval_episodes`` episodes and returns average reward and std of reward.
@@ -72,6 +73,8 @@ class Agent(ABC):
             connector (Connector): Connector for logging evaluation metrics.
             logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
+            close_environments (bool): Whether the given environments are closed after the evaluation (default).
+                Environments created from environment factories are always closed.
         """
         if n_eval_episodes < 1:
             raise ValueError(f"n_eval_episodes must be at least 1, got {n_eval_episodes}.")
@@ -95,6 +98,8 @@ class Agent(ABC):
                 wrap_environment_with_features_extractor_preprocessor(evaluation_environment, self.features_extractor)
                 for evaluation_environment in evaluation_environments
             ]
+        # tuple = EnvironmentFactory: its environments are created (and closed) by the evaluation
+        environments_from_factories = isinstance(evaluation_environments[0], tuple)
 
         episode_rewards = []
         episode_rewards_lock = threading.Lock()
@@ -284,8 +289,9 @@ class Agent(ABC):
             for thread in threads:
                 thread.join()
 
-        for env in evaluation_environments:
-            env.close()
+        if close_environments or environments_from_factories:
+            for env in evaluation_environments:
+                env.close()
 
         mean_reward = np.mean(episode_rewards)
         std_reward = np.std(episode_rewards)

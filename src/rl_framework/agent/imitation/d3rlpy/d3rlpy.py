@@ -3,7 +3,7 @@ import logging
 import math
 import pickle
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 import d3rlpy.dataset
 import gymnasium as gym
@@ -67,7 +67,7 @@ from d3rlpy.algos import (
 from d3rlpy.base import LearnableBase, LearnableConfig, LearnableConfigWithShape
 from d3rlpy.dataset import ReplayBuffer
 from d3rlpy.logging import LoggerAdapter, LoggerAdapterFactory
-from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.agent.imitation.episode_sequence import (
     EpisodeSequence,
@@ -120,14 +120,28 @@ VALUE_FREE_ALGORITHMS = (BC, DiscreteBC, RandomPolicy, DiscreteRandomPolicy)
 
 class _SpacesEnvironment(gym.Env):
     """
-    Single-agent view of a PettingZoo environment for d3rlpy, which detects observation and action spaces from a gym
-    environment: the spaces of its first agent (the agents share one policy). It cannot be stepped.
+    Observation and action space of a training environment, for d3rlpy which detects them from a gym environment.
+    It cannot be stepped.
+        - gym.Env and VecEnv: their spaces (a VecEnv's spaces are those of each sub-environment).
+        - PettingZoo environment: the spaces of its first agent (the agents share one policy).
+        - EnvironmentFactory (stub_environment, env_return_function): the spaces of the stub environment (the
+          environment itself is not created).
     """
 
-    def __init__(self, pettingzoo_environment: pettingzoo.ParallelEnv):
-        agent = pettingzoo_environment.possible_agents[0]
-        self.observation_space = pettingzoo_environment.observation_space(agent)
-        self.action_space = pettingzoo_environment.action_space(agent)
+    def __init__(self, environment: Environment):
+        if isinstance(environment, pettingzoo.ParallelEnv):
+            agent = environment.possible_agents[0]
+            self.observation_space = environment.observation_space(agent)
+            self.action_space = environment.action_space(agent)
+        elif isinstance(environment, (gym.Env, VecEnv, tuple)):
+            spaces_source = environment[0] if isinstance(environment, tuple) else environment
+            self.observation_space = spaces_source.observation_space
+            self.action_space = spaces_source.action_space
+        else:
+            raise TypeError(
+                f"Training environment of unsupported type {type(environment)} provided to offline reinforcement "
+                f"learning agent."
+            )
 
 
 class ConnectorAdapterFactory(LoggerAdapterFactory):
@@ -226,9 +240,11 @@ class D3RLPYAgent(ILAgent):
             total_timesteps (int): Amount of (recorded) timesteps to train the agent on.
             episode_sequence (EpisodeSequence): List of episodes on which the agent should be trained on.
             validation_episode_sequence (EpisodeSequence): List of episodes on which the agent should be validated on.
-            training_environments (List): List of environments with gym (or pettingzoo) interface.
-                Required for callbacks and logging. The environments are used for intermediate rollouts.
-                Also required for attribute extraction (e.g., action/observation space).
+            training_environments (List): List of environments: gym.Env, VecEnv, PettingZoo ParallelEnv or
+                EnvironmentFactory (stub_environment, env_return_function).
+                The first one provides the observation and action space. Except for environment factories, the
+                environments are also used for the online evaluation after every epoch (`episode_reward_mean`, the
+                mean reward of 10 deterministic episodes, see `Agent.evaluate`); they are not closed.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
         """
@@ -240,6 +256,9 @@ class D3RLPYAgent(ILAgent):
 
         if not connector:
             connector = DummyConnector()
+
+        # Unwrapped: `evaluate` preprocesses the observations with the features extractor itself
+        evaluation_environments = list(training_environments)
 
         trajectories: WrappedEpisodeSequence[d3rlpy.dataset.Episode] = episode_sequence.to_d3rlpy_episodes()
         validation_trajectories: WrappedEpisodeSequence[d3rlpy.dataset.Episode] = (
@@ -277,28 +296,14 @@ class D3RLPYAgent(ILAgent):
                 for env in training_environments
             ]
 
-        if isinstance(training_environments[0], pettingzoo.ParallelEnv):
-            if len(training_environments) > 1:
-                logging.warning(
-                    f"Offline Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
-                    f"training on multiple multi-agent environments in parallel. Continuing with one environment as "
-                    f"training environment."
-                )
-            # d3rlpy only knows single-agent (gym) environments: the spaces of the (shared) agent policy are taken
-            #   from the first agent, and there is no online evaluation on the multi-agent environment
-            #   (use `evaluate` after training instead).
-            spaces_environment = _SpacesEnvironment(training_environments[0])
-            evaluation_environment = None
+        spaces_environment = _SpacesEnvironment(training_environments[0])
+        if isinstance(training_environments[0], tuple):
+            # Creating the environments of the factories after every epoch would be too expensive
+            evaluation_environments = None
             logging.warning(
-                "Offline Reinforcement Learning on a PettingZoo environment: the environment only provides the spaces, "
-                "it is not used for online evaluation during training (episode_reward_mean is not logged)."
-            )
-        elif isinstance(training_environments[0], gym.Env):
-            spaces_environment = evaluation_environment = Monitor(training_environments[0])
-        else:
-            raise TypeError(
-                f"Training environment of unsupported type {type(training_environments[0])} "
-                f"provided to offline reinforcement learning agent."
+                "Offline Reinforcement Learning on environment factories: the stub environment only provides the "
+                "spaces, the environments are not used for online evaluation during training (episode_reward_mean is "
+                "not logged)."
             )
 
         # Action space and size passed explicitly: d3rlpy's `ReplayBuffer` only detects them from `env` if no
@@ -312,8 +317,8 @@ class D3RLPYAgent(ILAgent):
         replay_buffer = ReplayBuffer(buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=trajectories, **spaces)
 
         evaluators = {}
-        if evaluation_environment is not None:
-            evaluators["episode_reward_mean"] = d3rlpy.metrics.EnvironmentEvaluator(evaluation_environment)
+        if evaluation_environments is not None:
+            evaluators["episode_reward_mean"] = self._evaluate_online_on(evaluation_environments)
         if validation_trajectories:
             validation_buffer = ReplayBuffer(
                 buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=validation_trajectories, **spaces
@@ -346,6 +351,25 @@ class D3RLPYAgent(ILAgent):
 
         # FIXME: Check case of continuous training (works, but deteriorates for small number of fine-tuning steps)
         # FIXME: Check when LOG.warn for GeneratorReplayBuffer is triggered (loading in-memory)
+
+    def _evaluate_online_on(self, evaluation_environments: List[Environment]):
+        """
+        Evaluator (called like d3rlpy's evaluators) of the mean reward of 10 deterministic episodes in the
+        environments, with the framework's `evaluate` (supports gym, VecEnv and PettingZoo environments, unlike
+        d3rlpy's `EnvironmentEvaluator`). The environments are kept open for the next evaluation.
+        """
+
+        def evaluate_online(algorithm: LearnableBase, dataset: ReplayBuffer) -> float:
+            mean_reward, _ = self.evaluate(
+                evaluation_environments,
+                n_eval_episodes=10,
+                connector=DummyConnector(),
+                deterministic=True,
+                close_environments=False,
+            )
+            return float(mean_reward)
+
+        return evaluate_online
 
     def _get_validation_evaluators(self, validation_episodes) -> Dict[str, Any]:
         """
