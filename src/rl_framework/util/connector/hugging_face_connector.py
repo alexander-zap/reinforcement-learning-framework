@@ -259,13 +259,18 @@ Further examples can be found in the exploration section of the
             # Step 6: Record a video
             if video_recording_environment and video_length > 0:
                 video_path = repo_local_path / "replay.mp4"
-                record_video(
-                    agent=agent,
-                    video_recording_environment=video_recording_environment,
-                    file_path=video_path,
-                    fps=1,
-                    video_length=video_length,
-                )
+                try:
+                    record_video(
+                        agent=agent,
+                        video_recording_environment=video_recording_environment,
+                        file_path=video_path,
+                        fps=1,
+                        video_length=video_length,
+                    )
+                except Exception:
+                    # A failing recording only costs the video; a partially written one is not pushed
+                    logging.exception("Recording the video failed, the upload continues without video.")
+                    video_path.unlink(missing_ok=True)
 
             # Step 7. Push everything to the Hub
             logging.info(f"Pushing repo {repository_id} to the Hugging Face Hub")

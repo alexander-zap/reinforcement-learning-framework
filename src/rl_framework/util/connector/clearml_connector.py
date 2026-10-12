@@ -225,16 +225,21 @@ class ClearMLConnector(Connector):
                 temp_path = tempfile.mkdtemp()
                 logging.debug(f"Recording video to {temp_path} and uploading as debug sample ...")
                 video_path = Path(temp_path) / "replay.mp4"
-                record_video(
-                    agent=agent,
-                    video_recording_environment=video_recording_environment,
-                    file_path=video_path,
-                    fps=1,
-                    video_length=video_length,
-                )
-                self.task.get_logger().report_media(
-                    "video ", "agent-in-environment recording", iteration=1, local_path=video_path
-                )
+                try:
+                    record_video(
+                        agent=agent,
+                        video_recording_environment=video_recording_environment,
+                        file_path=video_path,
+                        fps=1,
+                        video_length=video_length,
+                    )
+                except Exception:
+                    # The model is uploaded already, so a failing recording only costs the video
+                    logging.exception("Recording the video failed, the upload continues without video.")
+                else:
+                    self.task.get_logger().report_media(
+                        "video ", "agent-in-environment recording", iteration=1, local_path=video_path
+                    )
 
             # TODO: Save README.md
 

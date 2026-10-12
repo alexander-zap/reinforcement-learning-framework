@@ -79,24 +79,44 @@ def test_sb3_recording_converts_the_recorded_video_with_ffmpeg(tmp_path, monkeyp
     assert commands[0][4:] == ["-vcodec", "h264", str(file_path)]
 
 
-def test_sb3_recording_logs_ffmpeg_failures_with_their_output(tmp_path, monkeypatch, caplog):
+def test_sb3_recording_raises_ffmpeg_failures_with_their_output(tmp_path, monkeypatch):
     failure = SimpleNamespace(returncode=1, stderr="Invalid data found when processing input")
     monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: failure)
 
-    record_video(ConstantActionAgent(), Toy(episode_length=3), tmp_path / "replay.mp4", video_length=5)
+    with pytest.raises(RuntimeError, match="ffmpeg failed with exit code 1: Invalid data found when processing input"):
+        record_video(ConstantActionAgent(), Toy(episode_length=3), tmp_path / "replay.mp4", video_length=5)
 
-    assert "ffmpeg failed with exit code 1: Invalid data found when processing input" in caplog.text
 
-
-def test_sb3_recording_logs_instead_of_raising_agent_errors(tmp_path, caplog):
+def test_sb3_recording_raises_agent_errors(tmp_path):
     class FailingAgent(ConstantActionAgent):
         def choose_action(self, observation, deterministic=False, *args, **kwargs):
             raise RuntimeError("policy failed")
 
-    record_video(FailingAgent(), Toy(), tmp_path / "replay.mp4", video_length=5)
-
-    assert "policy failed" in caplog.text
+    with pytest.raises(RuntimeError, match="policy failed"):
+        record_video(FailingAgent(), Toy(), tmp_path / "replay.mp4", video_length=5)
     assert not (tmp_path / "replay.mp4").exists()
+
+
+def test_interrupted_sb3_recording_saves_the_video_recorded_so_far(tmp_path, monkeypatch):
+    class InterruptingAgent(ConstantActionAgent):
+        def choose_action(self, observation, deterministic=False, *args, **kwargs):
+            if len(self.observations) == 3:
+                raise KeyboardInterrupt
+            return super().choose_action(observation, deterministic, *args, **kwargs)
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return FFMPEG_SUCCESS
+
+    monkeypatch.setattr(video_recording.subprocess, "run", run)
+    agent = InterruptingAgent()
+
+    record_video(agent, Toy(episode_length=10), tmp_path / "replay.mp4", video_length=5)
+
+    assert len(agent.observations) == 3
+    assert len(commands) == 1
 
 
 @needs_ffmpeg

@@ -105,6 +105,20 @@ def test_final_upload_records_video_into_the_repo(hub):
     assert hub["videos"][0]["file_path"] == hub["snapshot"] / "replay.mp4"
 
 
+def test_final_upload_with_failing_video_recording_pushes_the_repo_without_partial_video(hub, monkeypatch, caplog):
+    def fail_after_partial_write(file_path, **kwargs):
+        file_path.write_bytes(b"partial")
+        raise RuntimeError("ffmpeg failed")
+
+    monkeypatch.setattr(hugging_face_connector, "record_video", fail_after_partial_write)
+
+    make_connector(video_length=10).upload(agent=make_agent(), video_recording_environment=object())
+
+    hub["api"].upload_folder.assert_called_once()
+    assert not (hub["snapshot"] / "replay.mp4").exists()
+    assert "Recording the video failed" in caplog.text
+
+
 def test_final_upload_serializes_numpy_values_logged_during_training(hub):
     connector = make_connector()
     connector.log_histogram_with_timestep(10, np.array([0, 1, 1]), "Action distribution")
