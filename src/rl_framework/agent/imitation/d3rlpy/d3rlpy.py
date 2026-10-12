@@ -2,7 +2,6 @@ import io
 import logging
 import math
 import pickle
-from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
@@ -10,8 +9,7 @@ import d3rlpy.dataset
 import gymnasium as gym
 import numpy as np
 import pettingzoo
-import supersuit as ss
-from d3rlpy import LoggingStrategy
+from d3rlpy import ActionSpace, LoggingStrategy
 from d3rlpy.algos import (
     AWAC,
     BC,
@@ -69,9 +67,7 @@ from d3rlpy.algos import (
 from d3rlpy.base import LearnableBase, LearnableConfig, LearnableConfigWithShape
 from d3rlpy.dataset import ReplayBuffer
 from d3rlpy.logging import LoggerAdapter, LoggerAdapterFactory
-from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from rl_framework.agent.imitation.episode_sequence import (
     EpisodeSequence,
@@ -117,6 +113,21 @@ D3RLPY_ALGORITHM_CONFIG_REGISTRY: dict[Type[LearnableBase], Type[LearnableConfig
     DiscreteSAC: DiscreteSACConfig,
     DiscreteRandomPolicy: DiscreteRandomPolicyConfig,
 }
+
+# Algorithms which do not estimate values (their implementation cannot compute e.g. the TD error)
+VALUE_FREE_ALGORITHMS = (BC, DiscreteBC, RandomPolicy, DiscreteRandomPolicy)
+
+
+class _SpacesEnvironment(gym.Env):
+    """
+    Single-agent view of a PettingZoo environment for d3rlpy, which detects observation and action spaces from a gym
+    environment: the spaces of its first agent (the agents share one policy). It cannot be stepped.
+    """
+
+    def __init__(self, pettingzoo_environment: pettingzoo.ParallelEnv):
+        agent = pettingzoo_environment.possible_agents[0]
+        self.observation_space = pettingzoo_environment.observation_space(agent)
+        self.action_space = pettingzoo_environment.action_space(agent)
 
 
 class ConnectorAdapterFactory(LoggerAdapterFactory):
@@ -224,9 +235,6 @@ class D3RLPYAgent(ILAgent):
 
         assert len(training_environments) > 0, "All offline RL algorithms require an environment to be passed. "
 
-        def make_env(index: int):
-            return training_environments[index]
-
         if not episode_sequence:
             raise ValueError("No transitions have been provided to the train-method.")
 
@@ -270,69 +278,86 @@ class D3RLPYAgent(ILAgent):
             ]
 
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
-
-            def pettingzoo_environment_to_vectorized_environment(pettingzoo_environment: pettingzoo.ParallelEnv):
-                env = ss.black_death_v3(pettingzoo_environment)
-                env = ss.pettingzoo_env_to_vec_env_v1(env)
-                env = ss.concat_vec_envs_v1(env, 1, num_cpus=1, base_class="stable_baselines3")
-                return env
-
             if len(training_environments) > 1:
                 logging.warning(
                     f"Offline Reinforcement Learning algorithm {self.__class__.__qualname__} does not support "
                     f"training on multiple multi-agent environments in parallel. Continuing with one environment as "
                     f"training environment."
                 )
-
-            vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
-
+            # d3rlpy only knows single-agent (gym) environments: the spaces of the (shared) agent policy are taken
+            #   from the first agent, and there is no online evaluation on the multi-agent environment
+            #   (use `evaluate` after training instead).
+            spaces_environment = _SpacesEnvironment(training_environments[0])
+            evaluation_environment = None
+            logging.warning(
+                "Offline Reinforcement Learning on a PettingZoo environment: the environment only provides the spaces, "
+                "it is not used for online evaluation during training (episode_reward_mean is not logged)."
+            )
         elif isinstance(training_environments[0], gym.Env):
-            training_environments = [Monitor(env) for env in training_environments]
-            environment_return_functions = [
-                partial(make_env, env_index) for env_index in range(len(training_environments))
-            ]
-            vectorized_environment = self.to_vectorized_env(env_fns=environment_return_functions)
-
+            spaces_environment = evaluation_environment = Monitor(training_environments[0])
         else:
             raise TypeError(
                 f"Training environment of unsupported type {type(training_environments[0])} "
                 f"provided to offline reinforcement learning agent."
             )
 
-        replay_buffer = ReplayBuffer(
-            buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=trajectories, env=training_environments[0]
-        )
-
-        evaluators = {
-            "episode_reward_mean": d3rlpy.metrics.EnvironmentEvaluator(training_environments[0]),
+        # Action space and size from the environment: given episodes, d3rlpy would detect the action size from the
+        #   recorded actions (max + 1), which is too small if the demonstrations never take the highest action
+        spaces = {
+            "env": spaces_environment,
+            "action_space": d3rlpy.dataset.detect_action_space_from_env(spaces_environment),
+            "action_size": d3rlpy.dataset.detect_action_size_from_env(spaces_environment),
         }
+        replay_buffer = ReplayBuffer(buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=trajectories, **spaces)
+
+        evaluators = {}
+        if evaluation_environment is not None:
+            evaluators["episode_reward_mean"] = d3rlpy.metrics.EnvironmentEvaluator(evaluation_environment)
         if validation_trajectories:
             validation_buffer = ReplayBuffer(
-                buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=validation_trajectories, env=training_environments[0]
+                buffer=d3rlpy.dataset.InfiniteBuffer(), episodes=validation_trajectories, **spaces
             )
-            evaluators.update({"td_error": d3rlpy.metrics.TDErrorEvaluator(validation_buffer.episodes)})
+            evaluators.update(self._get_validation_evaluators(validation_buffer.episodes))
 
-        n_batches = math.ceil(total_timesteps / self.algorithm._config.batch_size)
+        batch_size = self.algorithm._config.batch_size
+        n_batches = math.ceil(total_timesteps / batch_size)
+        n_steps_per_epoch = min(n_batches, math.ceil(50000 / batch_size))
+        # At least one logging step per epoch (d3rlpy's fitter fails otherwise)
+        logging_steps = min(n_steps_per_epoch, math.ceil(10000 / batch_size))
+
+        def evaluate_after_epoch(algorithm: LearnableBase, epoch: int, total_step: int) -> None:
+            # Evaluated and logged here instead of passing the evaluators to `fit`: with LoggingStrategy.STEPS, d3rlpy
+            #   adds evaluator scores only after the epoch's last logging step, so they would be logged an epoch late
+            #   (and never for the last epoch).
+            for name, evaluator in evaluators.items():
+                connector.log_value_with_timestep(total_step * batch_size, evaluator(algorithm, replay_buffer), name)
 
         self.algorithm.fit(
             replay_buffer,
             n_steps=n_batches,
-            n_steps_per_epoch=min(n_batches, math.ceil(50000 / self.algorithm._config.batch_size)),
-            logging_steps=math.ceil(10000 / self.algorithm._config.batch_size),
+            n_steps_per_epoch=n_steps_per_epoch,
+            logging_steps=logging_steps,
             logging_strategy=LoggingStrategy.STEPS,
             logger_adapter=ConnectorAdapterFactory(connector, self),
             save_interval=1,
-            evaluators=evaluators,
+            epoch_callback=evaluate_after_epoch,
         )
 
         # FIXME: Check case of continuous training (works, but deteriorates for small number of fine-tuning steps)
         # FIXME: Check when LOG.warn for GeneratorReplayBuffer is triggered (loading in-memory)
 
-        vectorized_environment.close()
-
-    @staticmethod
-    def to_vectorized_env(env_fns) -> VecEnv:
-        return SubprocVecEnv(env_fns)
+    def _get_validation_evaluators(self, validation_episodes) -> Dict[str, Any]:
+        """
+        Evaluators on validation episodes: how well the agent's actions match the recorded ones, and the TD error for
+        algorithms which estimate values (value-free algorithms like (Discrete)BC cannot compute it).
+        """
+        if self.algorithm.get_action_type() == ActionSpace.DISCRETE:
+            evaluators = {"action_match": d3rlpy.metrics.DiscreteActionMatchEvaluator(validation_episodes)}
+        else:
+            evaluators = {"action_difference": d3rlpy.metrics.ContinuousActionDiffEvaluator(validation_episodes)}
+        if not isinstance(self.algorithm, VALUE_FREE_ALGORITHMS):
+            evaluators["td_error"] = d3rlpy.metrics.TDErrorEvaluator(validation_episodes)
+        return evaluators
 
     def choose_action(self, observation: object, deterministic: bool = False, *args, **kwargs):
         """
