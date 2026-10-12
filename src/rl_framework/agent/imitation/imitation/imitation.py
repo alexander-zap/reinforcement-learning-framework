@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Type
 import gymnasium as gym
 import pettingzoo
 import supersuit as ss
-import torch
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -44,6 +43,7 @@ from rl_framework.util import (
     patch_imitation_sqil_replay_buffer,
     wrap_environment_with_features_extractor_preprocessor,
 )
+from rl_framework.util.onnx_export import export_sb3_policy_as_onnx
 
 patch_imitation_safe_to_tensor()
 patch_imitation_sqil_replay_buffer()
@@ -271,20 +271,21 @@ class ImitationAgent(ILAgent):
             action = action.item()
         return action
 
-    def save_policy_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
-        """Save the agent policy as ONNX model.
+    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = True, *args, **kwargs) -> None:
+        """Save the agent policy as ONNX model, like `StableBaselinesAgent.save_policy_as_onnx` (inputs and outputs:
+        see `rl_framework.util.onnx_export`).
 
         Args:
             file_path (Path): The file where the policy should be saved to.
+            deterministic (bool): Whether the exported policy returns its most likely action (default) or samples one
+                from external noise inputs.
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
         if not self.algorithm_policy:
             raise ValueError("Cannot export uninitialized agent. Start a training first to initialize.")
 
-        observation_size = self.algorithm_policy.observation_space.shape
-        dummy_input = torch.randn(1, *observation_size, device=self.algorithm_policy.device)
-        torch.onnx.export(self.algorithm_policy, dummy_input, file_path, opset_version=17, input_names=["input"])
+        export_sb3_policy_as_onnx(self.algorithm_policy, file_path, deterministic=deterministic)
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
