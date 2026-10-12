@@ -1,7 +1,4 @@
-"""ClearMLConnector model file naming on upload and task-based download (ClearML mocked, no server).
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""ClearMLConnector model file naming on upload and task-based download (ClearML mocked, no server)."""
 
 from pathlib import Path
 from unittest.mock import Mock
@@ -44,15 +41,30 @@ def test_upload_names_checkpoint_after_file_name():
     assert saved_file.endswith("-model-7.zip")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason='clearml_connector.py:170 unpacks str.split(file_name, ".") into two names, failing for multi-dot names',
-)
 def test_upload_keeps_multi_dot_file_name():
     name, saved_file = upload_checkpoint("model.v2.zip")
     assert name == "model.v2-7"
     assert saved_file.endswith("-model.v2-7.zip")
+
+
+def test_upload_of_file_name_without_extension_finds_the_file_sb3_saved_with_zip_ending():
+    connector = make_connector(upload_file_name="model")
+    agent = make_agent()
+    # SB3 appends ".zip" to file names without extension
+    agent.save_to_file.side_effect = lambda path: Path(f"{path}.zip").write_bytes(b"model")
+
+    connector.upload(agent=agent, checkpoint_id=7)
+
+    kwargs = connector.task.update_output_model.call_args.kwargs
+    assert kwargs["name"] == "model-7"
+    assert Path(kwargs["model_path"]).name.endswith("-model-7.zip")
+    assert Path(kwargs["model_path"]).exists()
+
+
+def test_upload_of_file_name_without_extension_keeps_files_saved_as_named():
+    name, saved_file = upload_checkpoint("model")
+    assert name == "model-7"
+    assert saved_file.endswith("-model-7")
 
 
 def test_upload_adds_policy_onnx_as_artifact():
@@ -87,13 +99,9 @@ def test_download_by_task_finds_model_named_after_zip_file(monkeypatch):
     assert download_from_task(monkeypatch, "model.zip") == "model-id"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=KeyError,
-    reason="clearml_connector.py:228 strips file_name[:-4], assuming a 4-character extension like '.zip'",
-)
-def test_download_by_task_finds_model_named_after_other_extension(monkeypatch):
-    assert download_from_task(monkeypatch, "model.pt") == "model-id"
+@pytest.mark.parametrize("file_name", ["model.pt", "model"])
+def test_download_by_task_finds_model_named_after_file_name_with_other_or_without_extension(monkeypatch, file_name):
+    assert download_from_task(monkeypatch, file_name) == "model-id"
 
 
 def test_connector_sets_task_name_and_tags():
