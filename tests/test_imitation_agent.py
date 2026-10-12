@@ -164,6 +164,30 @@ def test_environment_interacting_algorithms_log_episodes_to_the_connector(demons
     assert connector.value_sequences_to_log["Episode reward"]
 
 
+def test_callback_kwargs_configure_the_training_callbacks_and_do_not_reach_the_algorithm(demonstrations):
+    agent = make_agent(GAIL, callback_kwargs={"callback_saving_interval": 64, "callback_logging_interval": 1000})
+    default_connector, connector = RecordingConnector(), RecordingConnector()
+
+    train(make_agent(GAIL), demonstrations, total_timesteps=256, connector=default_connector)
+    train(agent, demonstrations, total_timesteps=256, connector=connector)
+
+    assert "callback_kwargs" not in agent.algorithm_parameters
+    assert default_connector.uploads == []  # default interval: 50000 steps
+    assert connector.uploads
+    assert default_connector.value_sequences_to_log["Episode reward"]
+    assert "Episode reward" not in connector.value_sequences_to_log
+
+
+def test_callback_kwargs_given_on_load_replace_the_callback_parameters(demonstrations, tmp_path):
+    trained = train(make_agent(BC, callback_kwargs={"callback_saving_interval": 64}), demonstrations)
+    trained.save_to_file(tmp_path / "agent.zip")
+
+    trained.load_from_file(tmp_path / "agent.zip", {"callback_kwargs": {"callback_logging_interval": 5}})
+
+    assert trained.callback_parameters == {"callback_logging_interval": 5}
+    assert "callback_kwargs" not in trained.algorithm_parameters
+
+
 @pytest.mark.parametrize("algorithm_class", [GAIL, DensityAlgorithm])
 def test_training_again_logs_only_to_the_new_connector(demonstrations, algorithm_class):
     first, second = RecordingConnector(), RecordingConnector()
