@@ -72,14 +72,6 @@ the `*_out` states back as inputs.
 - There is no metadata in the file and no parity check at export time; the parity with the policies is tested (see
   below).
 
-## Changes from earlier versions
-
-Earlier versions exported a different format, which is not compatible: input `input` (batch size 1, no Dict
-observation spaces), unnamed outputs (actions, and for actor-critic policies values and log-probabilities), actions
-sampled with random number nodes, and no postprocessing of Box actions. gSDE, RecurrentPPO and ARS policies could not
-be exported. The imitation agents exported the policy module directly, likewise with input `input` and sampled
-actions.
-
 ## Development notes
 
 - Consumers: the `ClearMLConnector` uploads the export with the default arguments, so a change of the defaults or the
