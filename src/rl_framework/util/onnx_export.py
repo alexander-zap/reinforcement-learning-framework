@@ -1,8 +1,7 @@
 """
 ONNX export of Stable-Baselines3 (and SB3-contrib) policies, used by the SB3 and imitation agents.
 
-The exported contract follows hfm-inference-server's flat ONNX wrappers (`onnx_export/sb3.py`), extended by the
-values and log-probabilities of actor-critic policies:
+The exported contract (also described in `docs/onnx-export.md`):
 
 - Inputs (all float32, dynamic batch axis `batch`), in this order:
     - `obs`: the observation; for Dict observation spaces one input per key, named like the key.
@@ -65,7 +64,7 @@ from stable_baselines3.dqn.policies import DQNPolicy
 from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.td3.policies import TD3Policy
 
-# Clamping of the uniform noise for the Gumbel-max trick (like hfm-inference-server)
+# Clamping of the uniform noise for the Gumbel-max trick (keeps the logarithms finite)
 GUMBEL_EPSILON = 1e-6
 # Epsilon of SB3's squashed Gaussian log-probability (`SquashedDiagGaussianDistribution.log_prob`)
 SQUASH_EPSILON = 1e-6

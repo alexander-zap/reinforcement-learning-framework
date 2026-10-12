@@ -70,7 +70,7 @@ def onnx_inputs(model, observations, noise=None, noise_name=None, action_masks=N
 
 
 def run(file_path, inputs):
-    """Run the exported model with ONNX Runtime (the runtime of the inference service); outputs by name."""
+    """Run the exported model with ONNX Runtime; outputs by name."""
     session = onnxruntime.InferenceSession(str(file_path), providers=["CPUExecutionProvider"])
     output_names = [output.name for output in session.get_outputs()]
     return dict(zip(output_names, session.run(output_names, inputs)))
