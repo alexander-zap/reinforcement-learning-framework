@@ -224,22 +224,6 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         except (TypeError, ValueError):
             return False
 
-    @staticmethod
-    def _supports_episode_aggregation(metric_aggregator: object) -> bool:
-        if type(metric_aggregator).__name__ != "MetricAggregator":
-            return False
-        return all(
-            hasattr(metric_aggregator, name)
-            for name in (
-                "aggregate_distributions",
-                "episode_actions",
-                "episode_end_reasons",
-                "episode_reward",
-                "episode_rewards",
-                "episode_step_metrics",
-            )
-        )
-
 
 class SavingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
     """
