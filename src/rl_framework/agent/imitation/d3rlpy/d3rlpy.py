@@ -371,7 +371,8 @@ class D3RLPYAgent(ILAgent):
 
         """
 
-        if not self.algorithm:
+        # The algorithm is created on construction, its networks (`impl`) only by training or loading
+        if self.algorithm.impl is None:
             raise ValueError("Cannot predict action for uninitialized agent. Start a training first to initialize.")
 
         action = self.algorithm.predict(
@@ -394,7 +395,7 @@ class D3RLPYAgent(ILAgent):
         Args:
             file_path (Path): The path where the agent should be saved to.
         """
-        self.algorithm.save(file_path.as_posix())
+        self.algorithm.save(Path(file_path).as_posix())
 
     def load_from_file(self, file_path: Path, algorithm_parameters: Dict = None, *args, **kwargs) -> None:
         """Loads the agent policy (`self.agent_policy`) in-place from a zipped folder.

@@ -187,6 +187,21 @@ def test_save_and_load_round_trip_keeps_the_policy(trained, observations, tmp_pa
     assert actions(loaded, observations) == actions(agent, observations)
 
 
+def test_save_and_load_accept_string_paths(trained, observations, tmp_path):
+    agent, _ = trained
+    agent.save_to_file(str(tmp_path / "agent.d3"))
+
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    loaded.load_from_file(str(tmp_path / "agent.d3"))
+
+    assert actions(loaded, observations) == actions(agent, observations)
+
+
+def test_untrained_agent_cannot_choose_actions(observations):
+    with pytest.raises(ValueError, match="uninitialized agent"):
+        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}).choose_action(observations[0])
+
+
 def test_load_with_new_parameters_applies_them(trained, tmp_path):
     agent, _ = trained
     agent.save_to_file(tmp_path / "agent.d3")
