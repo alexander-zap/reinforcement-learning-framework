@@ -1,14 +1,13 @@
-"""ONNX export of SB3 policies: exported contract and parity with the policies (onnx' reference evaluator)."""
+"""ONNX export of SB3 policies: exported contract and parity with the policies (evaluated with ONNX Runtime)."""
 
 from unittest.mock import Mock
 
 import numpy as np
 import onnx
+import onnxruntime
 import pytest
 import torch as th
 from gymnasium import spaces
-from onnx.reference import ReferenceEvaluator
-from onnx.reference.ops.op_lstm import LSTM as ReferenceLSTM
 from sb3_contrib import ARS, QRDQN, TQC, CrossQ, MaskablePPO, RecurrentPPO
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
 from stable_baselines3 import DQN, PPO, SAC, TD3
@@ -70,31 +69,11 @@ def onnx_inputs(model, observations, noise=None, noise_name=None, action_masks=N
     return inputs
 
 
-class LSTM(ReferenceLSTM):
-    """onnx' reference LSTM, which also returns its last cell state `Y_c` (onnx 1.17 returns only `Y` and `Y_h`)."""
-
-    def _step(self, X, R, B, W, H_0, C_0, P, num_directions):  # noqa: N803 (onnx' argument names)
-        hidden_states, hidden, cell = [], H_0, C_0
-        p_i, p_o, p_f = np.split(P, 3)
-        for x in np.split(X, X.shape[0], axis=0):
-            gates = np.dot(x, np.transpose(W)) + np.dot(hidden, np.transpose(R)) + np.add(*np.split(B, 2))
-            i, o, f, c = np.split(gates, 4, -1)
-            i, f = self.f(i + p_i * cell), self.f(f + p_f * cell)
-            cell = f * cell + i * self.g(c)
-            hidden = self.f(o + p_o * cell) * self.h(cell)
-            hidden_states.append(hidden)
-        self.last_cell = cell  # (num_directions = 1, batch, hidden), like Y_h
-        Y = np.concatenate(hidden_states)[:, np.newaxis]
-        return Y, Y[-1]
-
-    def _run(self, *args, **kwargs):
-        outputs = super()._run(*args, **kwargs)
-        return outputs + (self.last_cell.astype(outputs[0].dtype),) if self.n_outputs == 3 else outputs
-
-
 def run(file_path, inputs):
-    session = ReferenceEvaluator(str(file_path), new_ops=[LSTM])
-    return dict(zip(session.output_names, session.run(None, inputs)))
+    """Run the exported model with ONNX Runtime (the runtime of the inference service); outputs by name."""
+    session = onnxruntime.InferenceSession(str(file_path), providers=["CPUExecutionProvider"])
+    output_names = [output.name for output in session.get_outputs()]
+    return dict(zip(output_names, session.run(output_names, inputs)))
 
 
 def observation_tensor(model, observations):

@@ -226,7 +226,7 @@ def categorical_actions_and_log_prob(
     for index, head_logits in enumerate(torch.split(logits, head_dims, dim=1)):
         sampling_logits = head_logits if noise_u is None else head_logits + gumbel_heads[index]
         head_action = sampling_logits.argmax(dim=1, keepdim=True)
-        # Positive gather axis (ONNX' reference evaluator fails on negative GatherElements axes)
+        # Positive gather axis (keeps the graph evaluable by onnx' reference evaluator, which fails on negative axes)
         log_prob = log_prob + torch.log_softmax(head_logits, dim=1).gather(1, head_action).squeeze(1)
         actions.append(head_action)
     return torch.cat(actions, dim=1), log_prob

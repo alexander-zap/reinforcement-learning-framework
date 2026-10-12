@@ -4,11 +4,10 @@ import os
 
 import numpy as np
 import onnx
-import onnx.utils
+import onnxruntime
 import pytest
 import torch as th
 from gymnasium import spaces
-from onnx.reference import ReferenceEvaluator
 from stable_baselines3 import DQN, PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -583,7 +582,8 @@ def test_onnx_policy_with_features_extractor_returns_the_agents_deterministic_ac
     export(agent, tmp_path, Toy())
     observations = np.stack([BOX.sample() for _ in range(10)])
 
-    (actions, _, _) = ReferenceEvaluator(str(tmp_path / "policy.onnx")).run(None, {"obs": observations})
+    session = onnxruntime.InferenceSession(str(tmp_path / "policy.onnx"), providers=["CPUExecutionProvider"])
+    (actions,) = session.run(["action"], {"obs": observations})
 
     assert actions[:, 0].tolist() == [
         agent.choose_action(observation, deterministic=True) for observation in observations

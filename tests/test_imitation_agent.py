@@ -6,6 +6,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import onnx
+import onnxruntime
 import pytest
 import torch as th
 from imitation.algorithms.adversarial.airl import AIRL
@@ -14,7 +15,6 @@ from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
 from imitation.data.types import TrajectoryWithRew
-from onnx.reference import ReferenceEvaluator
 from stable_baselines3 import PPO
 
 from rl_framework.agent.imitation import (
@@ -431,7 +431,8 @@ def test_policy_exports_to_onnx_like_the_sb3_agent_and_returns_the_agents_action
     onnx.checker.check_model(model)
     assert [graph_input.name for graph_input in model.graph.input] == ["obs"]
     assert [graph_output.name for graph_output in model.graph.output] == ["action", "values", "log_prob"]
-    (onnx_actions, _, _) = ReferenceEvaluator(str(tmp_path / "policy.onnx")).run(None, {"obs": observations})
+    session = onnxruntime.InferenceSession(str(tmp_path / "policy.onnx"), providers=["CPUExecutionProvider"])
+    (onnx_actions,) = session.run(["action"], {"obs": observations})
     assert onnx_actions[:, 0].tolist() == actions(agent, observations)
     with pytest.raises(AssertionError, match=".onnx"):
         agent.save_policy_as_onnx(tmp_path / "policy.zip")
