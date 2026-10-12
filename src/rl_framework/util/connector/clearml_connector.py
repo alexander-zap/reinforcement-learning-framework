@@ -108,9 +108,14 @@ class ClearMLConnector(Connector):
         g.map(sns.histplot, "value", clip_on=False, fill=True, alpha=1)
 
         title = f"{str(latest_timestep).rjust(15, '0')} - {histogram_name}"
-        self.task.get_logger().report_matplotlib_figure(
-            title=title, series=histogram_name, figure=plt, iteration=timestep, report_interactive=True
-        )
+        try:
+            # Report this histogram's own figure (ClearML converts it during the call), then close it, so that
+            #   figures do not pile up in matplotlib over the training
+            self.task.get_logger().report_matplotlib_figure(
+                title=title, series=histogram_name, figure=g.figure, iteration=timestep, report_interactive=True
+            )
+        finally:
+            plt.close(g.figure)
 
     def log_value_with_timestep(
         self, timestep: int, value_scalar: SupportsFloat, value_name: Text, title_name: Text = None

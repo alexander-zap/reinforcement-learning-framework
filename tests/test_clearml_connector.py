@@ -154,11 +154,6 @@ def test_log_histogram_reports_latest_histogram_as_figure():
     assert kwargs["iteration"] == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="clearml_connector.py:106-113 creates a new seaborn FacetGrid figure per histogram and never closes it, "
-    "so open matplotlib figures pile up during training",
-)
 def test_log_histogram_does_not_leak_matplotlib_figures():
     import matplotlib.pyplot as plt
 
@@ -168,6 +163,17 @@ def test_log_histogram_does_not_leak_matplotlib_figures():
         connector.log_histogram_with_timestep(timestep, [0, 1, 1, 2], "actions")
 
     assert len(plt.get_fignums()) == open_before
+
+
+def test_log_histogram_reports_the_histograms_own_figure():
+    from matplotlib.figure import Figure
+
+    connector = make_connector()
+    connector.log_histogram_with_timestep(3, [0, 1, 1, 2], "actions")
+
+    figure = connector.task.get_logger.return_value.report_matplotlib_figure.call_args.kwargs["figure"]
+    assert isinstance(figure, Figure)
+    assert figure.axes  # the histogram plot
 
 
 def test_final_upload_tags_model_and_uploads_system_info_and_video(monkeypatch):
