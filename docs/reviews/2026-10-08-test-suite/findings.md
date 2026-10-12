@@ -40,7 +40,7 @@ The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`
 | B-16 QLearning epsilon | Follow-up | Epsilon decays linearly from its current value to `epsilon_min` at half of the training, never rises, and continues across `train()` calls. |
 | B-17 QLearning bare file name | Follow-up | A directory is created only if the path has one. |
 | B-18 video path with spaces | Follow-up | ffmpeg runs with an argument list; failures are logged with stderr. |
-| B-19, B-20 SB3 ONNX | Follow-up | Dict observations become one input per key; the export is deterministic by default (`deterministic=True`); outputs are named `actions` / `values` / `log_prob`. |
+| B-19, B-20 SB3 ONNX | Follow-up | Dict observations become one input per key. `save_policy_as_onnx(..., deterministic=True)` exports without random nodes; the default stays sampling. Outputs are named `actions` / `values` / `log_prob` (same order as before). Inputs stay float32 for every observation space for compatibility; breaking improvements are planned separately. |
 | Evaluation quota (`n // len(envs) + 1`) | #54 | Episodes are split evenly over environments and PettingZoo agents (`split_evenly`). |
 | Evaluation logging (colliding series, windows never reset) | Follow-up | Evaluation logs at the lock-protected count of evaluated episodes and resets the step-metric windows after each log. |
 | `load_from_file` passes `callback_kwargs` / `reset_optimizer` to SB3 | #54 | Framework parameters are taken out before the SB3 load and applied to the agent. |
@@ -133,15 +133,17 @@ Ranked by impact. Line numbers refer to 827c39b.
 
 ## Limitations and observations (no xfail)
 
-These are documented or deliberate behaviors rather than bugs, but worth deciding on:
+Documented or deliberate behaviors rather than bugs. All but the first are fixed on `findings_bug_fixes`:
 
-- **Features extractor on VecEnv or EnvironmentFactory:** `wrap_environment_with_features_extractor_preprocessor` raises `TypeError`, so `train` and `evaluate` with a features extractor only work for gym and PettingZoo envs.
-- **Imitation checkpoint interval is fixed:** `ImitationAgent` uses `SavingCallback(self, connector)` with the default 50,000-step interval and has no `callback_kwargs`.
-- **Video errors are swallowed:** `record_video` logs and swallows all exceptions, so a failing policy produces an upload without a video.
-- **`D3RLPYAgent.save_to_file` needs a `Path`:** it calls `file_path.as_posix()` and fails for `str`.
-- **`D3RLPYAgent.choose_action` guard is dead:** `if not self.algorithm` is never true because the algorithm is created in `__init__`.
-- **Dead code:** `LoggingCallback._supports_episode_aggregation` is unused.
-- **Optimizer reset repeats:** `reset_optimizer=True` resets the optimizer on every `train()` call, not only on the first one after loading.
+| Limitation | Status |
+|---|---|
+| **Features extractor on VecEnv or EnvironmentFactory:** `wrap_environment_with_features_extractor_preprocessor` raises `TypeError`, so `train` and `evaluate` with a features extractor only work for gym and PettingZoo envs. | Open, planned on a separate branch together with `record_video` for EnvironmentFactory tuples. Factories need `env_func` itself wrapped, since async workers create their environments from it. |
+| **Imitation checkpoint interval is fixed** (50,000 steps, no `callback_kwargs`). Downstream `callback_kwargs` in `agent.params` even reached the imitation algorithm. | `ImitationAgent` takes `callback_kwargs` (saving and logging interval, distributions, verbosity) out of the algorithm parameters, also on load. |
+| **Video errors are swallowed:** `record_video` logs and swallows all exceptions; ClearML then reports a missing video file. | `record_video` raises (a failing ffmpeg as `RuntimeError`); an interrupt saves the video recorded so far. The connectors log the error with traceback and upload without video (HuggingFace removes a partial file). |
+| **`D3RLPYAgent.save_to_file` needs a `Path`.** | Accepts `str` as well. |
+| **`D3RLPYAgent.choose_action` guard is dead.** | Checks the algorithm's networks (`impl`), which only training or loading creates. |
+| **Dead code:** `LoggingCallback._supports_episode_aggregation`. | Removed. |
+| **Optimizer reset repeats** on every `train()` call. | Resets once, before the first training after creating or loading the agent. |
 
 ## Downstream relevance (synthetic-player-experiment-space)
 
