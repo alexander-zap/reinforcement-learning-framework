@@ -1,5 +1,5 @@
 import logging
-import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -79,10 +79,11 @@ def record_video(
                 # Save the video
                 env.close()
 
-                # Convert the video with x264 codec
-                inp = env.video_path
-                out = file_path
-                os.system(f"ffmpeg -y -i {inp} -vcodec h264 {out}")
+                # Convert the video with x264 codec (argument list without a shell: paths may contain spaces)
+                command = ["ffmpeg", "-y", "-i", str(env.video_path), "-vcodec", "h264", str(file_path)]
+                result = subprocess.run(command, capture_output=True, text=True)
+                if result.returncode != 0:
+                    logging.error(f"ffmpeg failed with exit code {result.returncode}: {result.stderr}")
 
             except KeyboardInterrupt:
                 pass

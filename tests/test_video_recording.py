@@ -1,9 +1,7 @@
-"""record_video: simple frame recording and SB3 VecVideoRecorder + ffmpeg recording.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""record_video: simple frame recording and SB3 VecVideoRecorder + ffmpeg recording."""
 
 import shutil
+from types import SimpleNamespace
 
 import imageio
 import numpy as np
@@ -14,6 +12,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from rl_framework.util import FeaturesExtractor, record_video, video_recording
 from tests.toys import ConstantActionAgent, Toy, ToyParallel
 
+FFMPEG_SUCCESS = SimpleNamespace(returncode=0, stderr="")
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs the ffmpeg executable")
 
 
@@ -40,7 +39,7 @@ class Doubling(FeaturesExtractor):
 
 @pytest.mark.parametrize("sb3_replay", [False, True], ids=["simple", "sb3"])
 def test_recording_preprocesses_observations_with_the_agents_features_extractor(tmp_path, monkeypatch, sb3_replay):
-    monkeypatch.setattr(video_recording.os, "system", lambda command: None)
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: FFMPEG_SUCCESS)
     agent = ConstantActionAgent(features_extractor=Doubling())
     environment = Toy(observation_space=spaces.Box(1, 1, (3,), np.float32), episode_length=3)
 
@@ -65,14 +64,28 @@ def test_sb3_recording_rejects_unsupported_environments(tmp_path):
 @pytest.mark.parametrize("environment", [Toy(episode_length=3), DummyVecEnv([lambda: Toy(episode_length=3)])])
 def test_sb3_recording_converts_the_recorded_video_with_ffmpeg(tmp_path, monkeypatch, environment):
     commands = []
-    monkeypatch.setattr(video_recording.os, "system", commands.append)
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return FFMPEG_SUCCESS
+
+    monkeypatch.setattr(video_recording.subprocess, "run", run)
     file_path = tmp_path / "replay.mp4"
 
     record_video(ConstantActionAgent(), environment, file_path, video_length=5)
 
     assert len(commands) == 1
-    assert commands[0].startswith("ffmpeg -y -i ")
-    assert commands[0].endswith(f"-vcodec h264 {file_path}")
+    assert commands[0][:3] == ["ffmpeg", "-y", "-i"]
+    assert commands[0][4:] == ["-vcodec", "h264", str(file_path)]
+
+
+def test_sb3_recording_logs_ffmpeg_failures_with_their_output(tmp_path, monkeypatch, caplog):
+    failure = SimpleNamespace(returncode=1, stderr="Invalid data found when processing input")
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: failure)
+
+    record_video(ConstantActionAgent(), Toy(episode_length=3), tmp_path / "replay.mp4", video_length=5)
+
+    assert "ffmpeg failed with exit code 1: Invalid data found when processing input" in caplog.text
 
 
 def test_sb3_recording_logs_instead_of_raising_agent_errors(tmp_path, caplog):
@@ -94,11 +107,6 @@ def test_sb3_recording_writes_the_video(tmp_path):
 
 
 @needs_ffmpeg
-@pytest.mark.xfail(
-    strict=True,
-    reason="video_recording.py:66 builds the ffmpeg command line without quoting, so paths with spaces break, "
-    "and video_recording.py:70-71 only logs the failure",
-)
 def test_sb3_recording_writes_the_video_to_a_path_with_spaces(tmp_path):
     folder = tmp_path / "my videos"
     folder.mkdir()
