@@ -166,6 +166,11 @@ class QLearning(CustomAlgorithm):
         training_environment = training_environments[0]
         tqdm_progress_bar = tqdm(total=total_timesteps)
         current_timestep = 0
+        # Epsilon decays linearly from its current value (the configured `epsilon`, or the value reached in a previous
+        #   training) to `epsilon_min`, which it reaches after half of `total_timesteps` and keeps afterward.
+        #   An epsilon already below `epsilon_min` stays unchanged.
+        start_epsilon = self.epsilon
+        end_epsilon = min(self.epsilon_min, start_epsilon)
 
         while current_timestep <= total_timesteps:
             done = False
@@ -198,11 +203,8 @@ class QLearning(CustomAlgorithm):
                     tqdm_progress_bar.n = current_timestep if current_timestep <= total_timesteps else total_timesteps
                     tqdm_progress_bar.refresh()
                     # Gradually reduce epsilon after every done episode
-                    self.epsilon = (
-                        1.0 - (2.0 * current_timestep / total_timesteps)
-                        if self.epsilon > self.epsilon_min
-                        else self.epsilon
-                    )
+                    decay_progress = min(1.0, 2.0 * current_timestep / total_timesteps)
+                    self.epsilon = start_epsilon - (start_epsilon - end_epsilon) * decay_progress
 
                     if connector:
                         connector.log_value_with_timestep(current_timestep, episode_reward, "Episode reward")
