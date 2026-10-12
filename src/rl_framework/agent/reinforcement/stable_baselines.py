@@ -71,8 +71,9 @@ class StableBaselinesAgent(RLAgent):
                       the discount factor over training.
                     - `initial_action_bias`: initial biases of the policy's action output layer (PPO, A2C, TRPO, SAC,
                       TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
-                    - `reset_optimizer` (bool, default False): reset the optimizer state before each training, e.g.,
-                      to fine-tune a loaded model with fresh optimizer statistics.
+                    - `reset_optimizer` (bool, default False): reset the optimizer state before the first training
+                      after creating or loading the agent, e.g., to fine-tune a loaded model with fresh optimizer
+                      statistics. Further trainings continue with the optimizer state.
                     - `callback_kwargs` (Dict): parameters of the training callbacks: `callback_saving_interval`
                       (default 500000 steps), `callback_logging_interval` (default 1 episode),
                       `callback_log_distributions` (default False), `callback_verbosity` (default 0),
@@ -87,6 +88,7 @@ class StableBaselinesAgent(RLAgent):
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.callback_parameters: Dict = {}
         self.reset_optimizer: bool = False
+        self._optimizer_reset_pending: bool = False
         self.gamma_schedule: Optional[Callable[[float], float]] = None
         self.initial_action_bias: Optional[np.ndarray] = None
         self._setup_framework_parameters()
@@ -256,9 +258,10 @@ class StableBaselinesAgent(RLAgent):
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
-        if self.reset_optimizer:
+        if self._optimizer_reset_pending:
             reset_paths = reset_optimizer_state(self.algorithm)
             logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
+            self._optimizer_reset_pending = False
 
         callbacks = self.get_callbacks(connector=connector)
         callback_list = CallbackList(callbacks)
@@ -394,6 +397,7 @@ class StableBaselinesAgent(RLAgent):
         check_specified_policy_kwargs(algorithm.policy_kwargs, self.algorithm_parameters.get("policy_kwargs") or {})
         self.algorithm = algorithm
         self.algorithm_needs_initialization = False
+        self._optimizer_reset_pending = self.reset_optimizer
 
     def _setup_framework_parameters(self) -> None:
         """
@@ -401,6 +405,7 @@ class StableBaselinesAgent(RLAgent):
         """
         self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
         self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self._optimizer_reset_pending = self.reset_optimizer
         self._setup_gamma_schedule()
         self._setup_initial_action_bias()
 
