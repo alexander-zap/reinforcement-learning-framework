@@ -18,7 +18,7 @@ The test suite itself changed no source code. Each bug got a **strict xfail** te
 
 Run with `uv run pytest tests --cov=rl_framework --cov-branch`.
 
-The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`), the wait-for-file `time.sleep` loops in the ClearML connector, and the dead `LoggingCallback._supports_episode_aggregation`.
+The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`) and the wait-for-file `time.sleep` loops in the ClearML connector.
 
 ## Fix status
 

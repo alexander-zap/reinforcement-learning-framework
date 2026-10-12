@@ -318,38 +318,40 @@ class StableBaselinesAgent(RLAgent):
             action = action.item()
         return action
 
-    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = True) -> None:
+    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = False) -> None:
         """Save the policy as ONNX model.
 
             Details for SB3: https://stable-baselines3.readthedocs.io/en/master/guide/export.html
 
-        Inputs: one observation (batch size 1), named `input`; for Dict observation spaces one input per key, named
-            like the key.
-        Outputs: `actions`; actor-critic policies (e.g., PPO, A2C, TRPO) also output `values` and `log_prob`.
+        The exported format is kept backwards compatible (sampled actions by default, float32 inputs):
+            - Inputs: one float32 observation (batch size 1), named `input`, for every observation space (e.g., also
+              Discrete or uint8 image observations); for Dict observation spaces one float32 input per key, named
+              like the key.
+            - Outputs: `actions`; actor-critic policies (e.g., PPO, A2C, TRPO) also `values` and `log_prob`, in this
+              order (unnamed before; the order is unchanged).
         The policy includes the features extractor and the observation preprocessing, but not the postprocessing of
             actions: Box actions may have to be clipped or unscaled to the action space bounds, e.g.
             `low + (0.5 * (scaled_action + 1.0) * (high - low))` for squashed actions (SAC, TD3).
 
         Args:
             file_path (Path): The file where the policy should be saved to.
-            deterministic (bool): Whether the exported policy returns its most likely action (default) or samples one
-                (exported with random number nodes).
+            deterministic (bool): Whether the exported policy returns its most likely action or samples one (default;
+                exported with random number nodes).
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
         policy = self.algorithm.policy
-        policy.set_training_mode(False)
         observation_space = self.algorithm.observation_space
         is_dict_observation = isinstance(observation_space, gymnasium.spaces.Dict)
 
-        # A sampled observation, converted like in `predict` (dtype and shape per observation space)
+        # A sampled observation, converted like in `predict` (shape per observation space), as float32 input
         dummy_observation, _ = policy.obs_to_tensor(observation_space.sample())
         if is_dict_observation:
             input_names = list(observation_space.spaces.keys())
-            dummy_inputs = tuple(dummy_observation[key] for key in input_names)
+            dummy_inputs = tuple(dummy_observation[key].float() for key in input_names)
         else:
             input_names = ["input"]
-            dummy_inputs = (dummy_observation,)
+            dummy_inputs = (dummy_observation.float(),)
         output_names = ["actions", "values", "log_prob"] if isinstance(policy, ActorCriticPolicy) else ["actions"]
 
         class OnnxableSB3Policy(torch.nn.Module):
