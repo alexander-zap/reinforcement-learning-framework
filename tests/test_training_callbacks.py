@@ -3,6 +3,7 @@
 Strict xfails document unresolved findings; they assert the desired behavior.
 """
 
+import dataclasses
 from types import SimpleNamespace
 
 import numpy as np
@@ -41,7 +42,7 @@ def set_step(callback, rewards, dones, infos=None, actions=None, reset_infos=Non
 
 
 def episode(rewards, infos=None, reset_infos=None, start_timestep=0):
-    """One single-env on-policy episode whose last transition is done."""
+    """One single-env on-policy episode whose last transition is done, played by worker 0's sub-environment 0."""
     n = len(rewards)
     batch = EpisodeBatch(
         episode_kind=EpisodeKind.ON_POLICY,
@@ -55,7 +56,13 @@ def episode(rewards, infos=None, reset_infos=None, start_timestep=0):
         infos=infos or {},
         reset_infos=reset_infos or {},
     )
-    return EpisodeCallbackContext(batch=batch, start_timestep=start_timestep, end_timestep=start_timestep + n)
+    return EpisodeCallbackContext(
+        batch=batch,
+        start_timestep=start_timestep,
+        end_timestep=start_timestep + n,
+        worker_index=0,
+        env_index=0,
+    )
 
 
 class Noop(BaseCallback):
@@ -203,6 +210,49 @@ def test_logging_callback_process_episode_matches_step_wise_logging():
     assert scalars(connector) == [(13, 6.0)]
     assert scalars(connector, "Mean - x") == [(13, 2.0)]
     assert connector.dicts_to_log == {"meta_level": {"meta_level": 4}}
+
+
+def from_origin(context, worker_index, env_index=0):
+    """The episode context of an episode played by the given worker and sub-environment."""
+    return dataclasses.replace(context, worker_index=worker_index, env_index=env_index)
+
+
+def test_logging_callback_counts_and_aggregates_episodes_per_origin():
+    connector = RecordingConnector()
+    callback = LoggingCallback(connector, logging_frequency=2)
+
+    callback.process_episode(from_origin(episode([1]), worker_index=0))
+    callback.process_episode(from_origin(episode([10], start_timestep=1), worker_index=1))
+    callback.process_episode(from_origin(episode([3], start_timestep=2), worker_index=0))
+    assert scalars(connector) == [(3, 2.0)]  # worker 0: mean of 1 and 3; worker 1 has only one episode
+
+    callback.process_episode(from_origin(episode([20], start_timestep=3), worker_index=1, env_index=0))
+    assert scalars(connector) == [(3, 2.0), (4, 15.0)]
+
+
+def test_episode_origins_are_numbered_in_order_of_appearance():
+    callback = LoggingCallback(RecordingConnector())
+
+    indices = [
+        callback._get_agent_index(from_origin(episode([0]), worker, env))
+        for worker, env in [(1, 0), (0, 1), (1, 0), (0, 0)]
+    ]
+
+    assert indices == [0, 1, 0, 2]
+    assert callback._get_agent_index(episode([0])) == 2  # origin of episode: worker 0, sub-environment 0
+
+
+def test_reset_info_callback_attributes_episodes_to_their_origin():
+    connector = RecordingConnector()
+    callback = ResetInfoCallback(connector)
+
+    callback.process_episode(from_origin(episode([0, 0], reset_infos={0: [{"seed": 1}]}), worker_index=0))
+    callback.process_episode(from_origin(episode([0, 0], reset_infos={0: [{"seed": 2}]}), worker_index=1))
+
+    assert connector.dicts_to_log == {
+        "Reset Info - Agent 0 - Episode 0": {"seed": 1},
+        "Reset Info - Agent 1 - Episode 0": {"seed": 2},
+    }
 
 
 def test_episode_batchable_mixin_advances_counters():
