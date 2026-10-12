@@ -6,6 +6,7 @@ import pytest
 import torch as th
 from gymnasium import spaces
 from onnx.reference import ReferenceEvaluator
+from sb3_contrib import ARS, QRDQN, TQC, CrossQ, MaskablePPO, RecurrentPPO
 from stable_baselines3 import DQN, PPO, SAC, TD3
 
 from rl_framework.util.onnx_export import GUMBEL_EPSILON, export_sb3_policy_as_onnx
@@ -13,11 +14,19 @@ from tests.toys import BOX, Toy
 
 BATCH = 5
 RANDOM_OP_TYPES = {"Multinomial", "RandomNormal", "RandomNormalLike", "RandomUniform", "RandomUniformLike"}
+POLICY_NAMES = {RecurrentPPO: "MlpLstmPolicy", ARS: "LinearPolicy"}
 
 
 def build(algorithm_class, observation_space=BOX, action_space=spaces.Discrete(3), **parameters):
-    policy = "MultiInputPolicy" if isinstance(observation_space, spaces.Dict) else "MlpPolicy"
-    return algorithm_class(policy, Toy(observation_space, action_space), device="cpu", seed=0, **parameters)
+    policy = (
+        "MultiInputPolicy"
+        if isinstance(observation_space, spaces.Dict)
+        else POLICY_NAMES.get(algorithm_class, "MlpPolicy")
+    )
+    model = algorithm_class(policy, Toy(observation_space, action_space), device="cpu", seed=0, **parameters)
+    # Evaluation mode for the expected values (e.g., CrossQ's BatchRenorm layers), like SB3's `predict`
+    model.policy.set_training_mode(False)
+    return model
 
 
 def export(model, tmp_path, deterministic=True):
@@ -36,9 +45,9 @@ def sample_observations(observation_space, rng):
     return np.stack(samples)
 
 
-def onnx_inputs(model, observations, noise=None, noise_name=None):
+def onnx_inputs(model, observations, noise=None, noise_name=None, action_masks=None):
     """
-    Feeds of the exported model: float32 observations (per key for Dict observations), optional noise.
+    Feeds of the exported model: float32 observations (per key for Dict observations), optional action masks and noise.
     The observations are laid out like the policy's observation space (e.g., images channel-first, as SB3's `predict`
     transposes them), via `obs_to_tensor`.
     """
@@ -48,6 +57,8 @@ def onnx_inputs(model, observations, noise=None, noise_name=None):
         if isinstance(tensor, dict)
         else {"obs": tensor.numpy().astype(np.float32)}
     )
+    if action_masks is not None:
+        inputs["action_masks"] = action_masks.astype(np.float32)
     if noise is not None:
         inputs[noise_name] = noise.astype(np.float32)
     return inputs
@@ -74,8 +85,14 @@ def observation_tensor(model, observations):
         (PPO, spaces.Box(-1, 1, (2,)), False, ["obs", "noise_eps"], ["action", "values", "log_prob"]),
         (SAC, spaces.Box(-1, 1, (2,)), True, ["obs"], ["action", "log_prob"]),
         (SAC, spaces.Box(-1, 1, (2,)), False, ["obs", "noise_eps"], ["action", "log_prob"]),
+        (PPO, spaces.MultiBinary(2), False, ["obs", "noise_u"], ["action", "values", "log_prob"]),
+        (MaskablePPO, spaces.Discrete(3), True, ["obs", "action_masks"], ["action", "values", "log_prob"]),
+        (MaskablePPO, spaces.Discrete(3), False, ["obs", "action_masks", "noise_u"], ["action", "values", "log_prob"]),
+        (TQC, spaces.Box(-1, 1, (2,)), False, ["obs", "noise_eps"], ["action", "log_prob"]),
+        (CrossQ, spaces.Box(-1, 1, (2,)), False, ["obs", "noise_eps"], ["action", "log_prob"]),
         (TD3, spaces.Box(-1, 1, (2,)), True, ["obs"], ["action"]),
         (DQN, spaces.Discrete(3), True, ["obs"], ["action", "q_values"]),
+        (QRDQN, spaces.Discrete(3), True, ["obs"], ["action", "q_values"]),
     ],
 )
 def test_exported_inputs_and_outputs_are_named_float_and_batched_without_random_nodes(
@@ -197,12 +214,89 @@ def test_stochastic_box_export_samples_with_reparameterization_and_clips_the_act
     np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-4, atol=1e-4)
 
 
-# --- parity: SAC, TD3, DQN ---
+# --- parity: MultiBinary, MaskablePPO ---
 
 
 @pytest.mark.parametrize("deterministic", [True, False], ids=["deterministic", "stochastic"])
-def test_sac_export_matches_the_policy(tmp_path, deterministic):
-    model = build(SAC, action_space=spaces.Box(np.array([-2.0, 0.0]), np.array([2.0, 1.0])))
+def test_multi_binary_actor_critic_export_matches_the_policy(tmp_path, deterministic):
+    model = build(PPO, action_space=spaces.MultiBinary(3))
+    file_path, _ = export(model, tmp_path, deterministic)
+    rng = np.random.default_rng(0)
+    observations = sample_observations(BOX, rng)
+    noise_u = None if deterministic else rng.uniform(size=(BATCH, 3))
+
+    outputs = run(file_path, onnx_inputs(model, observations, noise_u, "noise_u"))
+
+    with th.no_grad():
+        distribution = model.policy.get_distribution(observation_tensor(model, observations))
+        probabilities = distribution.distribution.probs.numpy()
+        expected_actions = (probabilities > 0.5) if deterministic else (noise_u < probabilities)
+        expected_log_prob = distribution.log_prob(th.as_tensor(expected_actions, dtype=th.float32)).numpy()
+    if deterministic:
+        np.testing.assert_array_equal(expected_actions, model.predict(observations, deterministic=True)[0])
+    assert outputs["action"].dtype == np.int64
+    np.testing.assert_array_equal(outputs["action"], expected_actions)
+    np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-4, atol=1e-5)
+
+
+def random_action_masks(rng, head_dims):
+    """Random masks with at least one allowed action per head."""
+    heads = []
+    for size in head_dims:
+        mask = rng.uniform(size=(BATCH, size)) < 0.5
+        mask[np.arange(BATCH), rng.integers(size, size=BATCH)] = True
+        heads.append(mask)
+    return np.concatenate(heads, axis=1)
+
+
+@pytest.mark.parametrize(
+    "action_space, head_dims",
+    [(spaces.Discrete(4), [4]), (spaces.MultiDiscrete([3, 4]), [3, 4]), (spaces.MultiBinary(2), [2, 2])],
+    ids=["discrete", "multi-discrete", "multi-binary"],
+)
+@pytest.mark.parametrize("deterministic", [True, False], ids=["deterministic", "stochastic"])
+def test_maskable_export_applies_the_action_masks_like_the_policy(tmp_path, action_space, head_dims, deterministic):
+    model = build(MaskablePPO, action_space=action_space)
+    file_path, _ = export(model, tmp_path, deterministic)
+    rng = np.random.default_rng(0)
+    observations = sample_observations(BOX, rng)
+    action_masks = random_action_masks(rng, head_dims)
+    noise_u = None if deterministic else rng.uniform(size=(BATCH, sum(head_dims)))
+
+    outputs = run(file_path, onnx_inputs(model, observations, noise_u, "noise_u", action_masks=action_masks))
+
+    obs = observation_tensor(model, observations)
+    with th.no_grad():
+        distribution = model.policy.get_distribution(obs, action_masks=action_masks)
+        head_distributions = (
+            [distribution.distribution] if isinstance(action_space, spaces.Discrete) else distribution.distributions
+        )
+        logits = [head.logits.numpy() for head in head_distributions]
+        if not deterministic:
+            gumbel = -np.log(-np.log(np.clip(noise_u, GUMBEL_EPSILON, 1 - GUMBEL_EPSILON)))
+            logits = [head + noise for head, noise in zip(logits, np.split(gumbel, np.cumsum(head_dims)[:-1], axis=1))]
+        expected_actions = np.stack([np.argmax(head, axis=1) for head in logits], axis=1)
+        actions_tensor = th.as_tensor(expected_actions[:, 0] if len(head_dims) == 1 else expected_actions)
+        expected_log_prob = distribution.log_prob(actions_tensor).numpy()
+        expected_values = model.policy.predict_values(obs).numpy()
+    if deterministic:
+        predicted, _ = model.predict(observations, action_masks=action_masks, deterministic=True)
+        np.testing.assert_array_equal(expected_actions.reshape(predicted.shape), predicted)
+    allowed = np.split(action_masks, np.cumsum(head_dims)[:-1], axis=1)
+    for head, head_allowed in enumerate(allowed):
+        assert head_allowed[np.arange(BATCH), outputs["action"][:, head]].all()
+    np.testing.assert_array_equal(outputs["action"], expected_actions)
+    np.testing.assert_allclose(outputs["values"], expected_values, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-4, atol=1e-4)
+
+
+# --- parity: SAC, TQC, CrossQ, TD3, DQN, QR-DQN ---
+
+
+@pytest.mark.parametrize("algorithm_class", [SAC, TQC, CrossQ])
+@pytest.mark.parametrize("deterministic", [True, False], ids=["deterministic", "stochastic"])
+def test_squashed_gaussian_actor_export_matches_the_policy(tmp_path, algorithm_class, deterministic):
+    model = build(algorithm_class, action_space=spaces.Box(np.array([-2.0, 0.0]), np.array([2.0, 1.0])))
     file_path, _ = export(model, tmp_path, deterministic)
     rng = np.random.default_rng(0)
     observations = sample_observations(BOX, rng)
@@ -235,40 +329,62 @@ def test_td3_export_matches_the_policy(tmp_path):
     np.testing.assert_allclose(outputs["action"], expected_actions, rtol=1e-5, atol=1e-5)
 
 
-def test_dqn_export_matches_the_policy(tmp_path):
-    model = build(DQN)
+@pytest.mark.parametrize("algorithm_class", [DQN, QRDQN])
+def test_q_value_export_matches_the_policy(tmp_path, algorithm_class):
+    model = build(algorithm_class)
     file_path, _ = export(model, tmp_path)
     observations = sample_observations(BOX, np.random.default_rng(0))
 
     outputs = run(file_path, onnx_inputs(model, observations))
 
+    obs = observation_tensor(model, observations)
     with th.no_grad():
-        expected_q_values = model.policy.q_net(observation_tensor(model, observations)).numpy()
+        if algorithm_class is QRDQN:
+            expected_q_values = model.policy.quantile_net(obs).mean(dim=1).numpy()
+        else:
+            expected_q_values = model.policy.q_net(obs).numpy()
     np.testing.assert_array_equal(outputs["action"][:, 0], model.predict(observations, deterministic=True)[0])
     np.testing.assert_allclose(outputs["q_values"], expected_q_values, rtol=1e-5, atol=1e-5)
+
+
+# --- training mode ---
+
+
+@pytest.mark.parametrize("algorithm_class", [PPO, CrossQ])
+@pytest.mark.parametrize("training", [True, False])
+def test_export_keeps_the_policys_training_mode(tmp_path, algorithm_class, training):
+    action_space = spaces.Box(-1, 1, (2,)) if algorithm_class is CrossQ else spaces.Discrete(3)
+    model = build(algorithm_class, action_space=action_space)
+    model.policy.set_training_mode(training)
+
+    export(model, tmp_path)
+
+    assert all(module.training == training for module in model.policy.modules())
 
 
 # --- unsupported ---
 
 
-@pytest.mark.parametrize("algorithm_class", [TD3, DQN])
+@pytest.mark.parametrize("algorithm_class", [TD3, DQN, QRDQN])
 def test_stochastic_export_of_policies_without_policy_side_sampling_is_rejected(tmp_path, algorithm_class):
-    action_space = spaces.Discrete(3) if algorithm_class is DQN else spaces.Box(-1, 1, (2,))
+    action_space = spaces.Box(-1, 1, (2,)) if algorithm_class is TD3 else spaces.Discrete(3)
     with pytest.raises(ValueError, match="deterministic=True"):
         export(build(algorithm_class, action_space=action_space), tmp_path, deterministic=False)
 
 
 @pytest.mark.parametrize(
-    "parameters, action_space",
+    "algorithm_class, parameters, action_space",
     [
-        ({"use_sde": True}, spaces.Box(-1, 1, (2,))),
-        ({}, spaces.MultiBinary(2)),
+        (PPO, {"use_sde": True}, spaces.Box(-1, 1, (2,))),
+        (SAC, {"use_sde": True}, spaces.Box(-1, 1, (2,))),
+        (RecurrentPPO, {}, spaces.Discrete(3)),
+        (ARS, {}, spaces.Discrete(3)),
     ],
-    ids=["gsde", "multi-binary"],
+    ids=["ppo-gsde", "sac-gsde", "recurrent-ppo", "ars"],
 )
-def test_unsupported_actor_critic_policies_are_rejected(tmp_path, parameters, action_space):
+def test_unsupported_policies_are_rejected(tmp_path, algorithm_class, parameters, action_space):
     with pytest.raises(NotImplementedError):
-        export(build(PPO, action_space=action_space, **parameters), tmp_path)
+        export(build(algorithm_class, action_space=action_space, **parameters), tmp_path)
 
 
 def test_export_requires_onnx_file_ending(tmp_path):
