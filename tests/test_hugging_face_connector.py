@@ -1,7 +1,4 @@
-"""HuggingFaceConnector upload/download with the Hugging Face Hub mocked (no network).
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""HuggingFaceConnector upload/download with the Hugging Face Hub mocked (no network)."""
 
 import json
 from pathlib import Path

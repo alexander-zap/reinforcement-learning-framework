@@ -1,7 +1,4 @@
-"""The reset_optimizer algorithm parameter through the real SB3 agent training lifecycle.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""The reset_optimizer algorithm parameter through the real SB3 agent training lifecycle."""
 
 import gymnasium as gym
 import numpy as np
