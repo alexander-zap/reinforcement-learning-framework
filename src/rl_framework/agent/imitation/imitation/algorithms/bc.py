@@ -86,15 +86,14 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
     ):
         on_batch_end_functions = []
 
-        validation_transitions_batcher = (
-            self._endless_validation_batches(validation_trajectories, algorithm.batch_size)
-            if validation_trajectories
-            else None
-        )
-
         for callback in callback_list.callbacks:
             if isinstance(callback, LoggingCallback):
                 logging_callback = copy.copy(callback)
+                validation_transitions_batcher = (
+                    self._endless_validation_batches(validation_trajectories, algorithm.batch_size)
+                    if validation_trajectories
+                    else None
+                )
 
                 # Wrapped log_batch function to additionally log values into the connector
                 def log_batch_with_connector(
