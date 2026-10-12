@@ -72,7 +72,7 @@ class StableBaselinesAgent(RLAgent):
                       after creating or loading the agent, e.g., to fine-tune a loaded model with fresh optimizer
                       statistics. Further trainings continue with the optimizer state.
                     - `callback_kwargs` (Dict): parameters of the training callbacks: `callback_saving_interval`
-                      (default 500000 steps), `callback_logging_interval` (default 1 episode),
+                      (default 50000 steps), `callback_logging_interval` (default 1 episode),
                       `callback_log_distributions` (default False), `callback_verbosity` (default 0),
                       `sb3_logging_interval` (default 1) and, for AsyncStableBaselinesAgent,
                       `callback_async_utilization_logging_interval` (default 1000 episodes).
@@ -271,9 +271,7 @@ class StableBaselinesAgent(RLAgent):
         return SubprocVecEnv(env_fns)
 
     def get_callbacks(self, connector: Connector) -> list[BaseCallback]:
-        callbacks = create_saving_and_logging_callbacks(
-            self, connector, self.callback_parameters, default_saving_interval=500000
-        )
+        callbacks = create_saving_and_logging_callbacks(self, connector, self.callback_parameters)
         callbacks.append(ResetInfoCallback(connector=connector))
         if self.gamma_schedule is not None:
             verbosity = self.callback_parameters.get("callback_verbosity", 0)

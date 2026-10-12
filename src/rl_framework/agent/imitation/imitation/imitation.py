@@ -227,9 +227,7 @@ class ImitationAgent(ILAgent):
 
     def get_callbacks(self, connector: Connector) -> List[BaseCallback]:
         """Training callbacks: checkpoint saving (default every 50000 steps) and episode logging (`callback_kwargs`)."""
-        return create_saving_and_logging_callbacks(
-            self, connector, self.callback_parameters, default_saving_interval=50000
-        )
+        return create_saving_and_logging_callbacks(self, connector, self.callback_parameters)
 
     @staticmethod
     def to_vectorized_env(env_fns) -> VecEnv:

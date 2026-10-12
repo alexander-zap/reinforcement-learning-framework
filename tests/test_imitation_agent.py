@@ -166,7 +166,7 @@ def test_environment_interacting_algorithms_log_episodes_to_the_connector(demons
     assert connector.value_sequences_to_log["Episode reward"]
 
 
-def test_callbacks_follow_callback_kwargs_like_the_sb3_agent_with_their_own_saving_default():
+def test_callbacks_follow_callback_kwargs_like_the_sb3_agent():
     connector = RecordingConnector()
     configured = make_agent(
         callback_kwargs={

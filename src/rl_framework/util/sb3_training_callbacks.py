@@ -17,6 +17,9 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 from .metric_logging_utils import MetricAggregator
 
+# Default checkpoint interval in steps (`callback_kwargs["callback_saving_interval"]` of the agents)
+DEFAULT_CHECKPOINT_FREQUENCY = 50000
+
 
 def add_callbacks_to_callback(
     callbacks_to_add: CallbackList,
@@ -230,7 +233,7 @@ class SavingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
     A custom callback which uploads the agent to the connector after every `checkpoint_frequency` steps.
     """
 
-    def __init__(self, agent, connector, checkpoint_frequency=50000, verbose=0):
+    def __init__(self, agent, connector, checkpoint_frequency=DEFAULT_CHECKPOINT_FREQUENCY, verbose=0):
         """
         Args:
             checkpoint_frequency: After how many steps a checkpoint should be saved to the connector.
@@ -463,9 +466,7 @@ class GammaScheduleCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         return True
 
 
-def create_saving_and_logging_callbacks(
-    agent, connector, callback_parameters: Dict, default_saving_interval: int
-) -> List[BaseCallback]:
+def create_saving_and_logging_callbacks(agent, connector, callback_parameters: Dict) -> List[BaseCallback]:
     """
     The checkpoint saving and episode logging callbacks of an agent, configured by its `callback_kwargs`.
 
@@ -473,11 +474,10 @@ def create_saving_and_logging_callbacks(
         agent: Agent whose checkpoints are uploaded.
         connector: Connector for uploading checkpoints and logging metrics.
         callback_parameters: The agent's `callback_kwargs`:
-            - `callback_saving_interval` (default `default_saving_interval` steps),
+            - `callback_saving_interval` (default 50000 steps),
             - `callback_logging_interval` (default 1 episode),
             - `callback_log_distributions` (default False),
             - `callback_verbosity` (default 0).
-        default_saving_interval: Checkpoint interval (in steps) if `callback_saving_interval` is not given.
 
     Returns:
         [SavingCallback, LoggingCallback]
@@ -486,7 +486,7 @@ def create_saving_and_logging_callbacks(
         SavingCallback(
             agent,
             connector=connector,
-            checkpoint_frequency=callback_parameters.get("callback_saving_interval", default_saving_interval),
+            checkpoint_frequency=callback_parameters.get("callback_saving_interval", DEFAULT_CHECKPOINT_FREQUENCY),
             verbose=callback_parameters.get("callback_verbosity", 0),
         ),
         LoggingCallback(
