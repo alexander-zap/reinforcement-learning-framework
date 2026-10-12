@@ -301,8 +301,9 @@ class D3RLPYAgent(ILAgent):
                 f"provided to offline reinforcement learning agent."
             )
 
-        # Action space and size from the environment: given episodes, d3rlpy would detect the action size from the
-        #   recorded actions (max + 1), which is too small if the demonstrations never take the highest action
+        # Action space and size passed explicitly: d3rlpy's `ReplayBuffer` only detects them from `env` if no
+        #   episodes are given, otherwise from the episodes, i.e. the action size from the highest recorded action
+        #   (max + 1), which is too small if the demonstrations never take the highest action
         spaces = {
             "env": spaces_environment,
             "action_space": d3rlpy.dataset.detect_action_space_from_env(spaces_environment),

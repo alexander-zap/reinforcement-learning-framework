@@ -177,6 +177,21 @@ def test_training_on_pettingzoo_environment_uses_its_spaces_without_online_evalu
     assert "episode_reward_mean" not in connector.value_sequences_to_log
 
 
+def test_action_size_comes_from_the_environment_even_if_the_demonstrations_never_take_the_highest_action():
+    trajectory = TrajectoryWithRew(
+        obs=np.zeros((65, 4), np.float32),
+        acts=np.zeros(64, np.int64),  # only action 0 of CartPole's two actions
+        infos=None,
+        terminal=True,
+        rews=np.zeros(64, np.float32),
+    )
+    agent = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+
+    train(agent, EpisodeSequence.from_episodes([trajectory]), total_timesteps=64)
+
+    assert agent.algorithm.action_size == 2
+
+
 def test_save_and_load_round_trip_keeps_the_policy(trained, observations, tmp_path):
     agent, _ = trained
     agent.save_to_file(tmp_path / "agent.d3")
