@@ -2,7 +2,7 @@ import copy
 import logging
 import math
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import Iterator, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
@@ -87,7 +87,9 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
         on_batch_end_functions = []
 
         validation_transitions_batcher = (
-            iter(make_data_loader(validation_trajectories, algorithm.batch_size)) if validation_trajectories else None
+            self._endless_validation_batches(validation_trajectories, algorithm.batch_size)
+            if validation_trajectories
+            else None
         )
 
         for callback in callback_list.callbacks:
@@ -170,6 +172,30 @@ class BCAlgorithmWrapper(AlgorithmWrapper):
             on_batch_end=on_batch_end,
             log_interval=self.log_interval,
         )
+
+    @staticmethod
+    def _endless_validation_batches(
+        validation_trajectories: Sequence[TrajectoryWithRew], batch_size: int
+    ) -> Iterator[TransitionMapping]:
+        """
+        Batches of validation transitions for logging, starting a new (shuffled) pass over the validation data whenever
+        one is exhausted, since training may log more often than there are validation batches.
+
+        Raises:
+            ValueError: If the validation data has fewer transitions than one batch.
+        """
+        try:
+            validation_data_loader = make_data_loader(validation_trajectories, batch_size)
+        except ValueError as error:
+            raise ValueError(
+                f"The validation episodes do not fill one batch of batch_size {batch_size}: {error}"
+            ) from error
+
+        def batches() -> Iterator[TransitionMapping]:
+            while True:
+                yield from validation_data_loader
+
+        return batches()
 
     def save_algorithm(self, algorithm: DemonstrationAlgorithm, folder_path: Path):
         pass  # only policy saving is required for this algorithm
