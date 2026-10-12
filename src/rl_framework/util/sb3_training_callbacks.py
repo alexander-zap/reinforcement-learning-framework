@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Callable, Deque, List, Optional, Union
+from typing import Callable, Deque, Dict, List, Optional, Union
 
 import numpy as np
 from async_gym_agents import constants
@@ -461,3 +461,37 @@ class GammaScheduleCallback(EpisodeBatchableCallbackMixin, BaseCallback):
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
         return True
+
+
+def create_saving_and_logging_callbacks(
+    agent, connector, callback_parameters: Dict, default_saving_interval: int
+) -> List[BaseCallback]:
+    """
+    The checkpoint saving and episode logging callbacks of an agent, configured by its `callback_kwargs`.
+
+    Args:
+        agent: Agent whose checkpoints are uploaded.
+        connector: Connector for uploading checkpoints and logging metrics.
+        callback_parameters: The agent's `callback_kwargs`:
+            - `callback_saving_interval` (default `default_saving_interval` steps),
+            - `callback_logging_interval` (default 1 episode),
+            - `callback_log_distributions` (default False),
+            - `callback_verbosity` (default 0).
+        default_saving_interval: Checkpoint interval (in steps) if `callback_saving_interval` is not given.
+
+    Returns:
+        [SavingCallback, LoggingCallback]
+    """
+    return [
+        SavingCallback(
+            agent,
+            connector=connector,
+            checkpoint_frequency=callback_parameters.get("callback_saving_interval", default_saving_interval),
+            verbose=callback_parameters.get("callback_verbosity", 0),
+        ),
+        LoggingCallback(
+            connector=connector,
+            logging_frequency=callback_parameters.get("callback_logging_interval", 1),
+            log_distributions=callback_parameters.get("callback_log_distributions", False),
+        ),
+    ]

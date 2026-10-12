@@ -14,7 +14,7 @@ from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
 from imitation.data.types import DictObs, TrajectoryWithRew
-from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
@@ -37,13 +37,12 @@ from rl_framework.util import (
     DummyConnector,
     Environment,
     FeaturesExtractor,
-    LoggingCallback,
-    SavingCallback,
     patch_imitation_safe_to_tensor,
     patch_imitation_sqil_replay_buffer,
     wrap_environment_with_features_extractor_preprocessor,
 )
 from rl_framework.util.onnx_export import export_sb3_policy_as_onnx
+from rl_framework.util.sb3_training_callbacks import create_saving_and_logging_callbacks
 
 patch_imitation_safe_to_tensor()
 patch_imitation_sqil_replay_buffer()
@@ -217,22 +216,7 @@ class ImitationAgent(ILAgent):
         else:
             self.algorithm.set_demonstrations(trajectories)
 
-        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
-        callback_list = CallbackList(
-            [
-                SavingCallback(
-                    self,
-                    connector,
-                    checkpoint_frequency=self.callback_parameters.get("callback_saving_interval", 50000),
-                    verbose=callback_verbosity,
-                ),
-                LoggingCallback(
-                    connector,
-                    logging_frequency=self.callback_parameters.get("callback_logging_interval", 1),
-                    log_distributions=self.callback_parameters.get("callback_log_distributions", False),
-                ),
-            ]
-        )
+        callback_list = CallbackList(self.get_callbacks(connector))
         self.algorithm_wrapper.train(
             self.algorithm, total_timesteps, callback_list, validation_trajectories=validation_trajectories
         )
@@ -240,6 +224,12 @@ class ImitationAgent(ILAgent):
         self.algorithm_policy = self.algorithm.policy
 
         vectorized_environment.close()
+
+    def get_callbacks(self, connector: Connector) -> List[BaseCallback]:
+        """Training callbacks: checkpoint saving (default every 50000 steps) and episode logging (`callback_kwargs`)."""
+        return create_saving_and_logging_callbacks(
+            self, connector, self.callback_parameters, default_saving_interval=50000
+        )
 
     @staticmethod
     def to_vectorized_env(env_fns) -> VecEnv:

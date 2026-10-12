@@ -22,6 +22,7 @@ from rl_framework.agent.imitation import (
     EpisodeSequence,
 )
 from rl_framework.agent.imitation.imitation.algorithms import BCAlgorithmWrapper
+from rl_framework.util import LoggingCallback, SavingCallback
 from tests.toys import (
     BOX,
     InProcessImitationAgent,
@@ -163,6 +164,25 @@ def test_environment_interacting_algorithms_log_episodes_to_the_connector(demons
     train(make_agent(algorithm_class), demonstrations, total_timesteps=256, connector=connector)
 
     assert connector.value_sequences_to_log["Episode reward"]
+
+
+def test_callbacks_follow_callback_kwargs_like_the_sb3_agent_with_their_own_saving_default():
+    connector = RecordingConnector()
+    configured = make_agent(
+        callback_kwargs={
+            "callback_saving_interval": 7,
+            "callback_logging_interval": 3,
+            "callback_log_distributions": True,
+        }
+    )
+
+    saving, logging_ = configured.get_callbacks(connector)
+    default_saving, default_logging = make_agent().get_callbacks(connector)
+
+    assert isinstance(saving, SavingCallback) and saving.checkpoint_frequency == 7 and saving.agent is configured
+    assert isinstance(logging_, LoggingCallback) and logging_.logging_frequency == 3 and logging_.log_distributions
+    assert default_saving.checkpoint_frequency == 50000
+    assert default_logging.logging_frequency == 1 and not default_logging.log_distributions
 
 
 def test_callback_kwargs_configure_the_training_callbacks_and_do_not_reach_the_algorithm(demonstrations):
