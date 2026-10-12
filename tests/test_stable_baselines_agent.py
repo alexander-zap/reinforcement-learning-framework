@@ -1,15 +1,14 @@
-"""StableBaselinesAgent: parameter handling, training on every environment type, actions, saving/loading and ONNX.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""StableBaselinesAgent: parameter handling, training on every environment type, actions, saving/loading and ONNX."""
 
 import os
 
 import numpy as np
 import onnx
+import onnx.utils
 import pytest
 import torch as th
 from gymnasium import spaces
+from onnx.reference import ReferenceEvaluator
 from stable_baselines3 import DQN, PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -563,21 +562,42 @@ def test_onnx_export_requires_onnx_file_ending(tmp_path):
         make_agent().save_policy_as_onnx(tmp_path / "policy.zip")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="stable_baselines.py:341 exports policy(observation, deterministic=False) (see FIXME), so the ONNX graph "
-    "samples its action with a Multinomial node instead of taking the most likely action",
-)
 def test_onnx_export_is_deterministic(tmp_path):
     model = export(make_agent(), tmp_path, Toy())
     assert "Multinomial" not in {node.op_type for node in model.graph.node}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="stable_baselines.py:345-347 builds the dummy input from observation_space.shape, which is None for Dict",
-)
+def onnx_actions(file_path, inputs):
+    # Only the actions subgraph is evaluated (onnx' reference GatherElements of log_prob fails for negative axes)
+    actions_path = file_path.with_name("actions.onnx")
+    onnx.utils.extract_model(str(file_path), str(actions_path), list(inputs), ["actions"])
+    (actions,) = ReferenceEvaluator(str(actions_path)).run(None, inputs)
+    return actions
+
+
+def test_onnx_policy_returns_the_agents_deterministic_actions_and_actor_critic_outputs(tmp_path):
+    agent = make_agent()
+    model = export(agent, tmp_path, Toy())
+
+    assert [output.name for output in model.graph.output] == ["actions", "values", "log_prob"]
+    for observation in [BOX.sample() for _ in range(10)]:
+        actions = onnx_actions(tmp_path / "policy.onnx", {"input": observation[None].astype(np.float32)})
+        assert int(actions[0]) == agent.choose_action(observation, deterministic=True)
+
+
+def test_onnx_export_of_off_policy_algorithm_outputs_only_actions(tmp_path):
+    model = export(SB3Agent(DQN, {"learning_starts": 8, "device": "cpu"}), tmp_path, Toy())
+    assert [output.name for output in model.graph.output] == ["actions"]
+
+
 def test_onnx_export_supports_dict_observations(tmp_path):
     agent = make_agent(policy="MultiInputPolicy")
-    export(agent, tmp_path, Toy(observation_space=spaces.Dict({"position": BOX})))
+    observation_space = spaces.Dict({"position": BOX, "velocity": spaces.Box(-1, 1, (2,))})
+    model = export(agent, tmp_path, Toy(observation_space=observation_space))
+
+    # One input per observation key, named like the key
+    assert [graph_input.name for graph_input in model.graph.input] == ["position", "velocity"]
+    for observation in [observation_space.sample() for _ in range(10)]:
+        inputs = {key: value[None].astype(np.float32) for key, value in observation.items()}
+        actions = onnx_actions(tmp_path / "policy.onnx", inputs)
+        assert int(actions[0]) == agent.choose_action(observation, deterministic=True)
