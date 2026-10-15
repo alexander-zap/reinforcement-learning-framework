@@ -781,3 +781,51 @@ def test_stochastic_continuous_decision_transformer_export_is_rejected(tmp_path)
     algorithm = build_d3rlpy(d3rlpy.algos.DecisionTransformer)
     with pytest.raises(ValueError, match="deterministic=True"):
         export_d3rlpy_algorithm_as_onnx(algorithm, tmp_path / "policy.onnx", deterministic=False)
+
+
+# --- d3rlpy action space ---
+
+
+TIGHT_BOX_ACTIONS = spaces.Box(-0.01, 0.01, (2,), np.float32)
+
+
+def test_d3rlpy_export_clips_continuous_actions_to_the_given_action_space(tmp_path):
+    algorithm = build_d3rlpy(d3rlpy.algos.TD3)
+    file_path = tmp_path / "policy.onnx"
+    export_d3rlpy_algorithm_as_onnx(algorithm, file_path, action_space=TIGHT_BOX_ACTIONS)
+    observations = sample_observations(BOX, np.random.default_rng(0))
+
+    outputs = run(file_path, {"obs": observations})
+
+    unclipped_actions = algorithm.predict(observations)
+    assert not np.all(np.abs(unclipped_actions) <= 0.01)
+    np.testing.assert_allclose(outputs["action"], np.clip(unclipped_actions, -0.01, 0.01), rtol=1e-5, atol=1e-6)
+
+
+def test_decision_transformer_export_clips_the_action_but_keeps_it_unclipped_in_the_context(tmp_path):
+    algorithm = build_d3rlpy(d3rlpy.algos.DecisionTransformer, context_size=DT_CONTEXT_SIZE)
+    file_path = tmp_path / "policy.onnx"
+    export_d3rlpy_algorithm_as_onnx(algorithm, file_path, action_space=TIGHT_BOX_ACTIONS)
+    session = onnxruntime.InferenceSession(str(file_path), providers=["CPUExecutionProvider"])
+    feeds = initial_decision_transformer_feeds(session)
+    wrappers = [
+        d3rlpy.algos.StatefulTransformerWrapper(
+            algorithm, DT_TARGET_RETURN, d3rlpy.algos.IdentityTransformerActionSampler()
+        )
+        for _ in range(BATCH)
+    ]
+    observations = sample_observations(BOX, np.random.default_rng(0))
+
+    actions = decision_transformer_step(session, feeds, observations, np.zeros(BATCH), np.ones(BATCH))
+
+    unclipped_actions = np.array([wrapper.predict(observations[i], 0.0) for i, wrapper in enumerate(wrappers)])
+    assert not np.all(np.abs(unclipped_actions) <= 0.01)
+    np.testing.assert_allclose(actions, np.clip(unclipped_actions, -0.01, 0.01), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(feeds["dt_actions"][:, -1], unclipped_actions, rtol=1e-5, atol=1e-6)
+
+
+def test_d3rlpy_export_rejects_an_action_space_of_another_size(tmp_path):
+    with pytest.raises(AssertionError):
+        export_d3rlpy_algorithm_as_onnx(
+            build_d3rlpy(d3rlpy.algos.TD3), tmp_path / "policy.onnx", action_space=spaces.Box(-1, 1, (3,))
+        )

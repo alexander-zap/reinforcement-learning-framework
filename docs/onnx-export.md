@@ -76,8 +76,7 @@ transformers and the random policies) in the contract above, deterministic only 
 - Input `obs`: the observation, before d3rlpy's observation scaler (the graph applies it). Tuple observations are not
   supported.
 - Output `action`: like the algorithm's `predict` (the action scaler reversed): discrete actions as int64 (batch, 1),
-  continuous actions as float (batch, action dimension). Continuous actions are **not clipped** (d3rlpy does not know
-  the action space's bounds).
+  continuous actions as float (batch, action dimension), clipped to the action space (see below).
 - Output `q_values` (batch, number of actions): for the algorithms with a discrete Q-function (DQN, DoubleDQN, NFQ,
   DiscreteCQL, DiscreteBCQ, DiscreteSAC), the mean over the Q-function ensemble, like `predict_value`. The action is
   their argmax, except for DiscreteBCQ (the best action its imitator allows) and DiscreteSAC (the most likely action
@@ -87,6 +86,12 @@ transformers and the random policies) in the contract above, deterministic only 
 
 `RandomPolicy` and `DiscreteRandomPolicy` have no networks and raise a `NotImplementedError` (the `ClearMLConnector`
 then uploads the model without ONNX artifact).
+
+d3rlpy knows only the action size, not the action space's bounds. `D3RLPYAgent` keeps the action space of its training
+environment (`action_space`), stores it in its saved file (an additional key `action_space` of d3rlpy's file, which
+`d3rlpy.load_learnable` still loads) and clips continuous actions to it, in `choose_action` and in the export (like
+SB3's `predict`). Files saved before have no action space: their continuous actions are not clipped, and the export
+logs a warning.
 
 ### Decision transformers
 
@@ -114,8 +119,8 @@ Inputs, in this order (all float32, batch axis 0):
 
 Outputs: `action` (discrete: int64 (batch, 1), the argmax of the logits or sampled from `noise_u` like d3rlpy's
 `SoftmaxTransformerActionSampler`, the default of `as_stateful_wrapper`; continuous: (batch, action dimension) like
-`IdentityTransformerActionSampler`, the action scaler reversed and not clipped) and `<input>_out` for every `dt_*`
-input. The observation, action and reward scalers are applied to the context window in the graph, like d3rlpy's
+`IdentityTransformerActionSampler`, the action scaler reversed and clipped to the action space; the context window
+keeps the unclipped action, like the stateful wrapper) and `<input>_out` for every `dt_*` input. The observation, action and reward scalers are applied to the context window in the graph, like d3rlpy's
 `predict`. Continuous decision transformers are deterministic only (`deterministic=False` raises a `ValueError`).
 
 ## Export details

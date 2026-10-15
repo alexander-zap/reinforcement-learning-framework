@@ -3,11 +3,13 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import d3rlpy
 import gymnasium as gym
 import numpy as np
 import onnx
+import onnxruntime
 import pytest
-from d3rlpy.algos import DQN, DiscreteBC
+from d3rlpy.algos import DQN, TD3, DiscreteBC
 from imitation.data.types import TrajectoryWithRew
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -17,7 +19,7 @@ from rl_framework.agent.imitation.d3rlpy.d3rlpy import (
     ConnectorAdapterFactory,
 )
 from rl_framework.util import FeaturesExtractor
-from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, ToyParallel
+from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, Toy, ToyParallel
 
 CARTPOLE_ROLLOUT = Path(__file__).parents[1] / "data" / "cartpole_rollout"
 # One logging interval (ceil(10000 / 32) = 313 batches of 32)
@@ -273,6 +275,60 @@ def test_load_with_new_parameters_applies_them(trained, tmp_path):
 
     assert loaded.algorithm._config.batch_size == 64
     assert loaded.algorithm_parameters == {"batch_size": 64, "device": "cpu"}
+
+
+def test_save_and_load_keep_the_action_space_in_a_d3rlpy_file(trained, tmp_path):
+    agent, _ = trained
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert agent.action_space == gym.spaces.Discrete(2)
+    assert loaded.action_space == agent.action_space
+    assert isinstance(d3rlpy.load_learnable(str(tmp_path / "agent.d3"), device="cpu"), DiscreteBC)
+
+
+def test_files_saved_without_the_action_space_load_without_it(trained, tmp_path):
+    agent, _ = trained
+    agent.algorithm.save(str(tmp_path / "agent.d3"))
+
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert loaded.action_space is None
+
+
+def built_continuous_agent(action_space):
+    """TD3 agent with networks (built from the spaces, not trained) and the given action space."""
+    agent = InProcessD3RLPYAgent(TD3, {"batch_size": 32})
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Box(-1, 1, (2,), np.float32)))
+    agent.action_space = action_space
+    return agent
+
+
+def test_continuous_actions_are_clipped_to_the_action_space_also_in_the_onnx_export(tmp_path):
+    action_space = gym.spaces.Box(-0.01, 0.01, (2,), np.float32)
+    agent = built_continuous_agent(action_space)
+    box_observations = np.random.default_rng(0).uniform(-1, 1, (5, 3)).astype(np.float32)
+
+    chosen_actions = np.stack([agent.choose_action(observation) for observation in box_observations])
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+    session = onnxruntime.InferenceSession(str(tmp_path / "policy.onnx"), providers=["CPUExecutionProvider"])
+    (onnx_actions,) = session.run(["action"], {"obs": box_observations})
+
+    unclipped_actions = agent.algorithm.predict(box_observations)
+    assert not np.all(np.abs(unclipped_actions) <= 0.01)
+    np.testing.assert_allclose(chosen_actions, np.clip(unclipped_actions, -0.01, 0.01), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(onnx_actions, chosen_actions, rtol=1e-5, atol=1e-6)
+
+
+def test_onnx_export_without_the_action_space_warns_that_continuous_actions_are_not_clipped(tmp_path, caplog):
+    agent = built_continuous_agent(None)
+
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+
+    assert "not clipped" in caplog.text
 
 
 def test_policy_exports_to_a_valid_onnx_model(trained, tmp_path):

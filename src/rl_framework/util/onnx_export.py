@@ -113,7 +113,12 @@ def export_sb3_policy_as_onnx(policy: BasePolicy, file_path: Path, deterministic
         policy.set_training_mode(policy_was_training)
 
 
-def export_d3rlpy_algorithm_as_onnx(algorithm: LearnableBase, file_path: Path, deterministic: bool = True) -> None:
+def export_d3rlpy_algorithm_as_onnx(
+    algorithm: LearnableBase,
+    file_path: Path,
+    deterministic: bool = True,
+    action_space: Optional[gym.Space] = None,
+) -> None:
     """
     Export the policy of a trained d3rlpy algorithm to ONNX, in the contract of the SB3 export (see the module
     docstring):
@@ -129,13 +134,15 @@ def export_d3rlpy_algorithm_as_onnx(algorithm: LearnableBase, file_path: Path, d
         file_path: The `.onnx` file the policy is saved to.
         deterministic: Whether the most likely action is exported (default) or, for discrete decision transformers
             only, one sampled from the noise input `noise_u`. Other algorithms raise a `ValueError` for False.
+        action_space: The action space the algorithm was trained on. Continuous actions are clipped to it; without
+            it (d3rlpy does not know the action space's bounds) they are not clipped.
     """
     assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
     onnx_policy = (
-        D3RLPYTransformerOnnxPolicy(algorithm, deterministic)
+        D3RLPYTransformerOnnxPolicy(algorithm, deterministic, action_space)
         if isinstance(algorithm, TransformerAlgoBase)
-        else D3RLPYOnnxPolicy(algorithm, deterministic)
+        else D3RLPYOnnxPolicy(algorithm, deterministic, action_space)
     )
     algorithm.impl.modules.set_eval()
     _export(onnx_policy, file_path)
@@ -533,9 +540,12 @@ class ARSOnnxPolicy(DeterministicOnnxPolicy):
 
 
 class D3RLPYOnnxPolicyBase(OnnxPolicy):
-    """d3rlpy algorithms: their spaces (from the observation shape and action size) and networks."""
+    """
+    d3rlpy algorithms: their spaces (from the observation shape and action size; the action space's bounds, to which
+    continuous actions are clipped, only if given) and networks.
+    """
 
-    def __init__(self, algorithm: LearnableBase, deterministic: bool):
+    def __init__(self, algorithm: LearnableBase, deterministic: bool, action_space: Optional[gym.Space] = None):
         if isinstance(algorithm, (RandomPolicy, DiscreteRandomPolicy)):
             raise NotImplementedError(f"ONNX export is not supported for {type(algorithm).__name__} (no networks).")
         if algorithm.impl is None:
@@ -546,11 +556,16 @@ class D3RLPYOnnxPolicyBase(OnnxPolicy):
         observation_space = gym.spaces.Box(-np.inf, np.inf, observation_shape, np.float32)
         action_size = algorithm.impl.action_size
         self.is_discrete = algorithm.get_action_type() == ActionSpace.DISCRETE
-        action_space = (
-            gym.spaces.Discrete(action_size)
-            if self.is_discrete
-            else gym.spaces.Box(-np.inf, np.inf, (action_size,), np.float32)
-        )
+        if action_space is None:
+            action_space = (
+                gym.spaces.Discrete(action_size)
+                if self.is_discrete
+                else gym.spaces.Box(-np.inf, np.inf, (action_size,), np.float32)
+            )
+        elif self.is_discrete:
+            assert isinstance(action_space, gym.spaces.Discrete) and action_space.n == action_size, action_space
+        else:
+            assert isinstance(action_space, gym.spaces.Box) and action_space.shape == (action_size,), action_space
         super().__init__(algorithm, deterministic, observation_space, action_space)
         # Registered as submodules, so that their parameters are exported as weights (not as constants)
         self.networks = torch.nn.ModuleDict(
@@ -574,14 +589,14 @@ class D3RLPYOnnxPolicyBase(OnnxPolicy):
 class D3RLPYOnnxPolicy(D3RLPYOnnxPolicyBase):
     """
     d3rlpy Q-learning algorithms (`QLearningAlgoBase`): outputs the greedy `action` like the algorithm's `predict`
-    (discrete: (batch, 1); continuous: not clipped, since d3rlpy does not know the action space's bounds) and, for
+    (discrete: (batch, 1); continuous: clipped to the given action space) and, for
     algorithms with a discrete Q-function (DQN, DoubleDQN, NFQ, DiscreteCQL, DiscreteBCQ, DiscreteSAC), `q_values`:
     their mean over the Q-function ensemble, like `predict_value`. The action is their argmax except for DiscreteBCQ
     (the best action its imitator allows) and DiscreteSAC (the most likely action of its policy).
     """
 
-    def __init__(self, algorithm: QLearningAlgoBase, deterministic: bool):
-        super().__init__(algorithm, deterministic)
+    def __init__(self, algorithm: QLearningAlgoBase, deterministic: bool, action_space: Optional[gym.Space] = None):
+        super().__init__(algorithm, deterministic, action_space)
         self.require_deterministic()
         self.has_q_values = isinstance(algorithm.impl, DiscreteQFunctionMixin)
 
@@ -595,8 +610,7 @@ class D3RLPYOnnxPolicy(D3RLPYOnnxPolicyBase):
         action = impl.inner_predict_best_action(observation)
         if config.action_scaler:
             action = config.action_scaler.reverse_transform(action)
-        if self.is_discrete:
-            action = action.reshape(-1, 1)
+        action = action.reshape(-1, 1) if self.is_discrete else self.clip_action(action)
         if not self.has_q_values:
             return action
         # Private forwarder of the Q-functions, like `DiscreteQFunctionMixin.inner_predict_value`
@@ -610,13 +624,14 @@ class D3RLPYTransformerOnnxPolicy(D3RLPYOnnxPolicyBase):
     `episode_starts` and the context window `dt_*` (zeros at the start, afterward the `*_out` outputs of the previous
     step); outputs `action` and the new context window. Discrete actions are the argmax of the logits, or sampled with
     the Gumbel-max trick from `noise_u` (like `SoftmaxTransformerActionSampler` with temperature 1); continuous actions
-    are deterministic only (like `IdentityTransformerActionSampler`) and not clipped.
+    are deterministic only (like `IdentityTransformerActionSampler`) and clipped to the given action space (the
+    context window keeps the unclipped action, like the stateful wrapper).
     """
 
     STATE_NAMES = ["dt_observations", "dt_actions", "dt_returns_to_go", "dt_timesteps", "dt_return_rest", "dt_timestep"]
 
-    def __init__(self, algorithm: TransformerAlgoBase, deterministic: bool):
-        super().__init__(algorithm, deterministic)
+    def __init__(self, algorithm: TransformerAlgoBase, deterministic: bool, action_space: Optional[gym.Space] = None):
+        super().__init__(algorithm, deterministic, action_space)
         if not self.is_discrete:
             self.require_deterministic()
         self.context_size = algorithm.config.context_size
@@ -684,6 +699,7 @@ class D3RLPYTransformerOnnxPolicy(D3RLPYOnnxPolicyBase):
             if config.action_scaler:
                 action = config.action_scaler.reverse_transform(action)
             window_action = action
+            action = self.clip_action(action)
         actions = torch.cat([actions[:, :-1], window_action.unsqueeze(1)], dim=1)
         next_timestep = torch.clamp(timestep + 1.0, max=float(self.max_timestep))
         return action, observations, actions, returns_to_go, timesteps, return_rest - reward, next_timestep

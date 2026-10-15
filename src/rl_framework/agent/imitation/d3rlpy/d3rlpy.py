@@ -220,6 +220,9 @@ class D3RLPYAgent(ILAgent):
         self.algorithm = config.create(device=device)
         if device:
             self.algorithm_parameters.update({"device": device})
+        # Action space of the training environment (d3rlpy only knows the action size): continuous actions are
+        #   clipped to it, like SB3's `predict`
+        self.action_space: Optional[gym.Space] = None
 
     def train(
         self,
@@ -300,6 +303,7 @@ class D3RLPYAgent(ILAgent):
             ]
 
         spaces_environment = _SpacesEnvironment(training_environments[0])
+        self.action_space = spaces_environment.action_space
         if isinstance(training_environments[0], tuple):
             # Creating the environments of the factories after every epoch would be too expensive
             evaluation_environments = None
@@ -406,6 +410,8 @@ class D3RLPYAgent(ILAgent):
         action = self.algorithm.predict(
             np.expand_dims(observation, axis=0),
         )[0]
+        if isinstance(self.action_space, gym.spaces.Box):
+            action = np.clip(action, self.action_space.low, self.action_space.high)
         return action
 
     def save_policy_as_onnx(self, file_path: Path, deterministic: bool = True, *args, **kwargs) -> None:
@@ -418,7 +424,14 @@ class D3RLPYAgent(ILAgent):
             deterministic (bool): Whether the most likely action is exported (default) or, for discrete decision
                 transformers only, one sampled from noise inputs.
         """
-        export_d3rlpy_algorithm_as_onnx(self.algorithm, file_path, deterministic=deterministic)
+        if self.action_space is None and self.algorithm.get_action_type() == ActionSpace.CONTINUOUS:
+            logging.warning(
+                "The action space is unknown (agent saved without it): continuous actions of the ONNX export are "
+                "not clipped."
+            )
+        export_d3rlpy_algorithm_as_onnx(
+            self.algorithm, file_path, deterministic=deterministic, action_space=self.action_space
+        )
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
@@ -427,6 +440,13 @@ class D3RLPYAgent(ILAgent):
             file_path (Path): The path where the agent should be saved to.
         """
         self.algorithm.save(Path(file_path).as_posix())
+        if self.action_space is not None:
+            # Next to d3rlpy's keys ("torch", "config", "version"), the only ones its `load_learnable` reads
+            with open(file_path, "rb") as f:
+                obj = pickle.load(f)
+            obj["action_space"] = self.action_space
+            with open(file_path, "wb") as f:
+                pickle.dump(obj, f)
 
     def load_from_file(self, file_path: Path, algorithm_parameters: Dict = None, *args, **kwargs) -> None:
         """Loads the agent policy (`self.agent_policy`) in-place from a zipped folder.
@@ -451,3 +471,5 @@ class D3RLPYAgent(ILAgent):
             self.algorithm_parameters.update({"device": device})
 
         self.algorithm.impl.load_model(io.BytesIO(obj["torch"]))
+        # Missing in files saved before it was stored
+        self.action_space = obj.get("action_space")
