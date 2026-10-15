@@ -175,6 +175,8 @@ Have a look at the `htmlcov` folder, after the tests are done.
 
 The ONNX export tests evaluate the exported models with ONNX Runtime (`onnxruntime`, part of the `dev` dependency group), see [ONNX export of agent policies](docs/onnx-export.md#development-notes).
 
+The tests run with the torch of the projects using this framework: `constraint-dependencies` in `pyproject.toml` locks torch 2.10 for Python >= 3.10 (torch 2.9 dropped Python 3.9, which gets torch 2.8). It only applies to this repository's lock, not to the published package. Update it together with those projects.
+
 ### Distribution Package
 
 To release a new version, bump the version number, build the source distribution and wheel, and upload them to PyPI:
