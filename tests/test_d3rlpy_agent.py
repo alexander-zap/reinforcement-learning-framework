@@ -9,7 +9,13 @@ import numpy as np
 import onnx
 import onnxruntime
 import pytest
-from d3rlpy.algos import DQN, TD3, DiscreteBC, DiscreteDecisionTransformer
+from d3rlpy.algos import (
+    DQN,
+    TD3,
+    DiscreteBC,
+    DiscreteDecisionTransformer,
+    GreedyTransformerActionSampler,
+)
 from imitation.data.types import TrajectoryWithRew
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -99,31 +105,91 @@ def test_short_training_runs_and_logs(demonstrations):
     assert logged_steps(connector, "episode_reward_mean") == [320]
 
 
-def test_decision_transformers_train_without_evaluation_and_export_to_onnx(demonstrations, caplog, tmp_path):
-    connector = RecordingConnector()
-
-    agent = train(
-        InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 5}),
+def train_decision_transformer(demonstrations, parameters, connector):
+    return train(
+        InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 5, **parameters}),
         demonstrations,
         total_timesteps=320,
         connector=connector,
         validation_episode_sequence=EpisodeSequence.from_episodes([demonstrations[0]]),
     )
+
+
+def test_decision_transformers_are_evaluated_online_with_a_target_return_and_export_to_onnx(
+    demonstrations, caplog, tmp_path
+):
+    connector = RecordingConnector()
+
+    agent = train_decision_transformer(demonstrations, {"target_return": 500.0}, connector)
     agent.save_policy_as_onnx(tmp_path / "policy.onnx")
 
     assert logged_steps(connector, "loss") == [320]
-    assert set(connector.value_sequences_to_log) & {"episode_reward_mean", "action_match", "td_error"} == set()
-    assert "neither evaluated online nor on validation episodes" in caplog.text
+    assert logged_steps(connector, "episode_reward_mean") == [320]
+    # d3rlpy's validation evaluators choose actions from single observations
+    assert set(connector.value_sequences_to_log) & {"action_match", "td_error"} == set()
+    assert "not evaluated on validation episodes" in caplog.text
     assert [upload["checkpoint_id"] for upload in connector.uploads] == [10]
     onnx.checker.check_model(onnx.load(tmp_path / "policy.onnx"))
 
 
-def test_decision_transformers_cannot_choose_actions_from_single_observations(observations):
-    agent = InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32})
-    agent.algorithm.build_with_env(gym.make("CartPole-v1"))
+def test_decision_transformers_without_a_target_return_train_without_online_evaluation(demonstrations, caplog):
+    connector = RecordingConnector()
 
-    with pytest.raises(NotImplementedError, match="StatefulTransformerWrapper"):
-        agent.choose_action(observations[0])
+    train_decision_transformer(demonstrations, {}, connector)
+
+    assert logged_steps(connector, "loss") == [320]
+    assert "episode_reward_mean" not in connector.value_sequences_to_log
+    assert "without the parameter target_return are not evaluated online" in caplog.text
+
+
+def built_decision_transformer(parameters):
+    agent = InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 3, **parameters})
+    agent.algorithm.build_with_env(gym.make("CartPole-v1"))
+    return agent
+
+
+def test_decision_transformers_choose_actions_like_a_stateful_wrapper_per_episode(observations):
+    agent = built_decision_transformer({"target_return": 100.0})
+    wrappers = {
+        key: agent.algorithm.as_stateful_wrapper(100.0, action_sampler=GreedyTransformerActionSampler())
+        for key in ("a", "b")
+    }
+    rewards = np.linspace(0.0, 1.0, len(observations))
+
+    # Two episodes interleaved, episode "b" restarting halfway
+    for step, observation in enumerate(observations):
+        for key in ("a", "b"):
+            episode_start = step == 0 or (key == "b" and step == len(observations) // 2)
+            if episode_start:
+                wrappers[key].reset()
+            reward = 0.0 if episode_start else float(rewards[step])
+            action = agent.choose_action(
+                observation, deterministic=True, reward=reward, episode_start=episode_start, episode_key=key
+            )
+            assert action == wrappers[key].predict(observation, reward)
+
+
+def test_decision_transformers_cannot_choose_actions_without_the_episode_context(observations):
+    with pytest.raises(NotImplementedError, match="episode_key"):
+        built_decision_transformer({"target_return": 100.0}).choose_action(observations[0])
+
+
+def test_decision_transformers_need_a_target_return_to_choose_actions(observations):
+    with pytest.raises(ValueError, match="target_return"):
+        built_decision_transformer({}).choose_action(observations[0], episode_start=True, episode_key=0)
+
+
+def test_target_return_is_kept_in_the_parameters_but_not_passed_to_d3rlpy(tmp_path):
+    agent = built_decision_transformer({"target_return": 100.0, "device": "cpu"})
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    loaded = InProcessD3RLPYAgent(
+        DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 3, "target_return": 50.0}
+    )
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert agent.algorithm_parameters == {"batch_size": 32, "context_size": 3, "target_return": 100.0, "device": "cpu"}
+    assert loaded.algorithm_parameters["target_return"] == 50.0
 
 
 def test_behavior_cloning_validates_by_action_match(demonstrations):
