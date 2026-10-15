@@ -10,7 +10,7 @@ import torch as th
 from imitation.util import util as imitation_util
 
 from rl_framework.util import (
-    patch_d3rlpy,
+    patch_d3rlpy_map_location,
     patch_datasets,
     patch_imitation_safe_to_tensor,
 )
@@ -27,18 +27,18 @@ def test_patched_datasets_treat_local_protocol_tuple_as_local():
 
 @pytest.mark.parametrize("device", ["cpu", "cpu:0"])
 def test_patched_d3rlpy_maps_cpu_devices_to_cpu(device):
-    patch_d3rlpy()
+    patch_d3rlpy_map_location()
     assert d3rlpy.torch_utility.map_location(device) == "cpu"
 
 
 @pytest.mark.parametrize("device", ["cuda", "cuda:1"])
 def test_patched_d3rlpy_maps_cuda_devices_to_a_storage_mover(device):
-    patch_d3rlpy()
+    patch_d3rlpy_map_location()
     assert callable(d3rlpy.torch_utility.map_location(device))
 
 
 def test_patched_d3rlpy_rejects_unknown_devices():
-    patch_d3rlpy()
+    patch_d3rlpy_map_location()
     with pytest.raises(ValueError, match="invalid device"):
         d3rlpy.torch_utility.map_location("tpu")
 

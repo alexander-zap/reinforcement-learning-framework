@@ -79,11 +79,11 @@ from rl_framework.util import (
     DummyConnector,
     Environment,
     FeaturesExtractor,
-    patch_d3rlpy,
+    patch_d3rlpy_map_location,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
-patch_d3rlpy()
+patch_d3rlpy_map_location()
 
 D3RLPY_ALGORITHM_CONFIG_REGISTRY: dict[Type[LearnableBase], Type[LearnableConfig]] = {
     AWAC: AWACConfig,

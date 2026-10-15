@@ -19,7 +19,7 @@ def patch_datasets():
 
 
 # Fixed in d3rlpy 2.8.0, but that version is not compatible with other dependencies
-def patch_d3rlpy():
+def patch_d3rlpy_map_location():
     def map_location(device: str):
         if "cuda" in device:
             if ":" in device:
