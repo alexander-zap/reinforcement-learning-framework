@@ -102,6 +102,19 @@ agent.train(episode_sequence=sequence, training_environments=environments, total
 The training environments are used by the imitation learning algorithms in different ways.
 Some of them only use it for the observation and action space information, while others use it for iteratively checking and improving the imitation policy.
 
+#### Decision transformers (d3rlpy)
+
+The decision transformers of [the `D3RLPYAgent` class](src/rl_framework/agent/imitation/d3rlpy/d3rlpy.py) (`DecisionTransformer`, `DiscreteDecisionTransformer`) choose their actions from the context of the episode and the return they aim to achieve.
+Set this return with the agent parameter `target_return` (next to d3rlpy's algorithm parameters, not passed to d3rlpy's config):
+
+```
+agent = D3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 64, "context_size": 20, "target_return": 500.0})
+```
+
+- `choose_action` needs the context of the episode (the keyword arguments `reward`, `episode_start` and `episode_key`), which the agent's `evaluate` and `record_video` pass; without it, it raises a `NotImplementedError`, and without `target_return` a `ValueError`.
+- During training, decision transformers are evaluated online (`episode_reward_mean`) only with `target_return`; the validation metrics on validation episodes (`action_match`, `td_error`) are not computed for them.
+- Their ONNX export takes the target return as an input, see [ONNX export of agent policies](docs/onnx-export.md#decision-transformers).
+
 ### Evaluation
 
 Once you trained the agent, you can evaluate the agent policy on the environment and get the average accumulated reward (and standard deviation) as evaluation metric.

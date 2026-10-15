@@ -107,7 +107,7 @@ Inputs, in this order (all float32, batch axis 0):
 | --- | --- | --- |
 | `obs` | (batch, \*observation shape) | The observation, before d3rlpy's observation scaler. |
 | `reward` | (batch,) | The reward of the previous step; 0 at the episode start. |
-| `target_return` | (batch,) | The return to achieve; read at the episode start only. |
+| `target_return` | (batch,) | The return to achieve; read at the episode start only. In the framework, the `D3RLPYAgent` parameter `target_return`. |
 | `episode_starts` | (batch,) | 1 at the first step of an episode: resets the context window, the return still to achieve (to `target_return`) and the timestep (to 1). |
 | `dt_observations` | (batch, context_size, \*observation shape) | Context window (unscaled): zeros at the start, afterward the `*_out` outputs of the previous step. |
 | `dt_actions` | (batch, context_size, 1 or action dimension) | Actions of the context (discrete: the action index as float). |
