@@ -90,8 +90,7 @@ then uploads the model without ONNX artifact).
 d3rlpy knows only the action size, not the action space's bounds. `D3RLPYAgent` keeps the action space of its training
 environment (`action_space`), stores it in its saved file (an additional key `action_space` of d3rlpy's file, which
 `d3rlpy.load_learnable` still loads) and clips continuous actions to it, in `choose_action` and in the export (like
-SB3's `predict`). Files saved before have no action space: their continuous actions are not clipped, and the export
-logs a warning.
+SB3's `predict`).
 
 ### Decision transformers
 
@@ -129,8 +128,7 @@ keeps the unclipped action, like the stateful wrapper) and `<input>_out` for eve
 - The policy is exported in evaluation mode (e.g., for CrossQ's BatchRenorm layers); its training mode is restored
   afterward. d3rlpy's modules stay in evaluation mode, like after d3rlpy's `predict`.
 - The legacy TorchScript exporter (`dynamo=False`): the dynamo exporter, the default since torch 2.9, cannot map the
-  dynamic axes to the wrapper's variadic `forward(*inputs)`. d3rlpy's own `save_policy` (d3rlpy's format, not used by
-  the agent) is patched to use it, too (`patch_d3rlpy_onnx_export`).
+  dynamic axes to the wrapper's variadic `forward(*inputs)`.
 - There is no metadata in the file and no parity check at export time; the parity with the policies is tested (see
   below).
 
