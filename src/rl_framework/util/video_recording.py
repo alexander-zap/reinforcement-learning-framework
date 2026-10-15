@@ -29,6 +29,9 @@ def record_video(
             If True: Use SB3's VecVideoRecorder and FFMPEG to record video
             If False: Use simple recording method (saving RGB outputs from environment render)
 
+    Like `Agent.evaluate`, the agent's `choose_action` gets the context of the episode (`reward` of its previous step,
+    `episode_start` and `episode_key`), for agents whose actions depend on it (e.g., d3rlpy's decision transformers).
+
     If the agent has a features extractor, the environment's observations are preprocessed with it (like in training
     and evaluation) before the agent chooses its actions; the recorded frames (`render`) are unaffected. This requires
     a gym.Env: a VecEnv cannot be wrapped and is rejected with a ValueError.
@@ -70,13 +73,22 @@ def record_video(
             )
 
             vectorized_observation = env.reset()
+            reward, episode_start = 0.0, True
 
             try:
                 # Note: Vectorized environments are automatically reset at the end of each episode.
                 for _ in range(video_length):
-                    action = agent.choose_action(vectorized_observation[0])
+                    action = agent.choose_action(
+                        vectorized_observation[0],
+                        reward=reward,
+                        episode_start=episode_start,
+                        episode_key=(id(env), 0),
+                    )
                     vectorized_action = np.array([action])
-                    vectorized_observation, _, _, _ = env.step(vectorized_action)
+                    vectorized_observation, rewards, dones, _ = env.step(vectorized_action)
+                    # A done environment has started its next episode (automatic reset)
+                    episode_start = bool(dones[0])
+                    reward = 0.0 if episode_start else float(rewards[0])
             finally:
                 # Save the video (also releases the video writer when recording fails or is interrupted)
                 env.close()
@@ -91,10 +103,17 @@ def record_video(
         while len(images) < video_length:
             done = False
             observation, _ = video_recording_environment.reset()
+            reward, episode_start = 0.0, True
             img = video_recording_environment.render()
             images.append(img)
             while not done:
-                action = agent.choose_action(observation)
+                action = agent.choose_action(
+                    observation,
+                    reward=float(reward),
+                    episode_start=episode_start,
+                    episode_key=(id(video_recording_environment), 0),
+                )
+                episode_start = False
                 (
                     observation,
                     reward,

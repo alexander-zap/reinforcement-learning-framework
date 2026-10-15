@@ -24,7 +24,7 @@ from rl_framework.agent.imitation.d3rlpy.d3rlpy import (
     D3RLPY_ALGORITHM_CONFIG_REGISTRY,
     ConnectorAdapterFactory,
 )
-from rl_framework.util import FeaturesExtractor
+from rl_framework.util import FeaturesExtractor, record_video, video_recording
 from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, Toy, ToyParallel
 
 CARTPOLE_ROLLOUT = Path(__file__).parents[1] / "data" / "cartpole_rollout"
@@ -167,6 +167,23 @@ def test_decision_transformers_choose_actions_like_a_stateful_wrapper_per_episod
                 observation, deterministic=True, reward=reward, episode_start=episode_start, episode_key=key
             )
             assert action == wrappers[key].predict(observation, reward)
+
+
+@pytest.mark.parametrize("sb3_replay", [False, True], ids=["simple", "sb3"])
+def test_decision_transformers_can_be_recorded(tmp_path, monkeypatch, sb3_replay):
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: SimpleNamespace(returncode=0))
+    agent = InProcessD3RLPYAgent(
+        DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 3, "target_return": 1.0}
+    )
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Discrete(2)))
+
+    record_video(
+        agent,
+        Toy(BOX, gym.spaces.Discrete(2), episode_length=3),
+        tmp_path / "replay.gif",
+        video_length=5,
+        sb3_replay=sb3_replay,
+    )
 
 
 def test_decision_transformers_cannot_choose_actions_without_the_episode_context(observations):
