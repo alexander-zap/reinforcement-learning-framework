@@ -63,6 +63,7 @@ from d3rlpy.algos import (
     TD3Config,
     TD3PlusBC,
     TD3PlusBCConfig,
+    TransformerAlgoBase,
 )
 from d3rlpy.base import LearnableBase, LearnableConfig, LearnableConfigWithShape
 from d3rlpy.dataset import ReplayBuffer
@@ -83,6 +84,7 @@ from rl_framework.util import (
     patch_d3rlpy_onnx_export,
     wrap_environment_with_features_extractor_preprocessor,
 )
+from rl_framework.util.onnx_export import export_d3rlpy_algorithm_as_onnx
 
 patch_d3rlpy_map_location()
 patch_d3rlpy_onnx_export()
@@ -407,14 +409,22 @@ class D3RLPYAgent(ILAgent):
         )[0]
         return action
 
-    def save_policy_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
-        """Save the agent policy as ONNX model.
+    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = True, *args, **kwargs) -> None:
+        """Save the agent's greedy policy as ONNX model. Q-learning algorithms are exported like
+        `StableBaselinesAgent.save_policy_as_onnx` (inputs and outputs: see `rl_framework.util.onnx_export`), decision
+        transformers in d3rlpy's format (`save_policy`).
 
         Args:
             file_path (Path): The file where the policy should be saved to.
+            deterministic (bool): Only True is supported: d3rlpy exports the greedy policy.
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
-        self.algorithm.save_policy(Path(file_path).as_posix())
+        if isinstance(self.algorithm, TransformerAlgoBase):
+            if not deterministic:
+                raise ValueError("Decision transformers are exported greedy; export them with deterministic=True.")
+            self.algorithm.save_policy(Path(file_path).as_posix())
+        else:
+            export_d3rlpy_algorithm_as_onnx(self.algorithm, file_path, deterministic=deterministic)
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).

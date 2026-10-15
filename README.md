@@ -113,7 +113,7 @@ agent.evaluate(evaluation_environment=environment, n_eval_episodes=100, determin
 
 ### Exporting the policy as ONNX model
 
-The policies of the Stable-Baselines 3 and Imitation agents can be exported as ONNX model, e.g., for inference outside of Python:
+The policies of the Stable-Baselines 3, Imitation and d3rlpy agents can be exported as ONNX model, e.g., for inference outside of Python:
 
 ```
 agent.save_policy_as_onnx("policy.onnx", deterministic=True)

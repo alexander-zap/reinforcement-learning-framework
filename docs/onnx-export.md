@@ -8,9 +8,11 @@ agent.save_policy_as_onnx("policy.onnx", deterministic=False)  # stochastic, sam
 ```
 
 Both use `export_sb3_policy_as_onnx` in [`rl_framework/util/onnx_export.py`](../src/rl_framework/util/onnx_export.py).
-The `ClearMLConnector` uploads this export (with the default arguments) as artifact `<model name>_ONNX` together with
-every model and checkpoint. `D3RLPYAgent` exports with d3rlpy's own `save_policy`, in d3rlpy's format (not
-described here). `CustomAgent` has no ONNX export.
+`D3RLPYAgent` exports its Q-learning algorithms in the same contract with `export_d3rlpy_algorithm_as_onnx` (see
+[d3rlpy algorithms](#d3rlpy-algorithms)). `D3RLPYAgent` exports its decision transformers with d3rlpy's own
+`save_policy`, in d3rlpy's format (not described here). The `ClearMLConnector` uploads this export
+(with the default arguments) as artifact `<model name>_ONNX` together with every model and checkpoint.
+`CustomAgent` has no ONNX export.
 
 ## Inputs
 
@@ -44,7 +46,7 @@ All outputs have a dynamic batch axis `batch` (axis 1 for the LSTM states).
 The graph includes the observation preprocessing and the features extractor's network (`forward`), but not the
 features extractor's `preprocess`, which is applied to the environment's observations before the policy.
 
-## Supported policies
+## Supported StableBaseline3/Imitation policies
 
 | Policies | Action spaces | Stochastic export |
 | --- | --- | --- |
@@ -64,11 +66,35 @@ training) is not reproduced.
 **RecurrentPPO** is exported for one step per call: start with zero LSTM states and `episode_starts` = 1, then feed
 the `*_out` states back as inputs.
 
+## d3rlpy algorithms
+
+`D3RLPYAgent` exports the greedy policy of its Q-learning algorithms (all registered algorithms except the decision
+transformers and the random policies) in the contract above, deterministic only (`deterministic=False` raises a
+`ValueError`):
+
+- Input `obs`: the observation, before d3rlpy's observation scaler (the graph applies it). Tuple observations are not
+  supported.
+- Output `action`: like the algorithm's `predict` (the action scaler reversed): discrete actions as int64 (batch, 1),
+  continuous actions as float (batch, action dimension). Continuous actions are **not clipped** (d3rlpy does not know
+  the action space's bounds).
+- Output `q_values` (batch, number of actions): for the algorithms with a discrete Q-function (DQN, DoubleDQN, NFQ,
+  DiscreteCQL, DiscreteBCQ, DiscreteSAC), the mean over the Q-function ensemble, like `predict_value`. The action is
+  their argmax, except for DiscreteBCQ (the best action its imitator allows) and DiscreteSAC (the most likely action
+  of its policy).
+- BCQ, BEAR and CRR choose their action among sampled candidates, so their graph contains random nodes (like
+  d3rlpy's `predict`, which differs between calls).
+
+`RandomPolicy` and `DiscreteRandomPolicy` have no networks and raise a `NotImplementedError` (the `ClearMLConnector`
+then uploads the model without ONNX artifact).
+
 ## Export details
 
 - `torch.onnx.export` with opset 17, zero tensors as dummy inputs, and dynamic batch axes.
 - The policy is exported in evaluation mode (e.g., for CrossQ's BatchRenorm layers); its training mode is restored
-  afterward.
+  afterward. d3rlpy's modules stay in evaluation mode, like after d3rlpy's `predict`.
+- The legacy TorchScript exporter (`dynamo=False`): the dynamo exporter, the default since torch 2.9, cannot map the
+  dynamic axes to the wrapper's variadic `forward(*inputs)`. d3rlpy's own `save_policy` (decision transformers) is
+  patched to use it, too (`patch_d3rlpy_onnx_export`).
 - There is no metadata in the file and no parity check at export time; the parity with the policies is tested (see
   below).
 
@@ -77,8 +103,9 @@ the `*_out` states back as inputs.
 - Consumers: the `ClearMLConnector` uploads the export with the default arguments, so a change of the defaults or the
   contract changes every uploaded `_ONNX` artifact.
 - Tests: [`tests/test_onnx_export.py`](../tests/test_onnx_export.py) checks the contract and the parity with the SB3 and
-  SB3-contrib policies (actions, values, log-probabilities, Q-values, masks, noise, gSDE, several RecurrentPPO steps),
-  and the agent tests check the export through the agents. The exported graphs are evaluated with ONNX Runtime
+  SB3-contrib policies (actions, values, log-probabilities, Q-values, masks, noise, gSDE, several RecurrentPPO steps)
+  and with d3rlpy's `predict` and `predict_value` for every registered Q-learning algorithm, and the agent tests check
+  the export through the agents. The exported graphs are evaluated with ONNX Runtime
   (`onnxruntime`, dev dependency; capped per Python version in `pyproject.toml`: 1.24 dropped Python 3.10, 1.20
   dropped Python 3.9).
 - `onnx.reference.ReferenceEvaluator` (onnx 1.17) is no alternative for all graphs: it fails on negative

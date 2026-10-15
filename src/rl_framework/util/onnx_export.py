@@ -1,5 +1,6 @@
 """
-ONNX export of Stable-Baselines3 (and SB3-contrib) policies, used by the SB3 and imitation agents.
+ONNX export of Stable-Baselines3 (and SB3-contrib) policies, used by the SB3 and imitation agents, and of d3rlpy's
+Q-learning algorithms (greedy, deterministic only; see `D3RLPYOnnxPolicy` and `docs/onnx-export.md`).
 
 The exported contract (also described in `docs/onnx-export.md`):
 
@@ -41,6 +42,10 @@ from typing import Dict, List, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 import torch
+from d3rlpy import ActionSpace
+from d3rlpy.algos import DiscreteRandomPolicy, QLearningAlgoBase, RandomPolicy
+from d3rlpy.algos.qlearning.torch.utility import DiscreteQFunctionMixin
+from d3rlpy.torch_utility import asdict_without_copy
 from sb3_contrib.ars.policies import ARSPolicy
 from sb3_contrib.common.maskable.distributions import (
     MaskableBernoulliDistribution,
@@ -92,26 +97,49 @@ def export_sb3_policy_as_onnx(policy: BasePolicy, file_path: Path, deterministic
     assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
     onnx_policy = _build_onnx_policy(policy, deterministic)
-    input_names = onnx_policy.input_names()
-    output_names = onnx_policy.output_names()
     policy_was_training = policy.training
     # Evaluation mode (e.g., for the BatchRenorm layers of CrossQ), restored afterward
     policy.set_training_mode(False)
     try:
-        torch.onnx.export(
-            onnx_policy,
-            onnx_policy.dummy_inputs(),
-            str(file_path),
-            opset_version=17,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes={name: {onnx_policy.batch_axis(name): "batch"} for name in input_names + output_names},
-            # TorchScript exporter: the dynamo exporter (default since torch 2.9) cannot map `dynamic_axes` to the
-            # variadic `forward(*inputs)`
-            dynamo=False,
-        )
+        _export(onnx_policy, file_path)
     finally:
         policy.set_training_mode(policy_was_training)
+
+
+def export_d3rlpy_algorithm_as_onnx(algorithm: QLearningAlgoBase, file_path: Path, deterministic: bool = True) -> None:
+    """
+    Export the greedy policy of a trained d3rlpy Q-learning algorithm to ONNX, in the contract of the SB3 export (see
+    the module docstring): input `obs`, outputs `action` (like the algorithm's `predict`, with its observation and
+    action scalers) and, for algorithms with a discrete Q-function, `q_values`.
+    The modules are left in evaluation mode, like after d3rlpy's `predict`.
+
+    Args:
+        algorithm: Trained (or built) d3rlpy Q-learning algorithm. Decision transformers are not supported.
+        file_path: The `.onnx` file the policy is saved to.
+        deterministic: Only True is supported: d3rlpy exports the greedy policy.
+    """
+    assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
+
+    onnx_policy = D3RLPYOnnxPolicy(algorithm, deterministic)
+    algorithm.impl.modules.set_eval()
+    _export(onnx_policy, file_path)
+
+
+def _export(onnx_policy: "OnnxPolicy", file_path: Path) -> None:
+    input_names = onnx_policy.input_names()
+    output_names = onnx_policy.output_names()
+    torch.onnx.export(
+        onnx_policy,
+        onnx_policy.dummy_inputs(),
+        str(file_path),
+        opset_version=17,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes={name: {onnx_policy.batch_axis(name): "batch"} for name in input_names + output_names},
+        # TorchScript exporter: the dynamo exporter (default since torch 2.9) cannot map `dynamic_axes` to the
+        # variadic `forward(*inputs)`
+        dynamo=False,
+    )
 
 
 def _build_onnx_policy(policy: BasePolicy, deterministic: bool) -> "OnnxPolicy":
@@ -131,14 +159,23 @@ def _build_onnx_policy(policy: BasePolicy, deterministic: bool) -> "OnnxPolicy":
 
 
 class OnnxPolicy(torch.nn.Module):
-    """Wrapper of an SB3 policy with the exported inputs (observations, noise) and outputs (see module docstring)."""
+    """
+    Wrapper of a policy with the exported inputs (observations, noise) and outputs (see module docstring). The spaces
+    are the SB3 policy's unless given.
+    """
 
-    def __init__(self, policy: BasePolicy, deterministic: bool):
+    def __init__(
+        self,
+        policy,
+        deterministic: bool,
+        observation_space: Optional[gym.Space] = None,
+        action_space: Optional[gym.Space] = None,
+    ):
         super().__init__()
         self.policy = policy
         self.deterministic = deterministic
-        self.observation_space = policy.observation_space
-        self.action_space = policy.action_space
+        self.observation_space = observation_space or policy.observation_space
+        self.action_space = action_space or policy.action_space
         self.is_dict_observation = isinstance(self.observation_space, gym.spaces.Dict)
         self.observation_names = list(self.observation_space.spaces.keys()) if self.is_dict_observation else ["obs"]
         if isinstance(self.action_space, gym.spaces.Box):
@@ -169,8 +206,11 @@ class OnnxPolicy(torch.nn.Module):
         noise_names = [] if self.deterministic else [self.noise_name()]
         return self.observation_names + list(self.extra_inputs()) + noise_names
 
+    def device(self):
+        return self.policy.device
+
     def dummy_inputs(self) -> Tuple[torch.Tensor, ...]:
-        device = self.policy.device
+        device = self.device()
         spaces = (
             [self.observation_space.spaces[name] for name in self.observation_names]
             if self.is_dict_observation
@@ -428,13 +468,13 @@ class SquashedGaussianActorOnnxPolicy(OnnxPolicy):
 class DeterministicOnnxPolicy(OnnxPolicy):
     """Policies without policy-side sampling (their exploration is added by the algorithm)."""
 
-    def __init__(self, policy: BasePolicy, deterministic: bool):
+    def __init__(self, policy, deterministic: bool, *spaces: gym.Space):
         if not deterministic:
             raise ValueError(
                 f"{type(policy).__name__} policies are deterministic (their exploration is added by the algorithm); "
                 "export them with deterministic=True."
             )
-        super().__init__(policy, deterministic)
+        super().__init__(policy, deterministic, *spaces)
 
 
 class TD3OnnxPolicy(DeterministicOnnxPolicy):
@@ -474,3 +514,60 @@ class ARSOnnxPolicy(DeterministicOnnxPolicy):
         if isinstance(self.action_space, gym.spaces.Box):
             return self.postprocess_box_action(output)
         return output.argmax(dim=1, keepdim=True)
+
+
+class D3RLPYOnnxPolicy(DeterministicOnnxPolicy):
+    """
+    d3rlpy Q-learning algorithms (`QLearningAlgoBase`): outputs the greedy `action` like the algorithm's `predict`
+    (discrete: (batch, 1); continuous: not clipped, since d3rlpy does not know the action space's bounds) and, for
+    algorithms with a discrete Q-function (DQN, DoubleDQN, NFQ, DiscreteCQL, DiscreteBCQ, DiscreteSAC), `q_values`:
+    their mean over the Q-function ensemble, like `predict_value`. The action is their argmax except for DiscreteBCQ
+    (the best action its imitator allows) and DiscreteSAC (the most likely action of its policy).
+    """
+
+    def __init__(self, algorithm: QLearningAlgoBase, deterministic: bool):
+        if isinstance(algorithm, (RandomPolicy, DiscreteRandomPolicy)):
+            raise NotImplementedError(f"ONNX export is not supported for {type(algorithm).__name__} (no networks).")
+        if algorithm.impl is None:
+            raise ValueError("Cannot export an uninitialized algorithm. Start a training first to initialize.")
+        observation_shape = algorithm.impl.observation_shape
+        if isinstance(observation_shape[0], (list, tuple)):
+            raise NotImplementedError("ONNX export is not supported for d3rlpy algorithms with tuple observations.")
+        observation_space = gym.spaces.Box(-np.inf, np.inf, observation_shape, np.float32)
+        action_size = algorithm.impl.action_size
+        self.is_discrete = algorithm.get_action_type() == ActionSpace.DISCRETE
+        action_space = (
+            gym.spaces.Discrete(action_size)
+            if self.is_discrete
+            else gym.spaces.Box(-np.inf, np.inf, (action_size,), np.float32)
+        )
+        super().__init__(algorithm, deterministic, observation_space, action_space)
+        self.has_q_values = isinstance(algorithm.impl, DiscreteQFunctionMixin)
+        # Registered as submodules, so that their parameters are exported as weights (not as constants)
+        self.networks = torch.nn.ModuleDict(
+            {
+                name: module
+                for name, module in asdict_without_copy(algorithm.impl.modules).items()
+                if isinstance(module, torch.nn.Module)
+            }
+        )
+
+    def device(self):
+        return self.policy.impl.device
+
+    def output_names(self) -> List[str]:
+        return ["action", "q_values"] if self.has_q_values else ["action"]
+
+    def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
+        config, impl = self.policy.config, self.policy.impl
+        if config.observation_scaler:
+            observation = config.observation_scaler.transform(observation)
+        action = impl.inner_predict_best_action(observation)
+        if config.action_scaler:
+            action = config.action_scaler.reverse_transform(action)
+        if self.is_discrete:
+            action = action.reshape(-1, 1)
+        if not self.has_q_values:
+            return action
+        # Private forwarder of the Q-functions, like `DiscreteQFunctionMixin.inner_predict_value`
+        return action, impl._q_func_forwarder.compute_expected_q(observation, reduction="mean")

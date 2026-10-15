@@ -1,7 +1,11 @@
-"""ONNX export of SB3 policies: exported contract and parity with the policies (evaluated with ONNX Runtime)."""
+"""
+ONNX export of SB3 policies and d3rlpy algorithms: exported contract and parity with the policies (evaluated with ONNX
+Runtime).
+"""
 
 from unittest.mock import Mock
 
+import d3rlpy
 import numpy as np
 import onnx
 import onnxruntime
@@ -13,7 +17,12 @@ from sb3_contrib.common.recurrent.type_aliases import RNNStates
 from stable_baselines3 import DQN, PPO, SAC, TD3
 from stable_baselines3.common.policies import BasePolicy
 
-from rl_framework.util.onnx_export import GUMBEL_EPSILON, export_sb3_policy_as_onnx
+from rl_framework.agent.imitation.d3rlpy.d3rlpy import D3RLPY_ALGORITHM_CONFIG_REGISTRY
+from rl_framework.util.onnx_export import (
+    GUMBEL_EPSILON,
+    export_d3rlpy_algorithm_as_onnx,
+    export_sb3_policy_as_onnx,
+)
 from tests.toys import BOX, Toy
 
 BATCH = 5
@@ -556,3 +565,100 @@ def test_unknown_policy_types_are_rejected(tmp_path):
 def test_export_requires_onnx_file_ending(tmp_path):
     with pytest.raises(AssertionError, match=".onnx"):
         export_sb3_policy_as_onnx(build(PPO).policy, tmp_path / "policy.zip")
+
+
+# --- d3rlpy ---
+
+
+D3RLPY_BOX_ACTIONS = spaces.Box(-1, 1, (2,), np.float32)
+# Greedy actions chosen from sampled candidates (random nodes in the graph, like d3rlpy's `predict`)
+D3RLPY_SAMPLING_ALGORITHMS = {d3rlpy.algos.BCQ, d3rlpy.algos.BEAR, d3rlpy.algos.CRR}
+D3RLPY_Q_LEARNING_ALGORITHMS = [
+    algorithm_class
+    for algorithm_class in D3RLPY_ALGORITHM_CONFIG_REGISTRY
+    if issubclass(algorithm_class, d3rlpy.algos.QLearningAlgoBase)
+    and algorithm_class not in (d3rlpy.algos.RandomPolicy, d3rlpy.algos.DiscreteRandomPolicy)
+]
+D3RLPY_Q_VALUE_ALGORITHMS = {
+    d3rlpy.algos.DQN,
+    d3rlpy.algos.DoubleDQN,
+    d3rlpy.algos.NFQ,
+    d3rlpy.algos.DiscreteCQL,
+    d3rlpy.algos.DiscreteBCQ,
+    d3rlpy.algos.DiscreteSAC,
+}
+
+
+def build_d3rlpy(algorithm_class, **parameters):
+    algorithm = D3RLPY_ALGORITHM_CONFIG_REGISTRY[algorithm_class](**parameters).create(device="cpu")
+    discrete = algorithm.get_action_type() == d3rlpy.ActionSpace.DISCRETE
+    algorithm.build_with_env(Toy(BOX, spaces.Discrete(3) if discrete else D3RLPY_BOX_ACTIONS))
+    return algorithm
+
+
+def export_d3rlpy(algorithm, tmp_path):
+    file_path = tmp_path / "policy.onnx"
+    export_d3rlpy_algorithm_as_onnx(algorithm, file_path)
+    onnx_model = onnx.load(file_path)
+    onnx.checker.check_model(onnx_model)
+    return file_path, onnx_model
+
+
+@pytest.mark.parametrize("algorithm_class", D3RLPY_Q_LEARNING_ALGORITHMS, ids=lambda cls: cls.__name__)
+def test_d3rlpy_export_matches_the_algorithms_predict(tmp_path, algorithm_class):
+    algorithm = build_d3rlpy(algorithm_class)
+    file_path, onnx_model = export_d3rlpy(algorithm, tmp_path)
+    observations = sample_observations(BOX, np.random.default_rng(0))
+
+    outputs = run(file_path, {"obs": observations})
+
+    assert [graph_input.name for graph_input in onnx_model.graph.input] == ["obs"]
+    has_q_values = algorithm_class in D3RLPY_Q_VALUE_ALGORITHMS
+    assert list(outputs) == (["action", "q_values"] if has_q_values else ["action"])
+    is_sampling = algorithm_class in D3RLPY_SAMPLING_ALGORITHMS
+    assert bool({node.op_type for node in onnx_model.graph.node} & RANDOM_OP_TYPES) == is_sampling
+    expected_actions = algorithm.predict(observations)
+    if algorithm.get_action_type() == d3rlpy.ActionSpace.DISCRETE:
+        assert outputs["action"].dtype == np.int64
+        np.testing.assert_array_equal(outputs["action"], expected_actions.reshape(BATCH, 1))
+    elif is_sampling:
+        assert outputs["action"].shape == expected_actions.shape
+    else:
+        np.testing.assert_allclose(outputs["action"], expected_actions, rtol=1e-5, atol=1e-5)
+    if has_q_values:
+        expected_q_values = np.stack(
+            [algorithm.predict_value(observations, np.full(BATCH, action)) for action in range(3)], axis=1
+        )
+        np.testing.assert_allclose(outputs["q_values"], expected_q_values, rtol=1e-5, atol=1e-5)
+
+
+def test_d3rlpy_export_applies_the_observation_and_action_scalers(tmp_path):
+    algorithm = build_d3rlpy(
+        d3rlpy.algos.TD3,
+        observation_scaler=d3rlpy.preprocessing.MinMaxObservationScaler(minimum=-np.ones(3), maximum=np.ones(3) * 3),
+        action_scaler=d3rlpy.preprocessing.MinMaxActionScaler(
+            minimum=np.array([-2.0, 0.0]), maximum=np.array([2.0, 5.0])
+        ),
+    )
+    file_path, _ = export_d3rlpy(algorithm, tmp_path)
+    observations = sample_observations(BOX, np.random.default_rng(0))
+
+    outputs = run(file_path, {"obs": observations})
+
+    np.testing.assert_allclose(outputs["action"], algorithm.predict(observations), rtol=1e-5, atol=1e-5)
+
+
+def test_stochastic_d3rlpy_export_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="deterministic=True"):
+        export_d3rlpy_algorithm_as_onnx(build_d3rlpy(d3rlpy.algos.DQN), tmp_path / "policy.onnx", deterministic=False)
+
+
+def test_d3rlpy_random_policies_are_rejected(tmp_path):
+    with pytest.raises(NotImplementedError, match="not supported"):
+        export_d3rlpy_algorithm_as_onnx(build_d3rlpy(d3rlpy.algos.DiscreteRandomPolicy), tmp_path / "policy.onnx")
+
+
+def test_uninitialized_d3rlpy_algorithms_are_rejected(tmp_path):
+    algorithm = d3rlpy.algos.DQNConfig().create(device="cpu")
+    with pytest.raises(ValueError, match="uninitialized"):
+        export_d3rlpy_algorithm_as_onnx(algorithm, tmp_path / "policy.onnx")
