@@ -106,6 +106,9 @@ def export_sb3_policy_as_onnx(policy: BasePolicy, file_path: Path, deterministic
             input_names=input_names,
             output_names=output_names,
             dynamic_axes={name: {onnx_policy.batch_axis(name): "batch"} for name in input_names + output_names},
+            # TorchScript exporter: the dynamo exporter (default since torch 2.9) cannot map `dynamic_axes` to the
+            # variadic `forward(*inputs)`
+            dynamo=False,
         )
     finally:
         policy.set_training_mode(policy_was_training)
