@@ -323,6 +323,49 @@ def test_continuous_actions_are_clipped_to_the_action_space_also_in_the_onnx_exp
     np.testing.assert_allclose(onnx_actions, chosen_actions, rtol=1e-5, atol=1e-6)
 
 
+def fitted_observation_scaler(maximum=3.0):
+    return d3rlpy.preprocessing.MinMaxObservationScaler(minimum=-np.ones(3), maximum=np.ones(3) * maximum)
+
+
+@pytest.mark.parametrize(
+    "load_parameters",
+    [{}, {"observation_scaler": d3rlpy.preprocessing.MinMaxObservationScaler()}],
+    ids=["without-scalers", "with-unfitted-scalers"],
+)
+def test_load_keeps_the_fitted_scalers_of_the_file(tmp_path, load_parameters):
+    agent = InProcessD3RLPYAgent(
+        TD3,
+        {
+            "batch_size": 32,
+            "observation_scaler": fitted_observation_scaler(),
+            "action_scaler": d3rlpy.preprocessing.MinMaxActionScaler(minimum=-np.ones(2) * 2, maximum=np.ones(2) * 2),
+        },
+    )
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Box(-1, 1, (2,), np.float32)))
+    agent.save_to_file(tmp_path / "agent.d3")
+    box_observations = np.random.default_rng(0).uniform(-1, 1, (5, 3)).astype(np.float32)
+
+    loaded = InProcessD3RLPYAgent(TD3, {"batch_size": 32, **load_parameters})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    np.testing.assert_array_equal(loaded.algorithm.config.observation_scaler.maximum, np.ones(3) * 3)
+    np.testing.assert_array_equal(loaded.algorithm.config.action_scaler.maximum, np.ones(2) * 2)
+    np.testing.assert_allclose(
+        loaded.algorithm.predict(box_observations), agent.algorithm.predict(box_observations), rtol=1e-6
+    )
+
+
+def test_load_applies_fitted_scalers_of_the_parameters(tmp_path):
+    agent = InProcessD3RLPYAgent(TD3, {"batch_size": 32, "observation_scaler": fitted_observation_scaler()})
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Box(-1, 1, (2,), np.float32)))
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    loaded = InProcessD3RLPYAgent(TD3, {"batch_size": 32, "observation_scaler": fitted_observation_scaler(5.0)})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    np.testing.assert_array_equal(loaded.algorithm.config.observation_scaler.maximum, np.ones(3) * 5)
+
+
 def test_onnx_export_without_the_action_space_warns_that_continuous_actions_are_not_clipped(tmp_path, caplog):
     agent = built_continuous_agent(None)
 

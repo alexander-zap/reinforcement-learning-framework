@@ -465,7 +465,14 @@ class D3RLPYAgent(ILAgent):
 
         device = self.algorithm_parameters.pop("device", None)
         config = LearnableConfigWithShape.deserialize(obj["config"])
-        config.config = D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**self.algorithm_parameters)
+        algorithm_config = D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**self.algorithm_parameters)
+        # The scalers are fitted in training (to the dataset or environment): the stored ones, unless fitted ones are
+        #   given (the parameters usually hold unfitted ones, or none)
+        for scaler_name in ("observation_scaler", "action_scaler", "reward_scaler"):
+            scaler = getattr(algorithm_config, scaler_name)
+            if scaler is None or not scaler.built:
+                setattr(algorithm_config, scaler_name, getattr(config.config, scaler_name))
+        config.config = algorithm_config
         self.algorithm = config.create(device=device)
         if device:
             self.algorithm_parameters.update({"device": device})
