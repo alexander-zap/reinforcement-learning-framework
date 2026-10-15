@@ -1,6 +1,9 @@
+from unittest.mock import patch
+
 import d3rlpy.torch_utility
 import datasets.filesystems
 import torch as th
+from d3rlpy.algos import QLearningAlgoBase, TransformerAlgoBase
 from imitation.algorithms import sqil
 from imitation.util import util
 from stable_baselines3.common import type_aliases
@@ -34,6 +37,23 @@ def patch_d3rlpy_map_location():
         raise ValueError(f"invalid device={device}")
 
     d3rlpy.torch_utility.map_location = map_location
+
+
+# d3rlpy (up to 2.8.1) exports a traced function to ONNX, which only the TorchScript exporter accepts, without choosing
+#   the exporter; the default is the dynamo exporter since torch 2.9
+def patch_d3rlpy_onnx_export():
+    def patched(save_policy):
+        def patched_save_policy(self, fname):
+            export = th.onnx.export
+            with patch.object(th.onnx, "export", lambda *args, **kwargs: export(*args, **{"dynamo": False, **kwargs})):
+                save_policy(self, fname)
+
+        patched_save_policy.is_patched = True
+        return patched_save_policy
+
+    for algorithm_class in (QLearningAlgoBase, TransformerAlgoBase):
+        if not getattr(algorithm_class.save_policy, "is_patched", False):
+            algorithm_class.save_policy = patched(algorithm_class.save_policy)
 
 
 def patch_imitation_safe_to_tensor():

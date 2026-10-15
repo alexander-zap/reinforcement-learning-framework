@@ -80,10 +80,12 @@ from rl_framework.util import (
     Environment,
     FeaturesExtractor,
     patch_d3rlpy_map_location,
+    patch_d3rlpy_onnx_export,
     wrap_environment_with_features_extractor_preprocessor,
 )
 
 patch_d3rlpy_map_location()
+patch_d3rlpy_onnx_export()
 
 D3RLPY_ALGORITHM_CONFIG_REGISTRY: dict[Type[LearnableBase], Type[LearnableConfig]] = {
     AWAC: AWACConfig,

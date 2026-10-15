@@ -32,6 +32,7 @@ from .sb3_training_callbacks import (
 from .types import Environment, EnvironmentFactory
 from .util import (
     patch_d3rlpy_map_location,
+    patch_d3rlpy_onnx_export,
     patch_datasets,
     patch_imitation_safe_to_tensor,
     patch_imitation_sqil_replay_buffer,
