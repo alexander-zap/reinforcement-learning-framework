@@ -120,11 +120,21 @@ class Agent(ABC):
                 vectorized_environments = evaluation_environments
 
                 def evaluate_agent_on_environment(evaluation_environment, n_episodes: int):
+                    def choose_actions(observations, rewards, started_agents) -> dict:
+                        return {
+                            agent: self.choose_action(
+                                observations[agent],
+                                deterministic=deterministic,
+                                reward=0.0 if agent in started_agents else float(rewards.get(agent, 0.0)),
+                                episode_start=agent in started_agents,
+                                episode_key=(id(evaluation_environment), agent),
+                            )
+                            for agent in evaluation_environment.agents
+                        }
+
                     prev_observations, _ = evaluation_environment.reset()
-                    prev_actions = {
-                        agent: self.choose_action(prev_observations[agent], deterministic=deterministic)
-                        for agent in evaluation_environment.agents
-                    }
+                    prev_actions = choose_actions(prev_observations, {}, set(evaluation_environment.agents))
+                    running_agents = set(evaluation_environment.agents)
 
                     episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
                     local_episode_rewards = []
@@ -147,11 +157,17 @@ class Agent(ABC):
                         dones = terms | truncs
                         env_done = dones.all()
 
-                        # next action to be executed (based on new observation)
-                        actions = {
-                            agent: self.choose_action(observations[agent], deterministic=deterministic)
+                        # next action to be executed (based on new observation); an agent starts an episode if it
+                        #   appears or restarts (done, but still active: see the docstring)
+                        started_agents = {
+                            agent
                             for agent in evaluation_environment.agents
+                            if agent not in running_agents
+                            or terminations.get(agent, False)
+                            or truncations.get(agent, False)
                         }
+                        actions = choose_actions(observations, rewards, started_agents)
+                        running_agents = set(evaluation_environment.agents)
 
                         for agent in rewards.keys():
                             done = terminations[agent] or truncations[agent]
@@ -180,10 +196,8 @@ class Agent(ABC):
 
                         if env_done:
                             prev_observations, _ = evaluation_environment.reset()
-                            prev_actions = {
-                                agent: self.choose_action(prev_observations[agent], deterministic=deterministic)
-                                for agent in evaluation_environment.agents
-                            }
+                            prev_actions = choose_actions(prev_observations, {}, set(evaluation_environment.agents))
+                            running_agents = set(evaluation_environment.agents)
                             episode_reward = {agent: 0.0 for agent in evaluation_environment.agents}
 
                     with episode_rewards_lock:
@@ -221,11 +235,20 @@ class Agent(ABC):
                     metric_aggregator = MetricAggregator(connector=connector)
                     log_frequency = max(min(n_episodes // n_envs, logging_frequency), 1)
 
+                    def choose_actions(observations, rewards, episode_starts) -> list:
+                        return [
+                            self.choose_action(
+                                observation,
+                                deterministic=deterministic,
+                                reward=0.0 if episode_starts[index] else float(rewards[index]),
+                                episode_start=bool(episode_starts[index]),
+                                episode_key=(id(evaluation_environment), index),
+                            )
+                            for index, observation in enumerate(observations)
+                        ]
+
                     prev_observations = evaluation_environment.reset()
-                    prev_actions = [
-                        self.choose_action(observation, deterministic=deterministic)
-                        for observation in prev_observations
-                    ]
+                    prev_actions = choose_actions(prev_observations, np.zeros(n_envs), np.ones(n_envs, dtype=bool))
 
                     current_rewards = np.zeros(n_envs)
                     local_episode_rewards = []
@@ -236,9 +259,8 @@ class Agent(ABC):
                     while (episode_counts < episode_targets).any():
                         observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
                         metric_aggregator.aggregate_step(observations, prev_actions, rewards, dones, infos)
-                        actions = [
-                            self.choose_action(observation, deterministic=deterministic) for observation in observations
-                        ]
+                        # Sub-environments reset automatically: a done one has started its next episode
+                        actions = choose_actions(observations, rewards, dones)
 
                         current_rewards += rewards
 
@@ -299,6 +321,16 @@ class Agent(ABC):
 
     @abstractmethod
     def choose_action(self, observation: object, deterministic: bool, *args, **kwargs):
+        """
+        Choose the action for the observation.
+
+        `evaluate` also passes the context of the episode, for agents whose actions depend on it (e.g., d3rlpy's
+        decision transformers); other agents ignore it:
+            - reward (float): The reward of the episode's previous step (0 at its start).
+            - episode_start (bool): Whether the observation is the first of an episode.
+            - episode_key (Hashable): Identifies the running episode's environment (and its sub-environment or
+              PettingZoo agent); episodes are evaluated interleaved.
+        """
         raise NotImplementedError
 
     @abstractmethod
