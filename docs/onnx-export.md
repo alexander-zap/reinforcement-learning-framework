@@ -8,11 +8,10 @@ agent.save_policy_as_onnx("policy.onnx", deterministic=False)  # stochastic, sam
 ```
 
 Both use `export_sb3_policy_as_onnx` in [`rl_framework/util/onnx_export.py`](../src/rl_framework/util/onnx_export.py).
-`D3RLPYAgent` exports its Q-learning algorithms in the same contract with `export_d3rlpy_algorithm_as_onnx` (see
-[d3rlpy algorithms](#d3rlpy-algorithms)). `D3RLPYAgent` exports its decision transformers with d3rlpy's own
-`save_policy`, in d3rlpy's format (not described here). The `ClearMLConnector` uploads this export
-(with the default arguments) as artifact `<model name>_ONNX` together with every model and checkpoint.
-`CustomAgent` has no ONNX export.
+`D3RLPYAgent` exports its algorithms in the same contract with `export_d3rlpy_algorithm_as_onnx` (see
+[d3rlpy algorithms](#d3rlpy-algorithms)); its decision transformers need further inputs. The `ClearMLConnector`
+uploads this export (with the default arguments) as artifact `<model name>_ONNX` together with every model and
+checkpoint. `CustomAgent` has no ONNX export.
 
 ## Inputs
 
@@ -68,6 +67,8 @@ the `*_out` states back as inputs.
 
 ## d3rlpy algorithms
 
+### Q-learning algorithms
+
 `D3RLPYAgent` exports the greedy policy of its Q-learning algorithms (all registered algorithms except the decision
 transformers and the random policies) in the contract above, deterministic only (`deterministic=False` raises a
 `ValueError`):
@@ -87,14 +88,44 @@ transformers and the random policies) in the contract above, deterministic only 
 `RandomPolicy` and `DiscreteRandomPolicy` have no networks and raise a `NotImplementedError` (the `ClearMLConnector`
 then uploads the model without ONNX artifact).
 
+### Decision transformers
+
+`DecisionTransformer` and `DiscreteDecisionTransformer` condition their action on the last `context_size` steps
+(observations, actions, returns-to-go and timesteps) and on the return still to achieve. They are exported for one
+step per call, like d3rlpy's `StatefulTransformerWrapper` (and like RecurrentPPO with its LSTM states): the context
+window is an input, and its update an output to feed into the next step. Unlike the other exports, they need the
+reward and the target return, so a consumer of the other exports cannot run them unchanged.
+
+Inputs, in this order (all float32, batch axis 0):
+
+| Input | Shape | Description |
+| --- | --- | --- |
+| `obs` | (batch, \*observation shape) | The observation, before d3rlpy's observation scaler. |
+| `reward` | (batch,) | The reward of the previous step; 0 at the episode start. |
+| `target_return` | (batch,) | The return to achieve; read at the episode start only. |
+| `episode_starts` | (batch,) | 1 at the first step of an episode: resets the context window, the return still to achieve (to `target_return`) and the timestep (to 1). |
+| `dt_observations` | (batch, context_size, \*observation shape) | Context window (unscaled): zeros at the start, afterward the `*_out` outputs of the previous step. |
+| `dt_actions` | (batch, context_size, 1 or action dimension) | Actions of the context (discrete: the action index as float). |
+| `dt_returns_to_go` | (batch, context_size, 1) | Returns-to-go of the context. |
+| `dt_timesteps` | (batch, context_size) | Timesteps of the context (1 at the episode start, at most `max_timestep`). |
+| `dt_return_rest` | (batch,) | The return still to achieve. |
+| `dt_timestep` | (batch,) | The timestep of the next step. |
+| `noise_u` | (batch, number of actions) | Stochastic export of discrete decision transformers only: Uniform(0, 1) noise for the Gumbel-max trick. |
+
+Outputs: `action` (discrete: int64 (batch, 1), the argmax of the logits or sampled from `noise_u` like d3rlpy's
+`SoftmaxTransformerActionSampler`, the default of `as_stateful_wrapper`; continuous: (batch, action dimension) like
+`IdentityTransformerActionSampler`, the action scaler reversed and not clipped) and `<input>_out` for every `dt_*`
+input. The observation, action and reward scalers are applied to the context window in the graph, like d3rlpy's
+`predict`. Continuous decision transformers are deterministic only (`deterministic=False` raises a `ValueError`).
+
 ## Export details
 
 - `torch.onnx.export` with opset 17, zero tensors as dummy inputs, and dynamic batch axes.
 - The policy is exported in evaluation mode (e.g., for CrossQ's BatchRenorm layers); its training mode is restored
   afterward. d3rlpy's modules stay in evaluation mode, like after d3rlpy's `predict`.
 - The legacy TorchScript exporter (`dynamo=False`): the dynamo exporter, the default since torch 2.9, cannot map the
-  dynamic axes to the wrapper's variadic `forward(*inputs)`. d3rlpy's own `save_policy` (decision transformers) is
-  patched to use it, too (`patch_d3rlpy_onnx_export`).
+  dynamic axes to the wrapper's variadic `forward(*inputs)`. d3rlpy's own `save_policy` (d3rlpy's format, not used by
+  the agent) is patched to use it, too (`patch_d3rlpy_onnx_export`).
 - There is no metadata in the file and no parity check at export time; the parity with the policies is tested (see
   below).
 
@@ -104,7 +135,8 @@ then uploads the model without ONNX artifact).
   contract changes every uploaded `_ONNX` artifact.
 - Tests: [`tests/test_onnx_export.py`](../tests/test_onnx_export.py) checks the contract and the parity with the SB3 and
   SB3-contrib policies (actions, values, log-probabilities, Q-values, masks, noise, gSDE, several RecurrentPPO steps)
-  and with d3rlpy's `predict` and `predict_value` for every registered Q-learning algorithm, and the agent tests check
+  and with d3rlpy's `predict` and `predict_value` for every registered Q-learning algorithm (decision transformers:
+  with `StatefulTransformerWrapper` over several steps, with a sliding context window), and the agent tests check
   the export through the agents. The exported graphs are evaluated with ONNX Runtime
   (`onnxruntime`, dev dependency; capped per Python version in `pyproject.toml`: 1.24 dropped Python 3.10, 1.20
   dropped Python 3.9).

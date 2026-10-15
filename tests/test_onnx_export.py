@@ -662,3 +662,122 @@ def test_uninitialized_d3rlpy_algorithms_are_rejected(tmp_path):
     algorithm = d3rlpy.algos.DQNConfig().create(device="cpu")
     with pytest.raises(ValueError, match="uninitialized"):
         export_d3rlpy_algorithm_as_onnx(algorithm, tmp_path / "policy.onnx")
+
+
+# --- d3rlpy decision transformers ---
+
+
+DT_STATES = ["dt_observations", "dt_actions", "dt_returns_to_go", "dt_timesteps", "dt_return_rest", "dt_timestep"]
+DT_TARGET_RETURN = 10.0
+# Smaller than the steps of the tests, so that the context window slides
+DT_CONTEXT_SIZE = 3
+
+
+def initial_decision_transformer_feeds(session):
+    """Zero feeds of every input, with a batch of BATCH."""
+    return {
+        graph_input.name: np.zeros([BATCH if dim == "batch" else dim for dim in graph_input.shape], np.float32)
+        for graph_input in session.get_inputs()
+    }
+
+
+def decision_transformer_step(session, feeds, observations, rewards, episode_starts, noise=None):
+    """One step of BATCH environments: the actions, with the new context window fed into the next step."""
+    feeds.update(
+        obs=observations.astype(np.float32),
+        reward=rewards.astype(np.float32),
+        target_return=np.full(BATCH, DT_TARGET_RETURN, np.float32),
+        episode_starts=episode_starts.astype(np.float32),
+    )
+    if noise is not None:
+        feeds["noise_u"] = noise.astype(np.float32)
+    output_names = [output.name for output in session.get_outputs()]
+    outputs = dict(zip(output_names, session.run(output_names, feeds)))
+    for name in DT_STATES:
+        feeds[name] = outputs[f"{name}_out"]
+    return outputs["action"]
+
+
+@pytest.mark.parametrize(
+    "algorithm_class, action_sampler",
+    [
+        (d3rlpy.algos.DecisionTransformer, d3rlpy.algos.IdentityTransformerActionSampler()),
+        (d3rlpy.algos.DiscreteDecisionTransformer, d3rlpy.algos.GreedyTransformerActionSampler()),
+    ],
+    ids=["continuous", "discrete"],
+)
+def test_decision_transformer_export_matches_the_stateful_wrapper_over_several_steps(
+    tmp_path, algorithm_class, action_sampler
+):
+    algorithm = build_d3rlpy(
+        algorithm_class,
+        context_size=DT_CONTEXT_SIZE,
+        observation_scaler=d3rlpy.preprocessing.MinMaxObservationScaler(minimum=-np.ones(3), maximum=np.ones(3) * 3),
+        reward_scaler=d3rlpy.preprocessing.MultiplyRewardScaler(multiplier=0.5),
+        **(
+            {
+                "action_scaler": d3rlpy.preprocessing.MinMaxActionScaler(
+                    minimum=np.array([-2.0, 0.0]), maximum=np.array([2.0, 5.0])
+                )
+            }
+            if algorithm_class is d3rlpy.algos.DecisionTransformer
+            else {}
+        ),
+    )
+    file_path, onnx_model = export_d3rlpy(algorithm, tmp_path)
+    session = onnxruntime.InferenceSession(str(file_path), providers=["CPUExecutionProvider"])
+    feeds = initial_decision_transformer_feeds(session)
+    wrappers = [
+        d3rlpy.algos.StatefulTransformerWrapper(algorithm, DT_TARGET_RETURN, action_sampler) for _ in range(BATCH)
+    ]
+    rng = np.random.default_rng(0)
+
+    assert list(feeds) == ["obs", "reward", "target_return", "episode_starts"] + DT_STATES
+    assert not {node.op_type for node in onnx_model.graph.node} & RANDOM_OP_TYPES
+    for step in range(8):
+        observations = sample_observations(BOX, rng)
+        rewards = rng.standard_normal(BATCH)
+        # Every environment starts at step 0, environment 1 starts a second episode at step 5
+        episode_starts = np.zeros(BATCH)
+        if step == 0:
+            episode_starts[:] = 1
+        if step == 5:
+            episode_starts[1] = 1
+        rewards[episode_starts > 0] = 0.0
+        for index in np.flatnonzero(episode_starts):
+            wrappers[index].reset()
+
+        actions = decision_transformer_step(session, feeds, observations, rewards, episode_starts)
+
+        expected_actions = np.array(
+            [np.asarray(wrapper.predict(observations[i], float(rewards[i]))) for i, wrapper in enumerate(wrappers)]
+        )
+        if algorithm_class is d3rlpy.algos.DiscreteDecisionTransformer:
+            assert actions.dtype == np.int64
+            np.testing.assert_array_equal(actions, expected_actions.reshape(BATCH, 1))
+        else:
+            np.testing.assert_allclose(actions, expected_actions, rtol=1e-5, atol=1e-5)
+
+
+def test_stochastic_discrete_decision_transformer_export_samples_with_gumbel_max_from_the_noise(tmp_path):
+    algorithm = build_d3rlpy(d3rlpy.algos.DiscreteDecisionTransformer, context_size=DT_CONTEXT_SIZE)
+    file_path = tmp_path / "policy.onnx"
+    export_d3rlpy_algorithm_as_onnx(algorithm, file_path, deterministic=False)
+    session = onnxruntime.InferenceSession(str(file_path), providers=["CPUExecutionProvider"])
+    observations = sample_observations(BOX, np.random.default_rng(0))
+    # Noise close to 1 for the chosen action: its Gumbel noise dominates the logits
+    chosen_actions = np.arange(BATCH) % 3
+    noise = np.full((BATCH, 3), 0.5)
+    noise[np.arange(BATCH), chosen_actions] = 1.0 - 1e-6
+
+    actions = decision_transformer_step(
+        session, initial_decision_transformer_feeds(session), observations, np.zeros(BATCH), np.ones(BATCH), noise
+    )
+
+    np.testing.assert_array_equal(actions[:, 0], chosen_actions)
+
+
+def test_stochastic_continuous_decision_transformer_export_is_rejected(tmp_path):
+    algorithm = build_d3rlpy(d3rlpy.algos.DecisionTransformer)
+    with pytest.raises(ValueError, match="deterministic=True"):
+        export_d3rlpy_algorithm_as_onnx(algorithm, tmp_path / "policy.onnx", deterministic=False)

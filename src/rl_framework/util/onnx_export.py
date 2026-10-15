@@ -1,6 +1,7 @@
 """
 ONNX export of Stable-Baselines3 (and SB3-contrib) policies, used by the SB3 and imitation agents, and of d3rlpy's
-Q-learning algorithms (greedy, deterministic only; see `D3RLPYOnnxPolicy` and `docs/onnx-export.md`).
+algorithms (Q-learning algorithms: `D3RLPYOnnxPolicy`; decision transformers, with further inputs:
+`D3RLPYTransformerOnnxPolicy`; see `docs/onnx-export.md`).
 
 The exported contract (also described in `docs/onnx-export.md`):
 
@@ -43,8 +44,14 @@ import gymnasium as gym
 import numpy as np
 import torch
 from d3rlpy import ActionSpace
-from d3rlpy.algos import DiscreteRandomPolicy, QLearningAlgoBase, RandomPolicy
+from d3rlpy.algos import (
+    DiscreteRandomPolicy,
+    QLearningAlgoBase,
+    RandomPolicy,
+    TransformerAlgoBase,
+)
 from d3rlpy.algos.qlearning.torch.utility import DiscreteQFunctionMixin
+from d3rlpy.base import LearnableBase
 from d3rlpy.torch_utility import asdict_without_copy
 from sb3_contrib.ars.policies import ARSPolicy
 from sb3_contrib.common.maskable.distributions import (
@@ -106,21 +113,30 @@ def export_sb3_policy_as_onnx(policy: BasePolicy, file_path: Path, deterministic
         policy.set_training_mode(policy_was_training)
 
 
-def export_d3rlpy_algorithm_as_onnx(algorithm: QLearningAlgoBase, file_path: Path, deterministic: bool = True) -> None:
+def export_d3rlpy_algorithm_as_onnx(algorithm: LearnableBase, file_path: Path, deterministic: bool = True) -> None:
     """
-    Export the greedy policy of a trained d3rlpy Q-learning algorithm to ONNX, in the contract of the SB3 export (see
-    the module docstring): input `obs`, outputs `action` (like the algorithm's `predict`, with its observation and
-    action scalers) and, for algorithms with a discrete Q-function, `q_values`.
+    Export the policy of a trained d3rlpy algorithm to ONNX, in the contract of the SB3 export (see the module
+    docstring):
+        - Q-learning algorithms (`D3RLPYOnnxPolicy`): the greedy policy, input `obs`, outputs `action` (like the
+          algorithm's `predict`, with its observation and action scalers) and, for algorithms with a discrete
+          Q-function, `q_values`.
+        - Decision transformers (`D3RLPYTransformerOnnxPolicy`): one step per call, with the further inputs `reward`
+          and `target_return` and the context window as inputs and outputs.
     The modules are left in evaluation mode, like after d3rlpy's `predict`.
 
     Args:
-        algorithm: Trained (or built) d3rlpy Q-learning algorithm. Decision transformers are not supported.
+        algorithm: Trained (or built) d3rlpy algorithm.
         file_path: The `.onnx` file the policy is saved to.
-        deterministic: Only True is supported: d3rlpy exports the greedy policy.
+        deterministic: Whether the most likely action is exported (default) or, for discrete decision transformers
+            only, one sampled from the noise input `noise_u`. Other algorithms raise a `ValueError` for False.
     """
     assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
-    onnx_policy = D3RLPYOnnxPolicy(algorithm, deterministic)
+    onnx_policy = (
+        D3RLPYTransformerOnnxPolicy(algorithm, deterministic)
+        if isinstance(algorithm, TransformerAlgoBase)
+        else D3RLPYOnnxPolicy(algorithm, deterministic)
+    )
     algorithm.impl.modules.set_eval()
     _export(onnx_policy, file_path)
 
@@ -516,16 +532,10 @@ class ARSOnnxPolicy(DeterministicOnnxPolicy):
         return output.argmax(dim=1, keepdim=True)
 
 
-class D3RLPYOnnxPolicy(DeterministicOnnxPolicy):
-    """
-    d3rlpy Q-learning algorithms (`QLearningAlgoBase`): outputs the greedy `action` like the algorithm's `predict`
-    (discrete: (batch, 1); continuous: not clipped, since d3rlpy does not know the action space's bounds) and, for
-    algorithms with a discrete Q-function (DQN, DoubleDQN, NFQ, DiscreteCQL, DiscreteBCQ, DiscreteSAC), `q_values`:
-    their mean over the Q-function ensemble, like `predict_value`. The action is their argmax except for DiscreteBCQ
-    (the best action its imitator allows) and DiscreteSAC (the most likely action of its policy).
-    """
+class D3RLPYOnnxPolicyBase(OnnxPolicy):
+    """d3rlpy algorithms: their spaces (from the observation shape and action size) and networks."""
 
-    def __init__(self, algorithm: QLearningAlgoBase, deterministic: bool):
+    def __init__(self, algorithm: LearnableBase, deterministic: bool):
         if isinstance(algorithm, (RandomPolicy, DiscreteRandomPolicy)):
             raise NotImplementedError(f"ONNX export is not supported for {type(algorithm).__name__} (no networks).")
         if algorithm.impl is None:
@@ -542,7 +552,6 @@ class D3RLPYOnnxPolicy(DeterministicOnnxPolicy):
             else gym.spaces.Box(-np.inf, np.inf, (action_size,), np.float32)
         )
         super().__init__(algorithm, deterministic, observation_space, action_space)
-        self.has_q_values = isinstance(algorithm.impl, DiscreteQFunctionMixin)
         # Registered as submodules, so that their parameters are exported as weights (not as constants)
         self.networks = torch.nn.ModuleDict(
             {
@@ -554,6 +563,27 @@ class D3RLPYOnnxPolicy(DeterministicOnnxPolicy):
 
     def device(self):
         return self.policy.impl.device
+
+    def require_deterministic(self):
+        if not self.deterministic:
+            raise ValueError(
+                f"{type(self.policy).__name__} exports its greedy policy only; export it with deterministic=True."
+            )
+
+
+class D3RLPYOnnxPolicy(D3RLPYOnnxPolicyBase):
+    """
+    d3rlpy Q-learning algorithms (`QLearningAlgoBase`): outputs the greedy `action` like the algorithm's `predict`
+    (discrete: (batch, 1); continuous: not clipped, since d3rlpy does not know the action space's bounds) and, for
+    algorithms with a discrete Q-function (DQN, DoubleDQN, NFQ, DiscreteCQL, DiscreteBCQ, DiscreteSAC), `q_values`:
+    their mean over the Q-function ensemble, like `predict_value`. The action is their argmax except for DiscreteBCQ
+    (the best action its imitator allows) and DiscreteSAC (the most likely action of its policy).
+    """
+
+    def __init__(self, algorithm: QLearningAlgoBase, deterministic: bool):
+        super().__init__(algorithm, deterministic)
+        self.require_deterministic()
+        self.has_q_values = isinstance(algorithm.impl, DiscreteQFunctionMixin)
 
     def output_names(self) -> List[str]:
         return ["action", "q_values"] if self.has_q_values else ["action"]
@@ -571,3 +601,89 @@ class D3RLPYOnnxPolicy(DeterministicOnnxPolicy):
             return action
         # Private forwarder of the Q-functions, like `DiscreteQFunctionMixin.inner_predict_value`
         return action, impl._q_func_forwarder.compute_expected_q(observation, reduction="mean")
+
+
+class D3RLPYTransformerOnnxPolicy(D3RLPYOnnxPolicyBase):
+    """
+    d3rlpy decision transformers (`TransformerAlgoBase`), one step per call like d3rlpy's `StatefulTransformerWrapper`:
+    inputs `reward` (of the previous step, 0 at the episode start), `target_return` (read at the episode start),
+    `episode_starts` and the context window `dt_*` (zeros at the start, afterward the `*_out` outputs of the previous
+    step); outputs `action` and the new context window. Discrete actions are the argmax of the logits, or sampled with
+    the Gumbel-max trick from `noise_u` (like `SoftmaxTransformerActionSampler` with temperature 1); continuous actions
+    are deterministic only (like `IdentityTransformerActionSampler`) and not clipped.
+    """
+
+    STATE_NAMES = ["dt_observations", "dt_actions", "dt_returns_to_go", "dt_timesteps", "dt_return_rest", "dt_timestep"]
+
+    def __init__(self, algorithm: TransformerAlgoBase, deterministic: bool):
+        super().__init__(algorithm, deterministic)
+        if not self.is_discrete:
+            self.require_deterministic()
+        self.context_size = algorithm.config.context_size
+        self.max_timestep = algorithm.config.max_timestep
+        self.action_dim = 1 if self.is_discrete else algorithm.impl.action_size
+
+    def output_names(self) -> List[str]:
+        return ["action"] + [f"{name}_out" for name in self.STATE_NAMES]
+
+    def extra_inputs(self) -> Dict[str, Tuple[Tuple[int, ...], float]]:
+        window = (1, self.context_size)
+        return {
+            "reward": ((1,), 0.0),
+            "target_return": ((1,), 0.0),
+            "episode_starts": ((1,), 1.0),
+            "dt_observations": ((*window, *self.observation_space.shape), 0.0),
+            "dt_actions": ((*window, self.action_dim), 0.0),
+            "dt_returns_to_go": ((*window, 1), 0.0),
+            "dt_timesteps": (window, 0.0),
+            "dt_return_rest": ((1,), 0.0),
+            "dt_timestep": ((1,), 0.0),
+        }
+
+    def noise_dim(self) -> int:
+        return int(self.action_space.n)
+
+    def forward_policy(self, observation, extras: Dict[str, torch.Tensor], noise: Optional[torch.Tensor]):
+        config = self.policy.config
+        episode_starts = extras["episode_starts"]
+        starts, reward = episode_starts > 0.5, extras["reward"]
+        # Reset at episode starts (like `StatefulTransformerWrapper.reset`): an empty context (zeros, d3rlpy's
+        #   padding), the target return as the return still to achieve, and timestep 1
+        return_rest = torch.where(starts, extras["target_return"], extras["dt_return_rest"])
+        timestep = torch.where(starts, torch.ones_like(reward), extras["dt_timestep"])
+
+        def append(window, value):
+            """The window shifted by one step (dropping its oldest entry), with the value appended."""
+            kept_window = window * (1.0 - episode_starts).view(-1, *([1] * (window.dim() - 1)))
+            return torch.cat([kept_window[:, 1:], value.unsqueeze(1)], dim=1)
+
+        observations = append(extras["dt_observations"], observation)
+        # The action of this step is not known yet: d3rlpy's pad action (zeros)
+        actions = append(extras["dt_actions"], torch.zeros_like(extras["dt_actions"][:, 0]))
+        returns_to_go = append(extras["dt_returns_to_go"], (return_rest - reward).unsqueeze(1))
+        timesteps = append(extras["dt_timesteps"], timestep)
+
+        # Scalers applied to the whole context, like `TorchTransformerInput.from_numpy`
+        scaled_observations, scaled_actions, scaled_returns_to_go = observations, actions, returns_to_go
+        if config.observation_scaler:
+            scaled_observations = config.observation_scaler.transform(observations)
+        if config.action_scaler:
+            scaled_actions = config.action_scaler.transform(actions)
+        if config.reward_scaler:
+            scaled_returns_to_go = config.reward_scaler.transform(returns_to_go)
+        transformer_output = self.networks["transformer"](
+            scaled_observations, scaled_actions, scaled_returns_to_go, timesteps.long()
+        )
+
+        if self.is_discrete:
+            # (probabilities, logits) of every position: the logits of the last one
+            action, _ = categorical_actions_and_log_prob(transformer_output[1][:, -1], [self.noise_dim()], noise)
+            window_action = action.to(torch.float32)
+        else:
+            action = transformer_output[:, -1]
+            if config.action_scaler:
+                action = config.action_scaler.reverse_transform(action)
+            window_action = action
+        actions = torch.cat([actions[:, :-1], window_action.unsqueeze(1)], dim=1)
+        next_timestep = torch.clamp(timestep + 1.0, max=float(self.max_timestep))
+        return action, observations, actions, returns_to_go, timesteps, return_rest - reward, next_timestep
