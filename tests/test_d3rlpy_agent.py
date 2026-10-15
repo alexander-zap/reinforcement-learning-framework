@@ -9,7 +9,7 @@ import numpy as np
 import onnx
 import onnxruntime
 import pytest
-from d3rlpy.algos import DQN, TD3, DiscreteBC
+from d3rlpy.algos import DQN, TD3, DiscreteBC, DiscreteDecisionTransformer
 from imitation.data.types import TrajectoryWithRew
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -97,6 +97,33 @@ def test_short_training_runs_and_logs(demonstrations):
 
     assert logged_steps(connector, "loss") == [320]
     assert logged_steps(connector, "episode_reward_mean") == [320]
+
+
+def test_decision_transformers_train_without_evaluation_and_export_to_onnx(demonstrations, caplog, tmp_path):
+    connector = RecordingConnector()
+
+    agent = train(
+        InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 5}),
+        demonstrations,
+        total_timesteps=320,
+        connector=connector,
+        validation_episode_sequence=EpisodeSequence.from_episodes([demonstrations[0]]),
+    )
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+
+    assert logged_steps(connector, "loss") == [320]
+    assert set(connector.value_sequences_to_log) & {"episode_reward_mean", "action_match", "td_error"} == set()
+    assert "neither evaluated online nor on validation episodes" in caplog.text
+    assert [upload["checkpoint_id"] for upload in connector.uploads] == [10]
+    onnx.checker.check_model(onnx.load(tmp_path / "policy.onnx"))
+
+
+def test_decision_transformers_cannot_choose_actions_from_single_observations(observations):
+    agent = InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32})
+    agent.algorithm.build_with_env(gym.make("CartPole-v1"))
+
+    with pytest.raises(NotImplementedError, match="StatefulTransformerWrapper"):
+        agent.choose_action(observations[0])
 
 
 def test_behavior_cloning_validates_by_action_match(demonstrations):

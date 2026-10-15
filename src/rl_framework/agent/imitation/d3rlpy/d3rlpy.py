@@ -63,6 +63,7 @@ from d3rlpy.algos import (
     TD3Config,
     TD3PlusBC,
     TD3PlusBCConfig,
+    TransformerAlgoBase,
 )
 from d3rlpy.base import LearnableBase, LearnableConfig, LearnableConfigWithShape
 from d3rlpy.dataset import ReplayBuffer
@@ -312,6 +313,16 @@ class D3RLPYAgent(ILAgent):
                 "spaces, the environments are not used for online evaluation during training (episode_reward_mean is "
                 "not logged)."
             )
+        is_transformer = isinstance(self.algorithm, TransformerAlgoBase)
+        if is_transformer:
+            # FIXME: `choose_action` cannot run decision transformers (they need the context of the episode and its
+            #   rewards, like d3rlpy's `StatefulTransformerWrapper`), so `evaluate` and the validation evaluators (which
+            #   call `predict` with single observations) fail for them
+            evaluation_environments, validation_trajectories = None, None
+            logging.warning(
+                "Decision transformers are neither evaluated online nor on validation episodes during training "
+                "(episode_reward_mean and the validation metrics are not logged): the agent does not support it yet."
+            )
 
         # Action space and size passed explicitly: d3rlpy's `ReplayBuffer` only detects them from `env` if no
         #   episodes are given, otherwise from the episodes, i.e. the action size from the highest recorded action
@@ -345,16 +356,26 @@ class D3RLPYAgent(ILAgent):
             for name, evaluator in evaluators.items():
                 connector.log_value_with_timestep(total_step * batch_size, evaluator(algorithm, replay_buffer), name)
 
-        self.algorithm.fit(
-            replay_buffer,
-            n_steps=n_batches,
-            n_steps_per_epoch=n_steps_per_epoch,
-            logging_steps=logging_steps,
-            logging_strategy=LoggingStrategy.STEPS,
-            logger_adapter=ConnectorAdapterFactory(connector, self),
-            save_interval=1,
-            epoch_callback=evaluate_after_epoch,
-        )
+        if is_transformer:
+            # d3rlpy's `fit` of decision transformers logs once per epoch and has no epoch callback (no evaluators)
+            self.algorithm.fit(
+                replay_buffer,
+                n_steps=n_batches,
+                n_steps_per_epoch=n_steps_per_epoch,
+                logger_adapter=ConnectorAdapterFactory(connector, self),
+                save_interval=1,
+            )
+        else:
+            self.algorithm.fit(
+                replay_buffer,
+                n_steps=n_batches,
+                n_steps_per_epoch=n_steps_per_epoch,
+                logging_steps=logging_steps,
+                logging_strategy=LoggingStrategy.STEPS,
+                logger_adapter=ConnectorAdapterFactory(connector, self),
+                save_interval=1,
+                epoch_callback=evaluate_after_epoch,
+            )
 
         # FIXME: Check case of continuous training (works, but deteriorates for small number of fine-tuning steps)
         # FIXME: Check when LOG.warn for GeneratorReplayBuffer is triggered (loading in-memory)
@@ -403,6 +424,11 @@ class D3RLPYAgent(ILAgent):
 
         """
 
+        if isinstance(self.algorithm, TransformerAlgoBase):
+            raise NotImplementedError(
+                "Decision transformers cannot choose actions from single observations: they need the context of the "
+                "episode and its rewards (see d3rlpy's `StatefulTransformerWrapper`, or the ONNX export)."
+            )
         # The algorithm is created on construction, its networks (`impl`) only by training or loading
         if self.algorithm.impl is None:
             raise ValueError("Cannot predict action for uninitialized agent. Start a training first to initialize.")
@@ -478,5 +504,4 @@ class D3RLPYAgent(ILAgent):
             self.algorithm_parameters.update({"device": device})
 
         self.algorithm.impl.load_model(io.BytesIO(obj["torch"]))
-        # Missing in files saved before it was stored
         self.action_space = obj.get("action_space")
