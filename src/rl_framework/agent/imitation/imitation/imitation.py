@@ -85,8 +85,13 @@ class ImitationAgent(ILAgent):
                     for algorithm-specific params.
                 See individual algorithm wrapper implementations (`build_algorithm` methods in the individual wrapper
                     classes in ../imitation_algorithm_wrappers.py) for further self-implemented configurability.
+                Additionally, `callback_kwargs` (Dict) sets the parameters of the training callbacks (applied by the
+                    agent, not passed to the algorithm): `callback_saving_interval` (default 50000 steps),
+                    `callback_logging_interval` (default 1 episode), `callback_log_distributions` (default False) and
+                    `callback_verbosity` (default 0). Given to `load_from_file` (or `download`), they replace these.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
+        self.callback_parameters: Dict = self.algorithm_parameters.pop("callback_kwargs", {})
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.algorithm_wrapper: AlgorithmWrapper = IMITATION_ALGORITHM_WRAPPER_REGISTRY[self.algorithm_class](
             self.algorithm_parameters, self.features_extractor
@@ -212,7 +217,22 @@ class ImitationAgent(ILAgent):
         else:
             self.algorithm.set_demonstrations(trajectories)
 
-        callback_list = CallbackList([SavingCallback(self, connector), LoggingCallback(connector)])
+        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
+        callback_list = CallbackList(
+            [
+                SavingCallback(
+                    self,
+                    connector,
+                    checkpoint_frequency=self.callback_parameters.get("callback_saving_interval", 50000),
+                    verbose=callback_verbosity,
+                ),
+                LoggingCallback(
+                    connector,
+                    logging_frequency=self.callback_parameters.get("callback_logging_interval", 1),
+                    log_distributions=self.callback_parameters.get("callback_log_distributions", False),
+                ),
+            ]
+        )
         self.algorithm_wrapper.train(
             self.algorithm, total_timesteps, callback_list, validation_trajectories=validation_trajectories
         )
@@ -306,6 +326,9 @@ class ImitationAgent(ILAgent):
         self.algorithm = None
 
         if algorithm_parameters:
+            algorithm_parameters = {**algorithm_parameters}
+            if "callback_kwargs" in algorithm_parameters:
+                self.callback_parameters = algorithm_parameters.pop("callback_kwargs")
             self.algorithm_parameters.update(**algorithm_parameters)
 
         folder_path = Path(str(file_path)[:-4])

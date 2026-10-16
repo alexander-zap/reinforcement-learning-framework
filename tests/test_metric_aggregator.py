@@ -1,7 +1,4 @@
-"""MetricAggregator episode bookkeeping with several environments stepping together.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""MetricAggregator episode bookkeeping with several environments stepping together."""
 
 import numpy as np
 

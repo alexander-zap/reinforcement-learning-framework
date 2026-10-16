@@ -1,7 +1,4 @@
-"""ImitationAgent with every supported imitation algorithm: training, connector callbacks, saving/loading and ONNX.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""ImitationAgent with every supported imitation algorithm: training, connector callbacks, saving/loading and ONNX."""
 
 import logging
 from pathlib import Path
@@ -131,17 +128,31 @@ def test_bc_logs_training_and_validation_metrics_to_the_connector(demonstrations
     assert [step for step, _ in logged["rollout/return_mean"]] == [64, 128]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=StopIteration,
-    reason="bc.py:89-91,127 draws validation batches from one iterator over the validation data, "
-    "which runs out when training logs more often than there are validation batches",
-)
 def test_bc_validation_does_not_run_out_of_batches(demonstrations):
     one_episode = EpisodeSequence.from_episodes([demonstrations[0]])  # 500 transitions = 15 batches of 32
+    connector = RecordingConnector()
     agent = make_agent(log_interval=1)
 
-    train(agent, demonstrations, total_timesteps=32 * 20, validation_episode_sequence=one_episode)
+    train(
+        agent,
+        demonstrations,
+        total_timesteps=32 * 20,
+        connector=connector,
+        validation_episode_sequence=one_episode,
+    )
+
+    # A validation loss for every logged batch: the 15 validation batches are reused after a new pass
+    assert len(connector.value_sequences_to_log["validation/loss"]) == 20
+
+
+def test_bc_validation_with_fewer_transitions_than_one_batch_is_rejected(demonstrations):
+    episode = demonstrations[0]
+    short_episode = TrajectoryWithRew(
+        obs=episode.obs[:6], acts=episode.acts[:5], rews=episode.rews[:5], infos=None, terminal=True
+    )
+
+    with pytest.raises(ValueError, match="validation episodes do not fill one batch of batch_size 32"):
+        train(make_agent(), demonstrations, validation_episode_sequence=EpisodeSequence.from_episodes([short_episode]))
 
 
 @pytest.mark.parametrize("algorithm_class", [GAIL, AIRL, DensityAlgorithm, SQIL])
@@ -151,6 +162,30 @@ def test_environment_interacting_algorithms_log_episodes_to_the_connector(demons
     train(make_agent(algorithm_class), demonstrations, total_timesteps=256, connector=connector)
 
     assert connector.value_sequences_to_log["Episode reward"]
+
+
+def test_callback_kwargs_configure_the_training_callbacks_and_do_not_reach_the_algorithm(demonstrations):
+    agent = make_agent(GAIL, callback_kwargs={"callback_saving_interval": 64, "callback_logging_interval": 1000})
+    default_connector, connector = RecordingConnector(), RecordingConnector()
+
+    train(make_agent(GAIL), demonstrations, total_timesteps=256, connector=default_connector)
+    train(agent, demonstrations, total_timesteps=256, connector=connector)
+
+    assert "callback_kwargs" not in agent.algorithm_parameters
+    assert default_connector.uploads == []  # default interval: 50000 steps
+    assert connector.uploads
+    assert default_connector.value_sequences_to_log["Episode reward"]
+    assert "Episode reward" not in connector.value_sequences_to_log
+
+
+def test_callback_kwargs_given_on_load_replace_the_callback_parameters(demonstrations, tmp_path):
+    trained = train(make_agent(BC, callback_kwargs={"callback_saving_interval": 64}), demonstrations)
+    trained.save_to_file(tmp_path / "agent.zip")
+
+    trained.load_from_file(tmp_path / "agent.zip", {"callback_kwargs": {"callback_logging_interval": 5}})
+
+    assert trained.callback_parameters == {"callback_logging_interval": 5}
+    assert "callback_kwargs" not in trained.algorithm_parameters
 
 
 @pytest.mark.parametrize("algorithm_class", [GAIL, DensityAlgorithm])

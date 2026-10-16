@@ -1,7 +1,4 @@
-"""ClearMLConnector model file naming on upload and task-based download (ClearML mocked, no server).
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""ClearMLConnector model file naming on upload and task-based download (ClearML mocked, no server)."""
 
 from pathlib import Path
 from unittest.mock import Mock
@@ -44,15 +41,30 @@ def test_upload_names_checkpoint_after_file_name():
     assert saved_file.endswith("-model-7.zip")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason='clearml_connector.py:170 unpacks str.split(file_name, ".") into two names, failing for multi-dot names',
-)
 def test_upload_keeps_multi_dot_file_name():
     name, saved_file = upload_checkpoint("model.v2.zip")
     assert name == "model.v2-7"
     assert saved_file.endswith("-model.v2-7.zip")
+
+
+def test_upload_of_file_name_without_extension_finds_the_file_sb3_saved_with_zip_ending():
+    connector = make_connector(upload_file_name="model")
+    agent = make_agent()
+    # SB3 appends ".zip" to file names without extension
+    agent.save_to_file.side_effect = lambda path: Path(f"{path}.zip").write_bytes(b"model")
+
+    connector.upload(agent=agent, checkpoint_id=7)
+
+    kwargs = connector.task.update_output_model.call_args.kwargs
+    assert kwargs["name"] == "model-7"
+    assert Path(kwargs["model_path"]).name.endswith("-model-7.zip")
+    assert Path(kwargs["model_path"]).exists()
+
+
+def test_upload_of_file_name_without_extension_keeps_files_saved_as_named():
+    name, saved_file = upload_checkpoint("model")
+    assert name == "model-7"
+    assert saved_file.endswith("-model-7")
 
 
 def test_upload_adds_policy_onnx_as_artifact():
@@ -87,13 +99,9 @@ def test_download_by_task_finds_model_named_after_zip_file(monkeypatch):
     assert download_from_task(monkeypatch, "model.zip") == "model-id"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=KeyError,
-    reason="clearml_connector.py:228 strips file_name[:-4], assuming a 4-character extension like '.zip'",
-)
-def test_download_by_task_finds_model_named_after_other_extension(monkeypatch):
-    assert download_from_task(monkeypatch, "model.pt") == "model-id"
+@pytest.mark.parametrize("file_name", ["model.pt", "model"])
+def test_download_by_task_finds_model_named_after_file_name_with_other_or_without_extension(monkeypatch, file_name):
+    assert download_from_task(monkeypatch, file_name) == "model-id"
 
 
 def test_connector_sets_task_name_and_tags():
@@ -154,11 +162,6 @@ def test_log_histogram_reports_latest_histogram_as_figure():
     assert kwargs["iteration"] == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="clearml_connector.py:106-113 creates a new seaborn FacetGrid figure per histogram and never closes it, "
-    "so open matplotlib figures pile up during training",
-)
 def test_log_histogram_does_not_leak_matplotlib_figures():
     import matplotlib.pyplot as plt
 
@@ -168,6 +171,17 @@ def test_log_histogram_does_not_leak_matplotlib_figures():
         connector.log_histogram_with_timestep(timestep, [0, 1, 1, 2], "actions")
 
     assert len(plt.get_fignums()) == open_before
+
+
+def test_log_histogram_reports_the_histograms_own_figure():
+    from matplotlib.figure import Figure
+
+    connector = make_connector()
+    connector.log_histogram_with_timestep(3, [0, 1, 1, 2], "actions")
+
+    figure = connector.task.get_logger.return_value.report_matplotlib_figure.call_args.kwargs["figure"]
+    assert isinstance(figure, Figure)
+    assert figure.axes  # the histogram plot
 
 
 def test_final_upload_tags_model_and_uploads_system_info_and_video(monkeypatch):
@@ -193,6 +207,25 @@ def test_final_upload_tags_model_and_uploads_system_info_and_video(monkeypatch):
     assert recorded[0]["video_recording_environment"] is environment
     assert recorded[0]["video_length"] == 10
     connector.task.get_logger.return_value.report_media.assert_called_once()
+
+
+def test_final_upload_with_failing_video_recording_uploads_the_model_without_video(monkeypatch, caplog):
+    def fail_recording(**kwargs):
+        raise RuntimeError("ffmpeg failed")
+
+    monkeypatch.setattr(clearml_connector, "record_video", fail_recording)
+    connector = ClearMLConnector(
+        upload_config=ClearMLUploadConfig(upload=True, file_name="model.zip", video_length=10),
+        download_config=ClearMLDownloadConfig(download=False),
+        task=Mock(),
+    )
+
+    connector.upload(agent=make_agent(), video_recording_environment=object())
+
+    connector.task.update_output_model.assert_called_once()
+    connector.task.get_logger.return_value.report_media.assert_not_called()
+    assert "Recording the video failed" in caplog.text
+    assert "ffmpeg failed" in caplog.text
 
 
 def test_final_upload_without_video_environment_records_no_video(monkeypatch):

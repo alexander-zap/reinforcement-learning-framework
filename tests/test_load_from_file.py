@@ -1,7 +1,4 @@
-"""StableBaselinesAgent.load_from_file handling of framework-only algorithm parameters.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""StableBaselinesAgent.load_from_file handling of framework-only algorithm parameters."""
 
 import gymnasium as gym
 import numpy as np

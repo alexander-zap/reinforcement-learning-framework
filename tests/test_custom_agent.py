@@ -1,7 +1,4 @@
-"""CustomAgent with the QLearning algorithm: Q-table updates, epsilon-greedy training, saving/loading.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""CustomAgent with the QLearning algorithm: Q-table updates, epsilon-greedy training, saving/loading."""
 
 import logging
 import os
@@ -123,11 +120,6 @@ def test_training_on_several_environments_warns_and_uses_the_first(caplog):
     assert "does not support training on multiple environments" in caplog.text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="q_learning.py:201-205 decays epsilon as 1 - 2*t/T while it is above epsilon_min, overshooting below "
-    "epsilon_min (even below 0) at the next episode end",
-)
 def test_epsilon_never_falls_below_epsilon_min():
     agent = CustomAgent(QLearning, {"n_actions": 2, "n_observations": 1, "epsilon_min": 0.05})
     environment = Toy(observation_space=spaces.Discrete(1), episode_length=30)
@@ -137,10 +129,43 @@ def test_epsilon_never_falls_below_epsilon_min():
     assert agent.algorithm.epsilon >= 0.05
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="q_learning.py:201-205 resets epsilon to 1 - 2*t/T after the first episode, ignoring the configured epsilon",
-)
+def test_epsilon_decays_linearly_from_configured_epsilon_to_epsilon_min_at_half_of_training():
+    agent = CustomAgent(QLearning, {"n_actions": 2, "n_observations": 1, "epsilon": 0.5, "epsilon_min": 0.1})
+    connector = RecordingConnector()
+
+    agent.train(
+        total_timesteps=100,
+        connector=connector,
+        training_environments=[Toy(observation_space=spaces.Discrete(1), episode_length=10)],
+    )
+
+    logged = connector.value_sequences_to_log["Epsilon"]
+    # Episode ends at 10, 20, …: 0.5 - 0.4 * 2t/100, reaching 0.1 at t=50 and staying there
+    assert [step for step, _ in logged[:6]] == [10, 20, 30, 40, 50, 60]
+    np.testing.assert_allclose([epsilon for _, epsilon in logged[:6]], [0.42, 0.34, 0.26, 0.18, 0.1, 0.1])
+
+
+def test_repeated_training_continues_from_the_reached_epsilon():
+    agent = CustomAgent(QLearning, {"n_actions": 2, "n_observations": 1, "epsilon": 1.0, "epsilon_min": 0.1})
+    environment = Toy(observation_space=spaces.Discrete(1), episode_length=10)
+
+    agent.train(total_timesteps=100, training_environments=[environment])
+    assert agent.algorithm.epsilon == pytest.approx(0.1)
+
+    agent.train(total_timesteps=100, training_environments=[environment])
+    assert agent.algorithm.epsilon == pytest.approx(0.1)
+
+
+def test_epsilon_below_epsilon_min_is_kept():
+    agent = CustomAgent(QLearning, {"n_actions": 2, "n_observations": 1, "epsilon": 0.01, "epsilon_min": 0.1})
+
+    agent.train(
+        total_timesteps=50, training_environments=[Toy(observation_space=spaces.Discrete(1), episode_length=10)]
+    )
+
+    assert agent.algorithm.epsilon == pytest.approx(0.01)
+
+
 def test_configured_initial_epsilon_is_not_increased():
     agent = CustomAgent(QLearning, {"n_actions": 2, "n_observations": 1, "epsilon": 0.2})
     environment = Toy(observation_space=spaces.Discrete(1), episode_length=10)
@@ -176,15 +201,15 @@ def test_save_and_load_round_trip_restores_q_table_and_parameters(tmp_path):
     assert not hasattr(loaded.algorithm, "unknown")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=FileNotFoundError,
-    reason="q_learning.py:221 calls os.makedirs(os.path.dirname(file_path)), which fails for a bare file name",
-)
 def test_save_to_a_bare_file_name_in_the_working_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    make_agent().save_to_file("q.pkl")
+    agent = make_agent()
+    agent.save_to_file("q.pkl")
     assert os.path.exists(tmp_path / "q.pkl")
+
+    loaded = make_agent()
+    loaded.load_from_file("q.pkl")
+    np.testing.assert_array_equal(loaded.algorithm.q_table, agent.algorithm.q_table)
 
 
 def test_onnx_export_is_not_supported(tmp_path):

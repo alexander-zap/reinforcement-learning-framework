@@ -1,7 +1,4 @@
-"""AsyncStableBaselinesAgent: injected algorithm, vectorization, utilization logging callback and worker shutdown.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""AsyncStableBaselinesAgent: injected algorithm, vectorization, utilization logging callback and worker shutdown."""
 
 from unittest.mock import Mock
 

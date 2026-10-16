@@ -98,6 +98,16 @@ class Agent(ABC):
 
         episode_rewards = []
         episode_rewards_lock = threading.Lock()
+        evaluated_episode_count = 0
+
+        def count_evaluated_episode() -> int:
+            """Count one evaluated episode of any environment and return the running count.
+            Used as logging step, which is unique and increasing across all environments (evaluated in parallel).
+            """
+            nonlocal evaluated_episode_count
+            with episode_rewards_lock:
+                evaluated_episode_count += 1
+                return evaluated_episode_count
 
         with tqdm(total=n_eval_episodes) as pbar:
             if isinstance(evaluation_environments[0], pettingzoo.ParallelEnv):
@@ -231,21 +241,25 @@ class Agent(ABC):
 
                         for i in range(n_envs):
                             if dones[i]:
-                                counted = episode_counts[i] < episode_targets[i]
-                                if counted:
-                                    local_episode_rewards.append(current_rewards[i])
-                                    episode_counts[i] += 1
-                                    pbar.update(1)
+                                episode_reward = current_rewards[i]
                                 current_rewards[i] = 0
+                                if episode_counts[i] >= episode_targets[i]:
+                                    continue
+                                local_episode_rewards.append(episode_reward)
+                                episode_counts[i] += 1
+                                evaluation_step = count_evaluated_episode()
+                                pbar.update(1)
 
+                                # Episodes recorded since this sub-environment's last log (the window is reset below)
                                 log_episode = (len(metric_aggregator.episode_rewards.get(i, [])) % log_frequency) == 0
-                                if counted and log_episode:
+                                if log_episode:
                                     metric_aggregator.log_aggregated_metrics(
                                         agent_index=i,
-                                        num_timesteps=len(local_episode_rewards),
+                                        num_timesteps=evaluation_step,
                                         log_distributions=False,
                                         metric_name_prefix="Evaluation - ",
                                     )
+                                    metric_aggregator.reset_multi_episode_trackers(i)
 
                     with episode_rewards_lock:
                         episode_rewards.extend(local_episode_rewards)

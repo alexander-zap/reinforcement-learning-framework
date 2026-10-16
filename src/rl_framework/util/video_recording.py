@@ -1,5 +1,5 @@
 import logging
-import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -33,6 +33,9 @@ def record_video(
     If the agent has a features extractor, the environment's observations are preprocessed with it (like in training
     and evaluation) before the agent chooses its actions; the recorded frames (`render`) are unaffected. This requires
     a gym.Env: a VecEnv cannot be wrapped and is rejected with a ValueError.
+
+    Errors of the agent, the environment or the video conversion are raised (a failing ffmpeg as RuntimeError).
+    A KeyboardInterrupt during SB3 recording stops it early and saves the video recorded so far.
     """
     features_extractor = getattr(agent, "features_extractor", None)
     if isinstance(features_extractor, FeaturesExtractor):
@@ -75,19 +78,17 @@ def record_video(
                     action = agent.choose_action(vectorized_observation[0])
                     vectorized_action = np.array([action])
                     vectorized_observation, _, _, _ = env.step(vectorized_action)
-
-                # Save the video
-                env.close()
-
-                # Convert the video with x264 codec
-                inp = env.video_path
-                out = file_path
-                os.system(f"ffmpeg -y -i {inp} -vcodec h264 {out}")
-
             except KeyboardInterrupt:
-                pass
-            except Exception as e:
-                logging.error(str(e))
+                logging.warning("Video recording interrupted, saving the video recorded so far.")
+
+            # Save the video
+            env.close()
+
+            # Convert the video with x264 codec (argument list without a shell: paths may contain spaces)
+            command = ["ffmpeg", "-y", "-i", str(env.video_path), "-vcodec", "h264", str(file_path)]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed with exit code {result.returncode}: {result.stderr}")
     else:
         images = []
         while len(images) < video_length:

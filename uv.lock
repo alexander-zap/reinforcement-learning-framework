@@ -278,15 +278,15 @@ wheels = [
 
 [[package]]
 name = "async-gym-agents"
-version = "0.4.1"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "stable-baselines3", extra = ["extra"] },
     { name = "torchinfo" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/93/554e4b27e682325bc6e6acae02ec473085c585b37dea14f7f6681cd8f8d9/async_gym_agents-0.4.1.tar.gz", hash = "sha256:970c866320c9d881e9c359545b1895b5e51b848734511d19819264953825c818", size = 33160, upload-time = "2026-09-25T15:37:55.201Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/6e/0fbb855548aff79def9ae24892488f34db48bc70a46c2cb16e719c4290ce/async_gym_agents-0.5.0.tar.gz", hash = "sha256:a522da58a4fc90da455d8aa7c0b8fe98bf6afcc8dc734917ef86284412473bbc", size = 33487, upload-time = "2026-10-12T11:44:53.862Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/48/f1a2a96aab6515c9b8b9c4989c8fb16d5e4b8e60ae0e3ba3fa170044b3f5/async_gym_agents-0.4.1-py3-none-any.whl", hash = "sha256:d1a90df5b60af54244222fc3fae6c1ace7fd346c266affbd1862ebfaf14d9413", size = 44391, upload-time = "2026-09-25T15:37:54.165Z" },
+    { url = "https://files.pythonhosted.org/packages/89/4d/ad94de101e34b402801cfdaa24709b94866376d368a4641adbfcc8d16220/async_gym_agents-0.5.0-py3-none-any.whl", hash = "sha256:11413942bbbcc56da2300c3bcdd62656b2f7411300e6b99f544ea9fdc0d8dca0", size = 44814, upload-time = "2026-10-12T11:44:52.757Z" },
 ]
 
 [[package]]
@@ -3294,7 +3294,7 @@ wheels = [
 
 [[package]]
 name = "reinforcement-learning-framework"
-version = "0.10.3"
+version = "0.11.4"
 source = { editable = "." }
 dependencies = [
     { name = "async-gym-agents" },
@@ -3332,7 +3332,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "async-gym-agents", specifier = ">=0.4.1,<0.5" },
+    { name = "async-gym-agents", specifier = ">=0.5.0,<0.6" },
     { name = "clearml", specifier = ">=1.14.1,<2" },
     { name = "d3rlpy", specifier = ">=2.6,<3" },
     { name = "dm-env-rpc", specifier = ">=1.1.6,<2" },

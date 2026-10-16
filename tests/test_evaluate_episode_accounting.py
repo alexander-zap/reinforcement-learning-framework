@@ -1,7 +1,4 @@
-"""Agent.evaluate on gym/VecEnv environments: episode quota and evaluation metric logging.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""Agent.evaluate on gym/VecEnv environments: episode quota and evaluation metric logging."""
 
 import gymnasium as gym
 import numpy as np
@@ -68,6 +65,18 @@ def test_evaluate_averages_exactly_the_requested_episodes():
     assert mean_reward == np.mean([0, 1, 2, 3])
 
 
+def test_evaluation_logs_each_window_at_the_count_of_evaluated_episodes():
+    connector = RecordingConnector()
+    ConstantActionAgent().evaluate(
+        evaluation_environments=[CountingEnv()], n_eval_episodes=4, connector=connector, logging_frequency=2
+    )
+
+    means = [(step, value) for _, series, step, value in connector.scalars if series == "Mean - x"]
+    rewards = [(step, value) for title, _, step, value in connector.scalars if title == "Evaluation - Episode reward"]
+    assert means == [(2, 0.5), (4, 2.5)]  # episodes 0-1 and 2-3
+    assert rewards == means
+
+
 class FixedLengthEnv(gym.Env):
     """Episodes of `length` steps, each with return `length`."""
 
@@ -120,10 +129,6 @@ def test_evaluate_requires_at_least_one_episode(n_eval_episodes):
         evaluate([CountingEnv()], n_eval_episodes=n_eval_episodes)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="base_agent.py:358-362 every env thread logs to the same series at step len(local_episode_rewards)",
-)
 def test_evaluation_metrics_of_different_environments_do_not_collide():
     connector = RecordingConnector()
     evaluate([DummyVecEnv([CountingEnv]), DummyVecEnv([CountingEnv])], n_eval_episodes=4, connector=connector)
@@ -133,10 +138,6 @@ def test_evaluation_metrics_of_different_environments_do_not_collide():
     assert len(points) == len(set(points))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="base_agent.py:358 never calls reset_multi_episode_trackers, so each logged mean covers all past episodes",
-)
 def test_evaluation_step_metric_means_cover_only_the_logging_window():
     connector = RecordingConnector()
     evaluate([CountingEnv()], n_eval_episodes=3, connector=connector)

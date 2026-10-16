@@ -1,7 +1,4 @@
-"""D3RLPYAgent: offline training on recorded episodes, connector logging/checkpoints, saving/loading and ONNX.
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""D3RLPYAgent: offline training on recorded episodes, connector logging/checkpoints, saving/loading and ONNX."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +19,7 @@ from rl_framework.util import FeaturesExtractor
 from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, ToyParallel
 
 CARTPOLE_ROLLOUT = Path(__file__).parents[1] / "data" / "cartpole_rollout"
-# The smallest step count which trains (see the xfail below): one logging interval of 313 batches of 32.
+# One logging interval (ceil(10000 / 32) = 313 batches of 32)
 TRAINABLE_TIMESTEPS = 313 * 32
 
 
@@ -75,56 +72,61 @@ def test_training_rejects_unsupported_environment_types(demonstrations):
         InProcessD3RLPYAgent().train(32, demonstrations, training_environments=["not an environment"])
 
 
-def test_trained_agent_acts_and_logs_losses_and_checkpoints(trained, observations):
+def logged_steps(connector, name):
+    return [step for step, _ in connector.value_sequences_to_log.get(name, [])]
+
+
+def test_trained_agent_acts_and_logs_losses_evaluation_and_checkpoints(trained, observations):
     agent, connector = trained
 
     assert set(actions(agent, observations)) <= {0, 1}
-    assert connector.value_sequences_to_log["loss"]
-    assert [step for step, _ in connector.value_sequences_to_log["loss"]] == [313 * 32]
+    assert logged_steps(connector, "loss") == [313 * 32]
+    assert logged_steps(connector, "episode_reward_mean") == [313 * 32]
     assert [upload["checkpoint_id"] for upload in connector.uploads] == [313]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=UnboundLocalError,
-    reason="d3rlpy.py:315-321 passes logging_steps=ceil(10000 / batch_size) even when n_steps is smaller, "
-    "and d3rlpy's fitter then reads metrics that were never logged",
-)
-def test_short_training_runs(demonstrations):
-    train(InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}), demonstrations, total_timesteps=320)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=NotImplementedError,
-    reason="d3rlpy.py:309-313 always adds a TDErrorEvaluator for validation episodes, "
-    "which value-free algorithms like (Discrete)BC cannot compute",
-)
-def test_behavior_cloning_trains_with_validation_episodes(demonstrations):
-    train(
-        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}),
-        demonstrations,
-        validation_episode_sequence=demonstrations,
-    )
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="d3rlpy.py:317-325 uses LoggingStrategy.STEPS, but d3rlpy adds evaluator scores after the epoch's last "
-    "step commit, so episode_reward_mean/td_error of an epoch are logged in the next epoch (and never for the last)",
-)
-def test_evaluation_metrics_are_logged_to_the_connector(demonstrations):
+def test_short_training_runs_and_logs(demonstrations):
     connector = RecordingConnector()
 
     train(
-        InProcessD3RLPYAgent(DQN, {"batch_size": 32}),
+        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}), demonstrations, total_timesteps=320, connector=connector
+    )
+
+    assert logged_steps(connector, "loss") == [320]
+    assert logged_steps(connector, "episode_reward_mean") == [320]
+
+
+def test_behavior_cloning_validates_by_action_match(demonstrations):
+    connector = RecordingConnector()
+
+    train(
+        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}),
         demonstrations,
         connector=connector,
         validation_episode_sequence=EpisodeSequence.from_episodes([demonstrations[0]]),
     )
 
-    assert connector.value_sequences_to_log["td_error"]
-    assert connector.value_sequences_to_log["episode_reward_mean"]
+    (action_match,) = connector.value_sequences_to_log["action_match"]
+    assert action_match[0] == 313 * 32
+    assert 0.0 <= action_match[1] <= 1.0
+    assert "td_error" not in connector.value_sequences_to_log  # BC estimates no values
+
+
+def test_evaluation_metrics_are_logged_at_the_end_of_every_epoch(demonstrations):
+    connector = RecordingConnector()
+
+    # Epochs of ceil(50000 / 1000) = 50 batches, loss logged every ceil(10000 / 1000) = 10 batches
+    train(
+        InProcessD3RLPYAgent(DQN, {"batch_size": 1000}),
+        demonstrations,
+        total_timesteps=100 * 1000,
+        connector=connector,
+        validation_episode_sequence=EpisodeSequence.from_episodes([demonstrations[0]]),
+    )
+
+    for name in ("episode_reward_mean", "td_error", "action_match"):
+        assert logged_steps(connector, name) == [50 * 1000, 100 * 1000], name
+    assert logged_steps(connector, "loss") == [step * 1000 for step in range(10, 101, 10)]
 
 
 def test_q_learning_trains_with_validation_episodes(demonstrations, observations):
@@ -153,13 +155,7 @@ def test_features_extractor_preprocesses_demonstrations(demonstrations, observat
     assert set(actions(agent, observations)) <= {0, 1}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason="d3rlpy.py:302-307 passes the raw PettingZoo env (dict observations) to the ReplayBuffer and "
-    "EnvironmentEvaluator; the vectorized environment built at d3rlpy.py:272-287 is never used",
-)
-def test_training_on_pettingzoo_environment(observations):
+def test_training_on_pettingzoo_environment_uses_its_spaces_without_online_evaluation():
     trajectory = TrajectoryWithRew(
         obs=np.zeros((65, 3), np.float32),
         acts=np.zeros(64, np.int64),
@@ -168,11 +164,17 @@ def test_training_on_pettingzoo_environment(observations):
         rews=np.zeros(64, np.float32),
     )
     agent = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    connector = RecordingConnector()
 
     train_on = EpisodeSequence.from_episodes([trajectory])
-    agent.train(TRAINABLE_TIMESTEPS, train_on, training_environments=[ToyParallel(), ToyParallel()])
+    agent.train(
+        TRAINABLE_TIMESTEPS, train_on, connector=connector, training_environments=[ToyParallel(), ToyParallel()]
+    )
 
     assert agent.choose_action(BOX.sample()) in (0, 1)
+    assert agent.algorithm.action_size == 2
+    assert connector.value_sequences_to_log["loss"]
+    assert "episode_reward_mean" not in connector.value_sequences_to_log
 
 
 def test_save_and_load_round_trip_keeps_the_policy(trained, observations, tmp_path):
@@ -183,6 +185,21 @@ def test_save_and_load_round_trip_keeps_the_policy(trained, observations, tmp_pa
     loaded.load_from_file(tmp_path / "agent.d3")
 
     assert actions(loaded, observations) == actions(agent, observations)
+
+
+def test_save_and_load_accept_string_paths(trained, observations, tmp_path):
+    agent, _ = trained
+    agent.save_to_file(str(tmp_path / "agent.d3"))
+
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    loaded.load_from_file(str(tmp_path / "agent.d3"))
+
+    assert actions(loaded, observations) == actions(agent, observations)
+
+
+def test_untrained_agent_cannot_choose_actions(observations):
+    with pytest.raises(ValueError, match="uninitialized agent"):
+        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}).choose_action(observations[0])
 
 
 def test_load_with_new_parameters_applies_them(trained, tmp_path):

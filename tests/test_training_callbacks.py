@@ -1,7 +1,4 @@
-"""SB3 training callbacks driven directly: per-step (`_on_step` with SB3 locals) and per-episode (`process_episode`).
-
-Strict xfails document unresolved findings; they assert the desired behavior.
-"""
+"""SB3 training callbacks driven directly: per-step (`_on_step` with SB3 locals) and per-episode (`process_episode`)."""
 
 import dataclasses
 from types import SimpleNamespace

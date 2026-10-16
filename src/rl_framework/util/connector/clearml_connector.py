@@ -108,9 +108,14 @@ class ClearMLConnector(Connector):
         g.map(sns.histplot, "value", clip_on=False, fill=True, alpha=1)
 
         title = f"{str(latest_timestep).rjust(15, '0')} - {histogram_name}"
-        self.task.get_logger().report_matplotlib_figure(
-            title=title, series=histogram_name, figure=plt, iteration=timestep, report_interactive=True
-        )
+        try:
+            # Report this histogram's own figure (ClearML converts it during the call), then close it, so that
+            #   figures do not pile up in matplotlib over the training
+            self.task.get_logger().report_matplotlib_figure(
+                title=title, series=histogram_name, figure=g.figure, iteration=timestep, report_interactive=True
+            )
+        finally:
+            plt.close(g.figure)
 
     def log_value_with_timestep(
         self, timestep: int, value_scalar: SupportsFloat, value_name: Text, title_name: Text = None
@@ -167,16 +172,16 @@ class ClearMLConnector(Connector):
         assert file_name
 
         # Step 1: Save agent to temporary file and upload to ClearML
-        file_literal, file_ending = str.split(file_name, ".")
+        # The model is named after the file name without its (last) extension, e.g. "model.v2" for "model.v2.zip"
+        file_stem, file_ending = os.path.splitext(file_name)
         checkpoint_suffix = f"-{checkpoint_id}" if checkpoint_id else ""
-        file_name = f"{file_literal}{checkpoint_suffix}"
+        file_name = f"{file_stem}{checkpoint_suffix}"
 
         # Save agent to file
-        agent_save_path = Path(tempfile.gettempdir(), f"{str(uuid.uuid1())}-{file_name}.{file_ending}")
-        logging.debug(f"Saving agent to .zip file at {agent_save_path} and uploading as model ...")
+        agent_save_path = Path(tempfile.gettempdir(), f"{str(uuid.uuid1())}-{file_name}{file_ending}")
+        logging.debug(f"Saving agent to file at {agent_save_path} and uploading as model ...")
         agent.save_to_file(agent_save_path)
-        while not os.path.exists(agent_save_path):
-            time.sleep(1)
+        agent_save_path = self._wait_for_saved_file(agent_save_path)
 
         # Upload saved agent to ClearML
         self.task.update_output_model(
@@ -220,29 +225,47 @@ class ClearMLConnector(Connector):
                 temp_path = tempfile.mkdtemp()
                 logging.debug(f"Recording video to {temp_path} and uploading as debug sample ...")
                 video_path = Path(temp_path) / "replay.mp4"
-                record_video(
-                    agent=agent,
-                    video_recording_environment=video_recording_environment,
-                    file_path=video_path,
-                    fps=1,
-                    video_length=video_length,
-                )
-                self.task.get_logger().report_media(
-                    "video ", "agent-in-environment recording", iteration=1, local_path=video_path
-                )
+                try:
+                    record_video(
+                        agent=agent,
+                        video_recording_environment=video_recording_environment,
+                        file_path=video_path,
+                        fps=1,
+                        video_length=video_length,
+                    )
+                except Exception:
+                    # The model is uploaded already, so a failing recording only costs the video
+                    logging.exception("Recording the video failed, the upload continues without video.")
+                else:
+                    self.task.get_logger().report_media(
+                        "video ", "agent-in-environment recording", iteration=1, local_path=video_path
+                    )
 
             # TODO: Save README.md
+
+    @staticmethod
+    def _wait_for_saved_file(file_path: Path) -> Path:
+        """
+        Wait until the saved agent file exists and return its path.
+        SB3 appends ".zip" when saving to a file name without extension, so that path is accepted as well.
+        """
+        candidates = [file_path] if file_path.suffix else [file_path, file_path.with_name(f"{file_path.name}.zip")]
+        while True:
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+            time.sleep(1)
 
     def download(self, *args, **kwargs) -> Path:
         task_id = self.download_config.task_id
         model_id = self.download_config.model_id
         file_name = self.download_config.file_name
 
-        # Search the model in the given task
+        # Search the model in the given task (models are named after the file name without extension, see `upload`)
         if task_id and not model_id:
             container = Task.get_task(task_id=task_id)
             if file_name:
-                model_id = container.models["output"][file_name[:-4]].id
+                model_id = container.models["output"][os.path.splitext(file_name)[0]].id
             else:
                 model = container.models["output"][-1]
                 model_id = model.id

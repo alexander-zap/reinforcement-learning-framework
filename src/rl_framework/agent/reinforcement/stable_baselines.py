@@ -3,7 +3,7 @@ import tempfile
 from functools import partial
 from os import cpu_count
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Type
 
 import gymnasium
 import numpy as np
@@ -15,6 +15,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm, BasePolicy
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import VecEnv, VecMonitor
 from supersuit.vector import MakeCPUAsyncConstructor, MarkovVectorEnv
 from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
@@ -70,8 +71,9 @@ class StableBaselinesAgent(RLAgent):
                       the discount factor over training.
                     - `initial_action_bias`: initial biases of the policy's action output layer (PPO, A2C, TRPO, SAC,
                       TD3), applied to a freshly created model (see `rl_framework.util.policy_init`).
-                    - `reset_optimizer` (bool, default False): reset the optimizer state before each training, e.g.,
-                      to fine-tune a loaded model with fresh optimizer statistics.
+                    - `reset_optimizer` (bool, default False): reset the optimizer state before the first training
+                      after creating or loading the agent, e.g., to fine-tune a loaded model with fresh optimizer
+                      statistics. Further trainings continue with the optimizer state.
                     - `callback_kwargs` (Dict): parameters of the training callbacks: `callback_saving_interval`
                       (default 500000 steps), `callback_logging_interval` (default 1 episode),
                       `callback_log_distributions` (default False), `callback_verbosity` (default 0),
@@ -86,6 +88,7 @@ class StableBaselinesAgent(RLAgent):
         self.algorithm_parameters = self._add_required_default_parameters(self.algorithm_parameters)
         self.callback_parameters: Dict = {}
         self.reset_optimizer: bool = False
+        self._optimizer_reset_pending: bool = False
         self.gamma_schedule: Optional[Callable[[float], float]] = None
         self.initial_action_bias: Optional[np.ndarray] = None
         self._setup_framework_parameters()
@@ -255,9 +258,10 @@ class StableBaselinesAgent(RLAgent):
                     else self.algorithm_class.load(**algorithm_kwargs, device=device)
                 )
 
-        if self.reset_optimizer:
+        if self._optimizer_reset_pending:
             reset_paths = reset_optimizer_state(self.algorithm)
             logging.info(f"Optimizer state reset for: {', '.join(reset_paths)}")
+            self._optimizer_reset_pending = False
 
         callbacks = self.get_callbacks(connector=connector)
         callback_list = CallbackList(callbacks)
@@ -314,37 +318,62 @@ class StableBaselinesAgent(RLAgent):
             action = action.item()
         return action
 
-    def save_policy_as_onnx(self, file_path: Path) -> None:
+    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = False) -> None:
         """Save the policy as ONNX model.
 
             Details for SB3: https://stable-baselines3.readthedocs.io/en/master/guide/export.html
 
+        The exported format is kept backwards compatible (sampled actions by default, float32 inputs):
+            - Inputs: one float32 observation (batch size 1), named `input`, for every observation space (e.g., also
+              Discrete or uint8 image observations); for Dict observation spaces one float32 input per key, named
+              like the key.
+            - Outputs: `actions`; actor-critic policies (e.g., PPO, A2C, TRPO) also `values` and `log_prob`, in this
+              order (unnamed before; the order is unchanged).
+        The policy includes the features extractor and the observation preprocessing, but not the postprocessing of
+            actions: Box actions may have to be clipped or unscaled to the action space bounds, e.g.
+            `low + (0.5 * (scaled_action + 1.0) * (high - low))` for squashed actions (SAC, TD3).
+
         Args:
             file_path (Path): The file where the policy should be saved to.
+            deterministic (bool): Whether the exported policy returns its most likely action or samples one (default;
+                exported with random number nodes).
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
 
+        policy = self.algorithm.policy
+        observation_space = self.algorithm.observation_space
+        is_dict_observation = isinstance(observation_space, gymnasium.spaces.Dict)
+
+        # A sampled observation, converted like in `predict` (shape per observation space), as float32 input
+        dummy_observation, _ = policy.obs_to_tensor(observation_space.sample())
+        if is_dict_observation:
+            input_names = list(observation_space.spaces.keys())
+            dummy_inputs = tuple(dummy_observation[key].float() for key in input_names)
+        else:
+            input_names = ["input"]
+            dummy_inputs = (dummy_observation.float(),)
+        output_names = ["actions", "values", "log_prob"] if isinstance(policy, ActorCriticPolicy) else ["actions"]
+
         class OnnxableSB3Policy(torch.nn.Module):
-            def __init__(self, policy: BasePolicy):
+            def __init__(self, sb3_policy: BasePolicy):
                 super().__init__()
-                self.policy = policy
+                self.policy = sb3_policy
 
-            # FIXME: policy() returns `actions, values, log_prob` for PPO
-            # FIXME: determinism should be set based on policy (and own preference; could be set in config)
-            def forward(self, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-                # NOTE: policy includes the features_extractor.
-                #  Preprocessing is included, but postprocessing (clipping/inscaling actions) is not.
-                # NOTE: For Box action space you may have to postprocess (unnormalize) actions to the correct bounds
-                #   low, high = model.action_space.low, model.action_space.high
-                #   post_processed_action = low + (0.5 * (scaled_action + 1.0) * (high - low))
-                return self.policy(observation, deterministic=False)
+            def forward(self, *observations: torch.Tensor):
+                observation = dict(zip(input_names, observations)) if is_dict_observation else observations[0]
+                # SB3 policies return the action (off-policy policies like SAC/TD3/DQN via their actor/Q-network),
+                #   actor-critic policies additionally the value and the log-probability of the action
+                return self.policy(observation, deterministic=deterministic)
 
-        # FIXME: for algorithms like SAC we need to input `self.algorithm.policy.actor`
-        onnx_policy = OnnxableSB3Policy(self.algorithm.policy)
-        observation_size = self.algorithm.observation_space.shape
         # FIXME: add support for batch size > 1
-        dummy_input = torch.randn(1, *observation_size)
-        torch.onnx.export(onnx_policy, dummy_input, file_path, opset_version=17, input_names=["input"])
+        torch.onnx.export(
+            OnnxableSB3Policy(policy),
+            dummy_inputs,
+            file_path,
+            opset_version=17,
+            input_names=input_names,
+            output_names=output_names,
+        )
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
@@ -370,6 +399,7 @@ class StableBaselinesAgent(RLAgent):
         check_specified_policy_kwargs(algorithm.policy_kwargs, self.algorithm_parameters.get("policy_kwargs") or {})
         self.algorithm = algorithm
         self.algorithm_needs_initialization = False
+        self._optimizer_reset_pending = self.reset_optimizer
 
     def _setup_framework_parameters(self) -> None:
         """
@@ -377,6 +407,7 @@ class StableBaselinesAgent(RLAgent):
         """
         self.callback_parameters = self.algorithm_parameters.pop("callback_kwargs", {})
         self.reset_optimizer = self.algorithm_parameters.pop("reset_optimizer", False)
+        self._optimizer_reset_pending = self.reset_optimizer
         self._setup_gamma_schedule()
         self._setup_initial_action_bias()
 

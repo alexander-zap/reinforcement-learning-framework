@@ -1,54 +1,71 @@
 # Test suite and bug report (branch `test_suite`)
 
-**Date:** 2026-10-08
-**Base:** `save_as_onnx` @ 827c39b (rl_framework 0.11.4). Locked dependencies: stable-baselines3 2.7.1, imitation 1.0.0, d3rlpy 2.6.1, torch 2.7.1, gymnasium 0.29.1.
+**Date:** 2026-10-08 (status updated 2026-10-12)
+**Base:** `save_as_onnx` @ 827c39b (rl_framework 0.11.4). Locked dependencies: stable-baselines3 2.7.1, imitation 1.0.0, d3rlpy 2.6.1, torch 2.7.1, gymnasium 0.29.1, async-gym-agents 0.5.0.
 **Downstream reference:** `../synthetic-player-experiment-space` (usage survey below).
 
-The test suite itself changed no source code (see "Fix status" for the follow-up fixes). Each bug has a **strict xfail** test that asserts the desired behavior and states the cause in its `reason`. A fix makes the test XPASS, which strict mode reports as a failure, so the marker has to be removed together with the fix.
+The test suite itself changed no source code. Each bug got a **strict xfail** test that asserts the desired behavior. A fix makes the test XPASS, which strict mode reports as a failure, so the marker was removed together with each fix.
+
+**Status: every finding below is fixed and no xfail is left.** The remaining open items are listed under "Open items".
 
 ## Summary
 
-| | Before | After |
+| | Before | Report (`test_suite`) | Now |
+|---|---|---|---|
+| Tests | 64 passed, 12 xfailed, 1 skipped | 253 passed, 38 xfailed, 1 skipped | 359 passed, 0 xfailed, 1 skipped |
+| Line coverage | 61% | 98% (97% line+branch) | 98% (97% line+branch) |
+| Runtime (local, CPU) | ~3 min | ~3.5 min | ~4 min |
+
+Run with `uv run pytest tests --cov=rl_framework --cov-branch`.
+
+The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`) and the wait-for-file `time.sleep` loops in the ClearML connector.
+
+## Fix status
+
+"#54" = merged with the test suite (PR #54). "Follow-up" = branch `findings_bug_fixes`.
+
+| Finding | Where | Fix |
 |---|---|---|
-| Tests | 64 passed, 12 xfailed, 1 skipped | 253 passed, 38 xfailed, 1 skipped |
-| Line coverage | 61% | 98% (97% line+branch) |
-| Runtime (local, CPU) | ~3 min | ~3.5 min |
+| B-01 PettingZoo returns | #54 | `AutoResetSB3VecEnvWrapper` passes `MarkovVectorEnv`'s step results through (it already auto-resets when all agents are done) and only adds `TimeLimit.truncated` / `terminal_observation`. Agents which restart on their own follow gymnasium's auto-reset convention: the done step returns the next episode's start observation and passes the finished episode's last observation as `infos[agent]["final_observation"]` (documented in `StableBaselinesAgent.train` and `Agent.evaluate`). Verified on Unity builds (TanksGym, 3DBall, Walker) with the matching ml-agents-envs fork change. |
+| B-02 dropped imitation callbacks | #54 | `AlgorithmWrapper.set_additional_callbacks` sets the framework callbacks as `gen_callback` / `wrapper_callback` next to the library's own callback; retraining does not accumulate earlier callbacks. |
+| B-03 SQIL | #54 | `patch_imitation_sqil_replay_buffer` (in `util/util.py`) concatenates only non-None sample fields. No dependency pin changed. |
+| B-04 GAIL/AIRL load | #54 | Reward net loaded with `weights_only=False` (the file is written by the framework itself). |
+| B-05 retraining with extractor and `policy_kwargs` | #54 | Framework parameters are separated centrally; on load the saved `policy_kwargs` and features extractor are compared with the requested ones, and a mismatch raises a `ValueError` instead of a state-dict error. |
+| B-06, B-07, stale `infos` index | #54 | `MetricAggregator` resets the episode reward for every finished episode, checks `infos[done_index]`, and skips logging an empty reward window; `LoggingCallback` ignores discarded episodes for its logging frequency. |
+| B-08 HuggingFace JSON | #54 | numpy scalars and arrays are converted on `json.dump`; other unserializable values still raise. |
+| B-09 async shutdown | #54 | `shutdown()` in a `finally` block. |
+| B-10 to B-13 d3rlpy | Follow-up | Logging and epoch lengths are capped at the training length. Evaluators run in an epoch callback, so their metrics are logged at the end of every epoch. Validation logs `action_match` for every algorithm and `td_error` only for value-based ones. PettingZoo environments only provide the spaces (no online evaluation, with a warning); replay buffers take the action space from the environment. |
+| B-14 BC validation batches | Follow-up | Validation batches cycle endlessly; validation data smaller than one batch raises a `ValueError` up front. |
+| B-15 ClearML figure leak | Follow-up | The histogram's own figure is reported and closed. |
+| B-16 QLearning epsilon | Follow-up | Epsilon decays linearly from its current value to `epsilon_min` at half of the training, never rises, and continues across `train()` calls. |
+| B-17 QLearning bare file name | Follow-up | A directory is created only if the path has one. |
+| B-18 video path with spaces | Follow-up | ffmpeg runs with an argument list; failures are logged with stderr. |
+| B-19, B-20 SB3 ONNX | Follow-up | Dict observations become one input per key. `save_policy_as_onnx(..., deterministic=True)` exports without random nodes; the default stays sampling. Outputs are named `actions` / `values` / `log_prob` (same order as before). Inputs stay float32 for every observation space for compatibility; breaking improvements are planned separately. |
+| Evaluation quota (`n // len(envs) + 1`) | #54 | Episodes are split evenly over environments and PettingZoo agents (`split_evenly`). |
+| Evaluation logging (colliding series, windows never reset) | Follow-up | Evaluation logs at the lock-protected count of evaluated episodes and resets the step-metric windows after each log. |
+| `load_from_file` passes `callback_kwargs` / `reset_optimizer` to SB3 | #54 | Framework parameters are taken out before the SB3 load and applied to the agent. |
+| `reset_optimizer` on a fresh agent | #54 | Applied to the loaded/trained algorithm, not the placeholder. |
+| `SavingCallback.process_episode` uploads per crossed checkpoint | Follow-up | One upload per episode at the first crossed checkpoint; the schedule then continues after the episode end. |
+| Async callbacks attribute all workers to agent 0 | #54 | Episodes are attributed per (worker, sub-environment) via `EpisodeCallbackContext.worker_index` / `env_index` (async-gym-agents 0.5.0); `LoggingCallback` aggregates metrics per agent. |
+| ClearML multi-dot names / `file_name[:-4]` | Follow-up | Names use `os.path.splitext`; uploads wait for the file SB3 saves with `.zip` appended; download by task matches the name without extension. |
 
-Run with `uv run pytest tests --cov=rl_framework --cov-branch`. Run with `--runxfail` to see every bug reproduce: each xfail fails at the line its `reason` names.
+### Found while fixing (all fixed in #54)
 
-The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`), the wait-for-file `time.sleep` loops in the ClearML connector, and the dead `LoggingCallback._supports_episode_aggregation`.
+- **Evaluation dropped one-step episodes after an agent restart.** They count now when `final_observation` is passed.
+- **Loading did not check the policy architecture.** A different `net_arch` or features extractor now raises a `ValueError` on load (SB3 and imitation agents).
+- **PettingZoo training could not be seeded.** Environment seeding is supported for reproducible runs.
+- **Video recording skipped the features extractor's preprocessing.** Fixed.
+- **ml-agents-envs:** the matching `final_observation` and episode-end fixes live in the ml-agents-envs fork (artifactory 1.35), not here.
 
-## Fix status (follow-up, uncommitted)
+## Open items (not fixed)
 
-Fixed in the working tree after this report; their xfail markers are removed. Now: 275 passed, 24 xfailed, 1 skipped.
+- **`record_video` rejects EnvironmentFactory tuples in SB3 mode**, so the experiment space's factory configs upload without a video.
+- **Same-class features extractors with different preprocessing are not detected on load.** The load check compares classes and kwargs, not the preprocessing.
+- **PettingZoo agents which leave without restarting** still fail inside supersuit (`MarkovVectorEnv` asserts on missing agents).
+- **Trainable features extractors for d3rlpy and QLearning** are not supported, and d3rlpy does not save the extractor. The plan is in `.scratch/trainable-features-extractor/README.md`.
+- **Experiment space** needs the rl_framework release that requires async-gym-agents 0.5.0 (`EpisodeCallbackContext.worker_index` / `env_index`); until then its venv (0.4.1) fails `test_launcher.py::test_cartpole_config_trains_and_evaluates_through_main`.
 
-| Finding | Fix |
-|---|---|
-| B-01 PettingZoo returns | `AutoResetSB3VecEnvWrapper` passes `MarkovVectorEnv`'s step results through (it already auto-resets when all agents are done) and only adds `TimeLimit.truncated` / `terminal_observation`. Agents which restart on their own while the others continue follow gymnasium's auto-reset convention: the done step returns the next episode's start observation and passes the finished episode's last observation as `infos[agent]["final_observation"]`, which becomes SB3's `terminal_observation` (documented in `StableBaselinesAgent.train`). `Agent.evaluate` follows the same convention (documented in its docstring): it already chose actions on the returned observation and counted restarted episodes, except one-step episodes after a restart, which it dropped; these now count when `final_observation` is passed. Verified on Unity builds (TanksGym, 3DBall, Walker) together with the matching ml-agents-envs fork change. An agent which leaves without restarting still fails inside supersuit (`MarkovVectorEnv` asserts on missing agents), as before. |
-| B-02 dropped imitation callbacks | `add_callbacks_to_callback` returns a new `CallbackList` (arguments unchanged); `AlgorithmWrapper.set_additional_callbacks` sets it as `gen_callback` / `wrapper_callback`, remembering the library's own callback so retraining does not accumulate earlier callbacks. |
-| B-03 SQIL | `patch_imitation_sqil_replay_buffer` (in `util/util.py`, applied on import like the other patches) concatenates only non-None sample fields. No dependency pin changed. |
-| B-04 GAIL/AIRL load | Reward net loaded with `torch.load(..., weights_only=False)` (the file is written by the framework itself). |
-| B-06, B-07 and the known stale-index finding | `MetricAggregator` resets the episode reward for every finished episode, checks `infos[done_index]`, and skips logging an empty reward window; `LoggingCallback` ignores discarded episodes for its logging frequency. |
-| B-08 HuggingFace JSON | `json.dump(..., default=_numpy_to_json)` converts numpy scalars and arrays. |
-| B-09 async shutdown | `shutdown()` in a `finally` block. |
-
-### New test files
-
-| File | Covers |
-|---|---|
-| `tests/toys.py`, `tests/conftest.py` | Shared toy envs (gym, PettingZoo), in-process agents, recording connector. A session fixture redirects `tempfile` so per-agent tensorboard dirs stay in pytest's tmp dir. |
-| `test_stable_baselines_agent.py` | Parameters, training on gym / VecEnv / EnvironmentFactory / PettingZoo, checkpoints, retraining, features extractor, actions, save/load/download, ONNX |
-| `test_async_stable_baselines_agent.py` | Injected algorithm, `IndexableMultiEnv`, utilization callback, worker shutdown |
-| `test_custom_agent.py` | QLearning update rule, training, epsilon schedule, features extractor, save/load |
-| `test_imitation_agent.py` | BC, GAIL, AIRL, Density, SQIL: training, connector logging, validation, PettingZoo, features extractor, save/load, cross-algorithm load, ONNX |
-| `test_d3rlpy_agent.py` | Offline training, logging/checkpoints, validation, features extractor, save/load, ONNX, `ConnectorAdapter` |
-| `test_episode_sequence.py` | Construction (episodes, generator, dataset), save/load, generic/d3rlpy conversion |
-| `test_training_callbacks.py` | Logging/Saving/Pruning/ResetInfo/GammaSchedule callbacks, both `_on_step` and `process_episode` |
-| `test_evaluate_environment_types.py` | `Agent.evaluate` for every environment type, preprocessing, logging |
-| `test_base_connector.py`, `test_hugging_face_connector.py` (+ additions to `test_clearml_connector.py`) | Connector bookkeeping, HF upload/download and ClearML logging/upload/download with the services mocked |
-| `test_features_extractor_utils.py`, `test_sb3_optimizer_reset.py`, `test_util_patches.py`, `test_video_recording.py`, `test_public_api.py` (+ additions to `test_metric_aggregator.py`) | The remaining utilities |
-
-## New findings
+## Findings (as reported)
 
 Ranked by impact. Line numbers refer to 827c39b.
 
@@ -60,195 +77,80 @@ Ranked by impact. Line numbers refer to 827c39b.
 - The wrapper reports every done one step late, so the step before the done is repeated.
 - `MarkovVectorEnv` has already reset by then, so the first transition of the next episode is replaced by the old terminal transition.
 - Result: with rewards 1..5 (true return 15), SB3 sees episodes of length 6 with return 19, then length 5 with return 18.
-- PPO's advantages and the logged "Episode reward" are both wrong. Each episode's first real transition is never trained on, and the action taken on the repeated observation is attributed to the wrong episode.
-- Test: `test_stable_baselines_agent.py::test_pettingzoo_training_sees_the_true_episode_returns`.
+- PPO's advantages and the logged "Episode reward" are both wrong.
 
 **B-02: GAIL, AIRL and Density training never call the framework callbacks.**
 `util/sb3_training_callbacks.py:21-29`; used at `gail.py:82`, `airl.py:82`, `density.py:64`.
 
 - `add_callbacks_to_callback` wraps a `None` or single-callback target in a new local `CallbackList` and returns nothing.
 - In imitation 1.0, `gen_callback` and `wrapper_callback` are single callbacks, so `SavingCallback` and `LoggingCallback` are silently dropped.
-- With any connector, these algorithms log no episode metrics and upload no checkpoints.
-- Tests: `test_training_callbacks.py::test_add_callbacks_to_a_single_callback_makes_them_reachable`, `test_imitation_agent.py::test_environment_interacting_algorithms_log_episodes_to_the_connector[GAIL|AIRL|DensityAlgorithm]`.
 
 **B-03: SQIL cannot train with the locked dependencies.**
-This is a dependency incompatibility, not rl_framework code.
 
 - stable-baselines3 2.7 added `ReplayBufferSamples.discounts`, which is `None` for plain buffers.
 - imitation 1.0's `SQILReplayBuffer.sample` `th.cat`s every field, so the first gradient step raises `TypeError`.
-- `pyproject.toml` allows `stable-baselines3>=2.2,<3`, and `uv.lock` resolves to 2.7.1.
-- Fix options: pin SB3 below the version that added `discounts`, or patch `SQILReplayBuffer.sample` the way `util/util.py` patches other libraries.
-- Test: `test_imitation_agent.py::test_every_algorithm_trains_and_acts[SQIL]`. The other SQIL tests set `learning_starts` past the run length so that saving and logging stay covered.
 
 **B-04: Saved GAIL and AIRL agents cannot be loaded.**
 `gail.py:96`, `airl.py:96`
 
-- The reward net is saved as a pickled module (`torch.save(algorithm._reward_net)`) and loaded with `torch.load(path)`.
-- Since torch 2.6, `torch.load` defaults to `weights_only=True`, so loading raises `UnpicklingError`.
-- `load_from_file` only catches `FileNotFoundError`, so the whole load fails, including the policy.
-- Test: `test_imitation_agent.py::test_adversarial_save_and_load_round_trip_keeps_the_policy[GAIL|AIRL]`.
+- The reward net is saved as a pickled module and loaded with `torch.load(path)`, which defaults to `weights_only=True` since torch 2.6.
 
 ### Medium
 
-**B-05: Retraining an SB3 agent with a features extractor and user `policy_kwargs` crashes.**
-`stable_baselines.py:249-261`
+**B-05: Retraining an SB3 agent with a features extractor and user `policy_kwargs` crashes** (`stable_baselines.py:249-261`). The user's `policy_kwargs` replace the saved ones on reload, so the rebuilt policy has no extractor.
 
-- The second `train()` saves and reloads with `custom_objects=self.algorithm_parameters`.
-- The user's `policy_kwargs` (without the features extractor entries) replace the saved ones, so the rebuilt policy has no extractor.
-- Result: `RuntimeError: Error(s) in loading state_dict`.
-- Without user `policy_kwargs` it works.
-- Test: `test_stable_baselines_agent.py::test_retraining_with_features_extractor_and_policy_kwargs_works`.
+**B-06: Discarded episodes crash `LoggingCallback` or log NaN** (`sb3_training_callbacks.py:139-152`, `metric_logging_utils.py:79`).
 
-**B-06: Discarded episodes crash `LoggingCallback` or log NaN.**
-`sb3_training_callbacks.py:139-152` together with `metric_logging_utils.py:79`
+**B-07: A discarded episode's reward is added to the next episode** (`metric_logging_utils.py:64-70`).
 
-- `_log_if_due` also runs for discarded episodes.
-- If an env's first episode is discarded, `episode_rewards[index]` does not exist yet, so it raises `KeyError`.
-- After a logging reset, a discarded episode logs `np.mean([]) = NaN` as "Episode reward".
-- This hits async training with `skip_truncated` or worker discards, which downstream uses.
-- Tests: `test_training_callbacks.py::test_logging_callback_survives_a_discarded_first_episode`, `::test_logging_callback_logs_no_nan_reward_for_a_discarded_episode`.
+**B-08: The HuggingFace final upload fails after normal training** (`hugging_face_connector.py:144-147`): `json.dump` fails on numpy values.
 
-**B-07: A discarded episode's reward is added to the next episode.**
-`metric_logging_utils.py:64-70`
+**B-09: `AsyncStableBaselinesAgent` leaves workers running when training fails** (`async_stable_baselines.py:152-156`).
 
-- `episode_reward[done_index]` is only reset for kept episodes.
-- This is separate from the known stale-index bug at line 66.
-- Test: `test_metric_aggregator.py::test_discarded_episode_reward_does_not_leak_into_next_episode`.
+**B-10: `D3RLPYAgent` crashes on short training runs** (`d3rlpy.py:315-326`): with batch size 32, any `total_timesteps < 10016` fails.
 
-**B-08: The HuggingFace final upload fails after normal training.**
-`hugging_face_connector.py:144-147`
+**B-11: `D3RLPYAgent` evaluation metrics are lost** (`d3rlpy.py:306-326`): evaluator scores land after the epoch's last step commit, so they are logged one epoch late and never for the last epoch.
 
-- `json.dump` of the logged sequences fails on numpy values.
-- SB3 VecEnvs return float32 rewards, so `MetricAggregator` logs `np.float32` means. Histograms are numpy arrays.
-- Test: `test_hugging_face_connector.py::test_final_upload_serializes_numpy_values_logged_during_training`.
+**B-12: `D3RLPYAgent` with validation episodes crashes for value-free algorithms** (`d3rlpy.py:309-313`): the `TDErrorEvaluator` fails for (Discrete)BC.
 
-**B-09: `AsyncStableBaselinesAgent` leaves workers running when training fails.**
-`async_stable_baselines.py:152-156`
+**B-13: `D3RLPYAgent` cannot train on PettingZoo environments** (`d3rlpy.py:272-307`).
 
-- `shutdown()` is not in a `finally` block.
-- Downstream this is the known "process never exits after AsyncWorkerFailureError" hang.
-- Test: `test_async_stable_baselines_agent.py::test_train_shuts_down_workers_when_training_fails`.
+**B-14: BC validation runs out of batches** (`imitation/algorithms/bc.py:89-91,127`).
 
-**B-10: `D3RLPYAgent` crashes on short training runs.**
-`d3rlpy.py:315-326`
-
-- `logging_steps = ceil(10000 / batch_size)` is used even when `n_steps` is smaller, and d3rlpy's fitter then reads `metrics` before assignment (`UnboundLocalError`).
-- With batch size 32, any `total_timesteps < 10016` fails.
-- Test: `test_d3rlpy_agent.py::test_short_training_runs`.
-
-**B-11: `D3RLPYAgent` evaluation metrics are lost.**
-`d3rlpy.py:306-326`
-
-- The agent uses `LoggingStrategy.STEPS`, but d3rlpy adds evaluator scores (`episode_reward_mean`, `td_error`) after the epoch's last step commit.
-- They are therefore logged in the next epoch at the wrong step, and never for the last epoch.
-- Runs under about 50k timesteps are a single epoch and log no evaluation metrics at all.
-- Test: `test_d3rlpy_agent.py::test_evaluation_metrics_are_logged_to_the_connector`.
-
-**B-12: `D3RLPYAgent` with validation episodes crashes for value-free algorithms.**
-`d3rlpy.py:309-313`
-
-- A `TDErrorEvaluator` is always added, but (Discrete)BC raises `NotImplementedError: BC does not support value estimation`.
-- Test: `test_d3rlpy_agent.py::test_behavior_cloning_trains_with_validation_episodes`.
-
-**B-13: `D3RLPYAgent` cannot train on PettingZoo environments.**
-`d3rlpy.py:272-307`
-
-- The vectorized env is built but never used: the raw `ParallelEnv` is passed to `ReplayBuffer` and `EnvironmentEvaluator`.
-- Result: `ValueError: Unsupported observation type: <class 'dict'>`.
-- Test: `test_d3rlpy_agent.py::test_training_on_pettingzoo_environment`.
-
-**B-14: BC validation runs out of batches.**
-`imitation/algorithms/bc.py:89-91,127`
-
-- One iterator over the validation data is used for the whole training.
-- When training logs more often than there are validation batches, `next()` raises `StopIteration` and aborts training. Example: `log_interval=1` with 500 validation transitions at batch size 32 fails at batch 16.
-- Test: `test_imitation_agent.py::test_bc_validation_does_not_run_out_of_batches`.
-
-**B-15: The ClearML histogram logging leaks matplotlib figures.**
-`clearml_connector.py:106-113`
-
-- Every histogram creates a seaborn `FacetGrid` figure that is never closed.
-- With `callback_log_distributions`, memory grows during training and matplotlib warns after 20 open figures.
-- Test: `test_clearml_connector.py::test_log_histogram_does_not_leak_matplotlib_figures`.
+**B-15: The ClearML histogram logging leaks matplotlib figures** (`clearml_connector.py:106-113`).
 
 ### Low
 
-**B-16: The QLearning epsilon schedule is broken.**
-`q_learning.py:201-205`
+**B-16: The QLearning epsilon schedule is broken** (`q_learning.py:201-205`): it overshoots below `epsilon_min` and ignores the configured `epsilon`.
 
-- Epsilon is set to `1 - 2t/T` while it is above `epsilon_min`. This overshoots below `epsilon_min`, even below 0 (−0.2 in the test).
-- It also ignores the configured `epsilon`: 0.2 jumps to 0.8 after the first episode.
-- Tests: `test_custom_agent.py::test_epsilon_never_falls_below_epsilon_min`, `::test_configured_initial_epsilon_is_not_increased`.
+**B-17: `QLearning.save_to_file("q.pkl")` fails** (`q_learning.py:221`): `os.makedirs("")`.
 
-**B-17: `QLearning.save_to_file("q.pkl")` fails.**
-`q_learning.py:221`
+**B-18: Video recording breaks on paths with spaces** (`video_recording.py:66`).
 
-- `os.makedirs("")` fails for a bare file name.
-- Test: `test_custom_agent.py::test_save_to_a_bare_file_name_in_the_working_directory`.
+**B-19: SB3 ONNX export fails for Dict observation spaces** (`stable_baselines.py:345-347`).
 
-**B-18: Video recording breaks on paths with spaces.**
-`video_recording.py:66`
-
-- The ffmpeg command is built without quoting. The failure is only logged (lines 70-71), and the upload continues without a video.
-- Test: `test_video_recording.py::test_sb3_recording_writes_the_video_to_a_path_with_spaces`.
-
-**B-19: SB3 ONNX export fails for Dict observation spaces.**
-`stable_baselines.py:345-347`
-
-- `observation_space.shape` is `None`, which raises `TypeError`.
-- Test: `test_stable_baselines_agent.py::test_onnx_export_supports_dict_observations`.
-
-**B-20: The SB3 ONNX export is stochastic.**
-`stable_baselines.py:341`
-
-- This is already marked FIXME in the code.
-- The exported graph samples actions with a `Multinomial` node.
-- Test: `test_stable_baselines_agent.py::test_onnx_export_is_deterministic`.
-
-## Previously known findings (existing xfails, still reproducing)
-
-These are unchanged. Their `reason` strings cite line numbers from an older revision (current lines in brackets):
-
-- `MetricAggregator` checks `infos[agent_index]` instead of `infos[done_index]` \[metric_logging_utils.py:66\].
-- `evaluate` episode quota is `n // len(envs) + 1` per env \[base_agent.py:225\].
-- `evaluate` env threads log colliding series \[base_agent.py:206-213\].
-- `evaluate` never resets step-metric windows \[base_agent.py:206-213\].
-- `load_from_file` passes `callback_kwargs` and `reset_optimizer` to SB3 instead of the agent \[stable_baselines.py:366-370\].
-- `reset_optimizer` on a fresh agent hits the placeholder algorithm \[stable_baselines.py:230-232\].
-- `SavingCallback.process_episode` uploads once per crossed checkpoint \[sb3_training_callbacks.py:227-236\].
-- Async callbacks attribute all workers to agent 0 \[sb3_training_callbacks.py:108, 367-374\].
-- ClearML multi-dot file names \[clearml_connector.py:170\].
-- ClearML `file_name[:-4]` extension assumption \[clearml_connector.py:245\].
-
-Several downstream findings (U-07, U-08, U-09) are fixed on this branch, and tests guard them: `test_features_extractor.py`, `test_imitation_learning_agents_are_instantiable`, and the PettingZoo wrapper tests.
+**B-20: The SB3 ONNX export is stochastic** (`stable_baselines.py:341`).
 
 ## Limitations and observations (no xfail)
 
-These are documented or deliberate behaviors rather than bugs, but worth deciding on:
+Documented or deliberate behaviors rather than bugs. All but the first are fixed on `findings_bug_fixes`:
 
-- **Features extractor on VecEnv or EnvironmentFactory:** `wrap_environment_with_features_extractor_preprocessor` raises `TypeError`, so `train` and `evaluate` with a features extractor only work for gym and PettingZoo envs. That includes the downstream Cold War factory format.
-- **Imitation checkpoint interval is fixed:** `ImitationAgent` uses `SavingCallback(self, connector)` with the default 50,000-step interval and has no `callback_kwargs`.
-- **Video errors are swallowed:** `record_video` logs and swallows all exceptions, so a failing policy produces an upload without a video and no error.
-- **`D3RLPYAgent.save_to_file` needs a `Path`:** it calls `file_path.as_posix()` and fails for `str`. The other agents accept both.
-- **`D3RLPYAgent.choose_action` guard is dead:** `if not self.algorithm` is never true because the algorithm is created in `__init__`. An untrained agent raises d3rlpy's own error.
-- **Dead code:** `LoggingCallback._supports_episode_aggregation` is unused.
-- **Optimizer reset repeats:** `reset_optimizer=True` resets the optimizer on every `train()` call, not only on the first one after loading.
+| Limitation | Status |
+|---|---|
+| **Features extractor on VecEnv or EnvironmentFactory:** `wrap_environment_with_features_extractor_preprocessor` raises `TypeError`, so `train` and `evaluate` with a features extractor only work for gym and PettingZoo envs. | Open, planned on a separate branch together with `record_video` for EnvironmentFactory tuples. Factories need `env_func` itself wrapped, since async workers create their environments from it. |
+| **Imitation checkpoint interval is fixed** (50,000 steps, no `callback_kwargs`). Downstream `callback_kwargs` in `agent.params` even reached the imitation algorithm. | `ImitationAgent` takes `callback_kwargs` (saving and logging interval, distributions, verbosity) out of the algorithm parameters, also on load. |
+| **Video errors are swallowed:** `record_video` logs and swallows all exceptions; ClearML then reports a missing video file. | `record_video` raises (a failing ffmpeg as `RuntimeError`); an interrupt saves the video recorded so far. The connectors log the error with traceback and upload without video (HuggingFace removes a partial file). |
+| **`D3RLPYAgent.save_to_file` needs a `Path`.** | Accepts `str` as well. |
+| **`D3RLPYAgent.choose_action` guard is dead.** | Checks the algorithm's networks (`impl`), which only training or loading creates. |
+| **Dead code:** `LoggingCallback._supports_episode_aggregation`. | Removed. |
+| **Optimizer reset repeats** on every `train()` call. | Resets once, before the first training after creating or loading the agent. |
 
 ## Downstream relevance (synthetic-player-experiment-space)
 
 The experiment space trains through config with `StableBaselinesAgent` / `AsyncStableBaselinesAgent` (PPO, MultiDiscrete actions, EnvironmentFactory tuples), `CustomAgent`+`QLearning` (Taxi) and `ImitationAgent`. It uses ClearML and HuggingFace connectors and `step_metric_*` infos.
 
-- **Directly reachable with shipped configs:**
-  - B-01: `configs/unity/unity_configuration.yaml` trains SB3 PPO on a `UnityPettingZoo` ParallelEnv.
-  - B-08: `configs/general/default_config.yaml` uses SB3 PPO with the HuggingFace connector.
-  - B-06 / B-07: async discards in Cold War AsyncSB3 runs give NaN or crashing episode-reward logs and wrong rewards.
-  - B-09: hang after a worker failure.
-  - B-15: when distributions are logged.
-  - The previously known evaluate and callback-attribution items.
-- **Reachable by config choice (commented-out alternatives in `default_config.yaml`):**
-  - B-02 / B-03 / B-04 / B-14: the imitation enum entries for GAIL, AIRL, Density, SQIL and BC with validation.
-  - B-16: `Custom` + `Q_LEARNING`.
-  - B-05: `features_extractor` with `policy_kwargs`, plus download-and-retrain.
-- **Not used downstream:**
-  - `D3RLPYAgent` (B-10 to B-13).
-  - The rl_framework ONNX export (B-19, B-20). Downstream exports ONNX elsewhere.
+- **Directly reachable with shipped configs:** B-01 (Unity PettingZoo), B-08 (HuggingFace connector), B-06 / B-07 (async discards), B-09 (hang after a worker failure), B-15 (distribution logging), the evaluation and callback-attribution items.
+- **Reachable by config choice:** B-02 / B-03 / B-04 / B-14 (imitation algorithms), B-16 (`Custom` + `Q_LEARNING`), B-05 (`features_extractor` with `policy_kwargs`).
+- **Not used downstream:** `D3RLPYAgent` (B-10 to B-13) and the rl_framework ONNX export (B-19, B-20).
+
+The experiment space requires `reinforcement-learning-framework>=0.11.4` for these fixes; its `AGENTS.md` documents the split of responsibilities and per-worker logging.

@@ -224,22 +224,6 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         except (TypeError, ValueError):
             return False
 
-    @staticmethod
-    def _supports_episode_aggregation(metric_aggregator: object) -> bool:
-        if type(metric_aggregator).__name__ != "MetricAggregator":
-            return False
-        return all(
-            hasattr(metric_aggregator, name)
-            for name in (
-                "aggregate_distributions",
-                "episode_actions",
-                "episode_end_reasons",
-                "episode_reward",
-                "episode_rewards",
-                "episode_step_metrics",
-            )
-        )
-
 
 class SavingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
     """
@@ -269,21 +253,16 @@ class SavingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
         """Preserve checkpoint scheduling without checking it every transition.
 
-        Uploads are keyed off elapsed timesteps, not `done`, so - unlike the other
-        callbacks below - this still has to step through every checkpoint boundary
-        crossed within the batch (there can be several within one long episode)
-        rather than only looking at the episode's start/end.
+        Uploads are keyed off elapsed timesteps, not `done`: the first checkpoint boundary crossed within the
+        episode uploads (named after that timestep, as in `_on_step`). The model does not change while an episode
+        batch is processed, so further boundaries crossed by the same (long) episode are skipped instead of
+        uploading the same model again; the schedule keeps its `checkpoint_frequency` rhythm.
         """
-        checkpoint_timestep = max(
-            context.start_timestep + 1,
-            self.next_upload + 1,
-        )
-        while checkpoint_timestep <= context.end_timestep:
+        checkpoint_timestep = max(context.start_timestep + 1, self.next_upload + 1)
+        if checkpoint_timestep <= context.end_timestep:
             self._maybe_upload(checkpoint_timestep)
-            checkpoint_timestep = max(
-                checkpoint_timestep + 1,
-                self.next_upload + 1,
-            )
+            while self.next_upload < context.end_timestep:
+                self.next_upload += self.checkpoint_frequency
 
         return True
 
