@@ -2,8 +2,9 @@ import io
 import logging
 import math
 import pickle
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, Hashable, List, Optional, Type
 
 import d3rlpy.dataset
 import gymnasium as gym
@@ -50,6 +51,7 @@ from d3rlpy.algos import (
     DoubleDQN,
     DoubleDQNConfig,
     DQNConfig,
+    GreedyTransformerActionSampler,
     IQLConfig,
     NFQConfig,
     PLASConfig,
@@ -60,9 +62,11 @@ from d3rlpy.algos import (
     ReBRAC,
     ReBRACConfig,
     SACConfig,
+    StatefulTransformerWrapper,
     TD3Config,
     TD3PlusBC,
     TD3PlusBCConfig,
+    TransformerAlgoBase,
 )
 from d3rlpy.base import LearnableBase, LearnableConfig, LearnableConfigWithShape
 from d3rlpy.dataset import ReplayBuffer
@@ -79,11 +83,14 @@ from rl_framework.util import (
     DummyConnector,
     Environment,
     FeaturesExtractor,
-    patch_d3rlpy,
+    patch_d3rlpy_map_location,
+    patch_d3rlpy_onnx_export,
     wrap_environment_with_features_extractor_preprocessor,
 )
+from rl_framework.util.onnx_export import export_d3rlpy_algorithm_as_onnx
 
-patch_d3rlpy()
+patch_d3rlpy_map_location()
+patch_d3rlpy_onnx_export()
 
 D3RLPY_ALGORITHM_CONFIG_REGISTRY: dict[Type[LearnableBase], Type[LearnableConfig]] = {
     AWAC: AWACConfig,
@@ -113,6 +120,9 @@ D3RLPY_ALGORITHM_CONFIG_REGISTRY: dict[Type[LearnableBase], Type[LearnableConfig
     DiscreteSAC: DiscreteSACConfig,
     DiscreteRandomPolicy: DiscreteRandomPolicyConfig,
 }
+
+# Algorithm parameters of the agent, not of d3rlpy's algorithm config
+AGENT_PARAMETERS = ("device", "target_return")
 
 # Algorithms which do not estimate values (their implementation cannot compute e.g. the TD error)
 VALUE_FREE_ALGORITHMS = (BC, DiscreteBC, RandomPolicy, DiscreteRandomPolicy)
@@ -209,14 +219,25 @@ class D3RLPYAgent(ILAgent):
                 Defaults to DQN.
             algorithm_parameters (Dict): Parameters / keyword arguments for the specified offline RL algorithm class.
                 - "device" (str): Device to use for training. Defaults to None.
+                - "target_return" (float): Decision transformers only: the return their actions aim to achieve
+                  (required to choose actions, e.g. in `evaluate`).
                 - See https://d3rlpy.readthedocs.io/en/v2.6.0/references/algos.html for details on individual params.
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
-        device = self.algorithm_parameters.pop("device", None)
-        config = D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**self.algorithm_parameters)
-        self.algorithm = config.create(device=device)
-        if device:
-            self.algorithm_parameters.update({"device": device})
+        self.algorithm = self._algorithm_config().create(device=self.algorithm_parameters.get("device"))
+        # Action space of the training environment (d3rlpy only knows the action size): continuous actions are
+        #   clipped to it, like SB3's `predict`
+        self.action_space: Optional[gym.Space] = None
+        # Decision transformers: d3rlpy's stateful wrapper of every running episode (by `episode_key`)
+        self._episode_wrappers: Dict[Hashable, StatefulTransformerWrapper] = {}
+        self._episode_wrappers_lock = threading.Lock()
+
+    def _algorithm_config(self) -> LearnableConfig:
+        """d3rlpy's config of the algorithm, from the algorithm parameters except the agent's own."""
+        config_parameters = {
+            name: value for name, value in self.algorithm_parameters.items() if name not in AGENT_PARAMETERS
+        }
+        return D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**config_parameters)
 
     def train(
         self,
@@ -297,6 +318,7 @@ class D3RLPYAgent(ILAgent):
             ]
 
         spaces_environment = _SpacesEnvironment(training_environments[0])
+        self.action_space = spaces_environment.action_space
         if isinstance(training_environments[0], tuple):
             # Creating the environments of the factories after every epoch would be too expensive
             evaluation_environments = None
@@ -304,6 +326,21 @@ class D3RLPYAgent(ILAgent):
                 "Offline Reinforcement Learning on environment factories: the stub environment only provides the "
                 "spaces, the environments are not used for online evaluation during training (episode_reward_mean is "
                 "not logged)."
+            )
+        is_transformer = isinstance(self.algorithm, TransformerAlgoBase)
+        if is_transformer and evaluation_environments is not None and "target_return" not in self.algorithm_parameters:
+            evaluation_environments = None
+            logging.warning(
+                "Decision transformers without the parameter target_return are not evaluated online during "
+                "training (episode_reward_mean is not logged): they need the return to achieve to choose actions."
+            )
+        if is_transformer and validation_trajectories:
+            # FIXME: d3rlpy's validation evaluators call `predict` with single observations, which decision transformers
+            #   do not support (they need the context of the episode)
+            validation_trajectories = None
+            logging.warning(
+                "Decision transformers are not evaluated on validation episodes during training (the validation "
+                "metrics are not logged): d3rlpy's evaluators do not support them."
             )
 
         # Action space and size passed explicitly: d3rlpy's `ReplayBuffer` only detects them from `env` if no
@@ -338,16 +375,32 @@ class D3RLPYAgent(ILAgent):
             for name, evaluator in evaluators.items():
                 connector.log_value_with_timestep(total_step * batch_size, evaluator(algorithm, replay_buffer), name)
 
-        self.algorithm.fit(
-            replay_buffer,
-            n_steps=n_batches,
-            n_steps_per_epoch=n_steps_per_epoch,
-            logging_steps=logging_steps,
-            logging_strategy=LoggingStrategy.STEPS,
-            logger_adapter=ConnectorAdapterFactory(connector, self),
-            save_interval=1,
-            epoch_callback=evaluate_after_epoch,
-        )
+        if is_transformer:
+
+            def evaluate_at_the_end_of_an_epoch(algorithm: LearnableBase, epoch: int, total_step: int) -> None:
+                if total_step % n_steps_per_epoch == 0:
+                    evaluate_after_epoch(algorithm, epoch, total_step)
+
+            # d3rlpy's `fit` of decision transformers logs once per epoch and has a callback after every step
+            self.algorithm.fit(
+                replay_buffer,
+                n_steps=n_batches,
+                n_steps_per_epoch=n_steps_per_epoch,
+                logger_adapter=ConnectorAdapterFactory(connector, self),
+                save_interval=1,
+                callback=evaluate_at_the_end_of_an_epoch,
+            )
+        else:
+            self.algorithm.fit(
+                replay_buffer,
+                n_steps=n_batches,
+                n_steps_per_epoch=n_steps_per_epoch,
+                logging_steps=logging_steps,
+                logging_strategy=LoggingStrategy.STEPS,
+                logger_adapter=ConnectorAdapterFactory(connector, self),
+                save_interval=1,
+                epoch_callback=evaluate_after_epoch,
+            )
 
         # FIXME: Check case of continuous training (works, but deteriorates for small number of fine-tuning steps)
         # FIXME: Check when LOG.warn for GeneratorReplayBuffer is triggered (loading in-memory)
@@ -391,6 +444,10 @@ class D3RLPYAgent(ILAgent):
         Args:
             observation (object): Observation of the environment
             deterministic (bool): Whether the action should be determined in a deterministic or stochastic way.
+                Only decision transformers with discrete actions sample (from the softmax of their logits);
+                the other algorithms always choose their greedy action.
+            kwargs: Decision transformers only: the context of the episode, as passed by `evaluate` (see
+                `Agent.choose_action`): `reward`, `episode_start` and `episode_key`.
 
         Returns: action (int): Action to take according to policy.
 
@@ -400,19 +457,66 @@ class D3RLPYAgent(ILAgent):
         if self.algorithm.impl is None:
             raise ValueError("Cannot predict action for uninitialized agent. Start a training first to initialize.")
 
-        action = self.algorithm.predict(
-            np.expand_dims(observation, axis=0),
-        )[0]
+        if isinstance(self.algorithm, TransformerAlgoBase):
+            action = self._choose_transformer_action(observation, deterministic, **kwargs)
+        else:
+            action = self.algorithm.predict(
+                np.expand_dims(observation, axis=0),
+            )[0]
+        if isinstance(self.action_space, gym.spaces.Box):
+            action = np.clip(action, self.action_space.low, self.action_space.high)
         return action
 
-    def save_policy_as_onnx(self, file_path: Path, *args, **kwargs) -> None:
-        """Save the agent policy as ONNX model.
+    def _choose_transformer_action(
+        self,
+        observation: object,
+        deterministic: bool,
+        reward: float = 0.0,
+        episode_start: bool = False,
+        episode_key: Optional[Hashable] = None,
+        **kwargs,
+    ):
+        """
+        Action of a decision transformer, which acts on the context of its episode (the previous observations,
+        actions and rewards): with d3rlpy's `StatefulTransformerWrapper` of the episode, created at its start.
+        """
+        if episode_key is None:
+            raise NotImplementedError(
+                "Decision transformers cannot choose actions from single observations: they need the context of the "
+                "episode (the arguments reward, episode_start and episode_key, as passed by `evaluate`)."
+            )
+        target_return = self.algorithm_parameters.get("target_return")
+        if target_return is None:
+            raise ValueError("Decision transformers need the return to achieve: set the parameter target_return.")
+        with self._episode_wrappers_lock:
+            if episode_start or episode_key not in self._episode_wrappers:
+                is_discrete = self.algorithm.get_action_type() == ActionSpace.DISCRETE
+                # d3rlpy's default action samplers: softmax sampling (discrete) or the action itself (continuous)
+                action_sampler = GreedyTransformerActionSampler() if is_discrete and deterministic else None
+                self._episode_wrappers[episode_key] = self.algorithm.as_stateful_wrapper(
+                    target_return, action_sampler=action_sampler
+                )
+            wrapper = self._episode_wrappers[episode_key]
+        return wrapper.predict(observation, reward)
+
+    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = True, *args, **kwargs) -> None:
+        """Save the agent's policy as ONNX model, in the contract of `StableBaselinesAgent.save_policy_as_onnx` (inputs
+        and outputs: see `rl_framework.util.onnx_export.export_d3rlpy_algorithm_as_onnx`; decision transformers are
+        exported one step per call, with further inputs).
 
         Args:
             file_path (Path): The file where the policy should be saved to.
+            deterministic (bool): Whether the most likely action is exported (default) or, for discrete decision
+                transformers only, one sampled from noise inputs.
         """
-        assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
-        self.algorithm.save_policy(Path(file_path).as_posix())
+        if self.action_space is None and self.algorithm.get_action_type() == ActionSpace.CONTINUOUS:
+            logging.warning(
+                "The action space is unknown (agent saved without it): continuous actions of the ONNX export are "
+                "not clipped."
+            )
+        export_d3rlpy_algorithm_as_onnx(
+            self.algorithm, file_path, deterministic=deterministic, action_space=self.action_space
+        )
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
@@ -421,6 +525,13 @@ class D3RLPYAgent(ILAgent):
             file_path (Path): The path where the agent should be saved to.
         """
         self.algorithm.save(Path(file_path).as_posix())
+        if self.action_space is not None:
+            # Next to d3rlpy's keys ("torch", "config", "version"), the only ones its `load_learnable` reads
+            with open(file_path, "rb") as f:
+                obj = pickle.load(f)
+            obj["action_space"] = self.action_space
+            with open(file_path, "wb") as f:
+                pickle.dump(obj, f)
 
     def load_from_file(self, file_path: Path, algorithm_parameters: Dict = None, *args, **kwargs) -> None:
         """Loads the agent policy (`self.agent_policy`) in-place from a zipped folder.
@@ -437,11 +548,16 @@ class D3RLPYAgent(ILAgent):
         with open(file_path, "rb") as f:
             obj = pickle.load(f)
 
-        device = self.algorithm_parameters.pop("device", None)
         config = LearnableConfigWithShape.deserialize(obj["config"])
-        config.config = D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**self.algorithm_parameters)
-        self.algorithm = config.create(device=device)
-        if device:
-            self.algorithm_parameters.update({"device": device})
+        algorithm_config = self._algorithm_config()
+        # The scalers are fitted in training (to the dataset or environment): the stored ones, unless fitted ones are
+        #   given (the parameters usually hold unfitted ones, or none)
+        for scaler_name in ("observation_scaler", "action_scaler", "reward_scaler"):
+            scaler = getattr(algorithm_config, scaler_name)
+            if scaler is None or not scaler.built:
+                setattr(algorithm_config, scaler_name, getattr(config.config, scaler_name))
+        config.config = algorithm_config
+        self.algorithm = config.create(device=self.algorithm_parameters.get("device"))
 
         self.algorithm.impl.load_model(io.BytesIO(obj["torch"]))
+        self.action_space = obj.get("action_space")

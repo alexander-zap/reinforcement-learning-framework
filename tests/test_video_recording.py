@@ -139,3 +139,31 @@ def test_sb3_recording_writes_the_video_to_a_path_with_spaces(tmp_path):
     record_video(ConstantActionAgent(), Toy(episode_length=3), file_path, video_length=5)
 
     assert file_path.exists()
+
+
+class ContextRecordingAgent(ConstantActionAgent):
+    """Records the episode context which `record_video` passes to `choose_action`."""
+
+    def __init__(self):
+        super().__init__()
+        self.contexts = []
+        self.episode_keys = set()
+
+    def choose_action(self, observation, deterministic=False, *args, **kwargs):
+        self.contexts.append((kwargs["reward"], kwargs["episode_start"]))
+        self.episode_keys.add(kwargs["episode_key"])
+        return super().choose_action(observation, deterministic, *args, **kwargs)
+
+
+@pytest.mark.parametrize("sb3_replay", [False, True], ids=["simple", "sb3"])
+def test_recording_passes_the_episode_context_to_the_agent(tmp_path, monkeypatch, sb3_replay):
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: FFMPEG_SUCCESS)
+    agent = ContextRecordingAgent()
+
+    record_video(agent, Toy(episode_length=3), tmp_path / "replay.gif", video_length=5, sb3_replay=sb3_replay)
+
+    # Episodes of 3 steps with reward 1: the first step without reward, then the previous step's reward
+    episode = [(0.0, True), (1.0, False), (1.0, False)]
+    # Simple: whole episodes until 5 frames (4 per episode); SB3: 5 steps
+    assert agent.contexts == (episode * 2 if not sb3_replay else (episode * 2)[:5])
+    assert len(agent.episode_keys) == 1

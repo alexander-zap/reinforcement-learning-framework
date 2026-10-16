@@ -1,6 +1,6 @@
 [project]
 name = "reinforcement-learning-framework"
-version = "0.11.5"
+version = "0.11.6"
 description = "An easy-to-read Reinforcement Learning (RL) framework. Provides standardized interfaces and implementations to various Reinforcement Learning methods and utilities."
 authors = [{ name = "Alexander Zap" }]
 requires-python = ">=3.9,<4"
@@ -65,6 +65,8 @@ dev = [
 
 [tool.uv]
 default-groups = "all"
+# Most projects using this framework will be on higher Python versions, test accordingly (torch 2.9 dropped Python 3.9)
+constraint-dependencies = ["torch==2.10.*; python_version >= '3.10'"]
 
 [tool.uv.build-backend]
 module-name = "rl_framework"

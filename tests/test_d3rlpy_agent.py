@@ -3,11 +3,19 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import d3rlpy
 import gymnasium as gym
 import numpy as np
 import onnx
+import onnxruntime
 import pytest
-from d3rlpy.algos import DQN, DiscreteBC
+from d3rlpy.algos import (
+    DQN,
+    TD3,
+    DiscreteBC,
+    DiscreteDecisionTransformer,
+    GreedyTransformerActionSampler,
+)
 from imitation.data.types import TrajectoryWithRew
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -16,8 +24,8 @@ from rl_framework.agent.imitation.d3rlpy.d3rlpy import (
     D3RLPY_ALGORITHM_CONFIG_REGISTRY,
     ConnectorAdapterFactory,
 )
-from rl_framework.util import FeaturesExtractor
-from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, ToyParallel
+from rl_framework.util import FeaturesExtractor, record_video, video_recording
+from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, Toy, ToyParallel
 
 CARTPOLE_ROLLOUT = Path(__file__).parents[1] / "data" / "cartpole_rollout"
 # One logging interval (ceil(10000 / 32) = 313 batches of 32)
@@ -95,6 +103,110 @@ def test_short_training_runs_and_logs(demonstrations):
 
     assert logged_steps(connector, "loss") == [320]
     assert logged_steps(connector, "episode_reward_mean") == [320]
+
+
+def train_decision_transformer(demonstrations, parameters, connector):
+    return train(
+        InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 5, **parameters}),
+        demonstrations,
+        total_timesteps=320,
+        connector=connector,
+        validation_episode_sequence=EpisodeSequence.from_episodes([demonstrations[0]]),
+    )
+
+
+def test_decision_transformers_are_evaluated_online_with_a_target_return_and_export_to_onnx(
+    demonstrations, caplog, tmp_path
+):
+    connector = RecordingConnector()
+
+    agent = train_decision_transformer(demonstrations, {"target_return": 500.0}, connector)
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+
+    assert logged_steps(connector, "loss") == [320]
+    assert logged_steps(connector, "episode_reward_mean") == [320]
+    # d3rlpy's validation evaluators choose actions from single observations
+    assert set(connector.value_sequences_to_log) & {"action_match", "td_error"} == set()
+    assert "not evaluated on validation episodes" in caplog.text
+    assert [upload["checkpoint_id"] for upload in connector.uploads] == [10]
+    onnx.checker.check_model(onnx.load(tmp_path / "policy.onnx"))
+
+
+def test_decision_transformers_without_a_target_return_train_without_online_evaluation(demonstrations, caplog):
+    connector = RecordingConnector()
+
+    train_decision_transformer(demonstrations, {}, connector)
+
+    assert logged_steps(connector, "loss") == [320]
+    assert "episode_reward_mean" not in connector.value_sequences_to_log
+    assert "without the parameter target_return are not evaluated online" in caplog.text
+
+
+def built_decision_transformer(parameters):
+    agent = InProcessD3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 3, **parameters})
+    agent.algorithm.build_with_env(gym.make("CartPole-v1"))
+    return agent
+
+
+def test_decision_transformers_choose_actions_like_a_stateful_wrapper_per_episode(observations):
+    agent = built_decision_transformer({"target_return": 100.0})
+    wrappers = {
+        key: agent.algorithm.as_stateful_wrapper(100.0, action_sampler=GreedyTransformerActionSampler())
+        for key in ("a", "b")
+    }
+    rewards = np.linspace(0.0, 1.0, len(observations))
+
+    # Two episodes interleaved, episode "b" restarting halfway
+    for step, observation in enumerate(observations):
+        for key in ("a", "b"):
+            episode_start = step == 0 or (key == "b" and step == len(observations) // 2)
+            if episode_start:
+                wrappers[key].reset()
+            reward = 0.0 if episode_start else float(rewards[step])
+            action = agent.choose_action(
+                observation, deterministic=True, reward=reward, episode_start=episode_start, episode_key=key
+            )
+            assert action == wrappers[key].predict(observation, reward)
+
+
+@pytest.mark.parametrize("sb3_replay", [False, True], ids=["simple", "sb3"])
+def test_decision_transformers_can_be_recorded(tmp_path, monkeypatch, sb3_replay):
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: SimpleNamespace(returncode=0))
+    agent = InProcessD3RLPYAgent(
+        DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 3, "target_return": 1.0}
+    )
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Discrete(2)))
+
+    record_video(
+        agent,
+        Toy(BOX, gym.spaces.Discrete(2), episode_length=3),
+        tmp_path / "replay.gif",
+        video_length=5,
+        sb3_replay=sb3_replay,
+    )
+
+
+def test_decision_transformers_cannot_choose_actions_without_the_episode_context(observations):
+    with pytest.raises(NotImplementedError, match="episode_key"):
+        built_decision_transformer({"target_return": 100.0}).choose_action(observations[0])
+
+
+def test_decision_transformers_need_a_target_return_to_choose_actions(observations):
+    with pytest.raises(ValueError, match="target_return"):
+        built_decision_transformer({}).choose_action(observations[0], episode_start=True, episode_key=0)
+
+
+def test_target_return_is_kept_in_the_parameters_but_not_passed_to_d3rlpy(tmp_path):
+    agent = built_decision_transformer({"target_return": 100.0, "device": "cpu"})
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    loaded = InProcessD3RLPYAgent(
+        DiscreteDecisionTransformer, {"batch_size": 32, "context_size": 3, "target_return": 50.0}
+    )
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert agent.algorithm_parameters == {"batch_size": 32, "context_size": 3, "target_return": 100.0, "device": "cpu"}
+    assert loaded.algorithm_parameters["target_return"] == 50.0
 
 
 def test_behavior_cloning_validates_by_action_match(demonstrations):
@@ -273,6 +385,103 @@ def test_load_with_new_parameters_applies_them(trained, tmp_path):
 
     assert loaded.algorithm._config.batch_size == 64
     assert loaded.algorithm_parameters == {"batch_size": 64, "device": "cpu"}
+
+
+def test_save_and_load_keep_the_action_space_in_a_d3rlpy_file(trained, tmp_path):
+    agent, _ = trained
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert agent.action_space == gym.spaces.Discrete(2)
+    assert loaded.action_space == agent.action_space
+    assert isinstance(d3rlpy.load_learnable(str(tmp_path / "agent.d3"), device="cpu"), DiscreteBC)
+
+
+def test_files_saved_without_the_action_space_load_without_it(trained, tmp_path):
+    agent, _ = trained
+    agent.algorithm.save(str(tmp_path / "agent.d3"))
+
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert loaded.action_space is None
+
+
+def built_continuous_agent(action_space):
+    """TD3 agent with networks (built from the spaces, not trained) and the given action space."""
+    agent = InProcessD3RLPYAgent(TD3, {"batch_size": 32})
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Box(-1, 1, (2,), np.float32)))
+    agent.action_space = action_space
+    return agent
+
+
+def test_continuous_actions_are_clipped_to_the_action_space_also_in_the_onnx_export(tmp_path):
+    action_space = gym.spaces.Box(-0.01, 0.01, (2,), np.float32)
+    agent = built_continuous_agent(action_space)
+    box_observations = np.random.default_rng(0).uniform(-1, 1, (5, 3)).astype(np.float32)
+
+    chosen_actions = np.stack([agent.choose_action(observation) for observation in box_observations])
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+    session = onnxruntime.InferenceSession(str(tmp_path / "policy.onnx"), providers=["CPUExecutionProvider"])
+    (onnx_actions,) = session.run(["action"], {"obs": box_observations})
+
+    unclipped_actions = agent.algorithm.predict(box_observations)
+    assert not np.all(np.abs(unclipped_actions) <= 0.01)
+    np.testing.assert_allclose(chosen_actions, np.clip(unclipped_actions, -0.01, 0.01), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(onnx_actions, chosen_actions, rtol=1e-5, atol=1e-6)
+
+
+def fitted_observation_scaler(maximum=3.0):
+    return d3rlpy.preprocessing.MinMaxObservationScaler(minimum=-np.ones(3), maximum=np.ones(3) * maximum)
+
+
+@pytest.mark.parametrize(
+    "load_parameters",
+    [{}, {"observation_scaler": d3rlpy.preprocessing.MinMaxObservationScaler()}],
+    ids=["without-scalers", "with-unfitted-scalers"],
+)
+def test_load_keeps_the_fitted_scalers_of_the_file(tmp_path, load_parameters):
+    agent = InProcessD3RLPYAgent(
+        TD3,
+        {
+            "batch_size": 32,
+            "observation_scaler": fitted_observation_scaler(),
+            "action_scaler": d3rlpy.preprocessing.MinMaxActionScaler(minimum=-np.ones(2) * 2, maximum=np.ones(2) * 2),
+        },
+    )
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Box(-1, 1, (2,), np.float32)))
+    agent.save_to_file(tmp_path / "agent.d3")
+    box_observations = np.random.default_rng(0).uniform(-1, 1, (5, 3)).astype(np.float32)
+
+    loaded = InProcessD3RLPYAgent(TD3, {"batch_size": 32, **load_parameters})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    np.testing.assert_array_equal(loaded.algorithm.config.observation_scaler.maximum, np.ones(3) * 3)
+    np.testing.assert_array_equal(loaded.algorithm.config.action_scaler.maximum, np.ones(2) * 2)
+    np.testing.assert_allclose(
+        loaded.algorithm.predict(box_observations), agent.algorithm.predict(box_observations), rtol=1e-6
+    )
+
+
+def test_load_applies_fitted_scalers_of_the_parameters(tmp_path):
+    agent = InProcessD3RLPYAgent(TD3, {"batch_size": 32, "observation_scaler": fitted_observation_scaler()})
+    agent.algorithm.build_with_env(Toy(BOX, gym.spaces.Box(-1, 1, (2,), np.float32)))
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    loaded = InProcessD3RLPYAgent(TD3, {"batch_size": 32, "observation_scaler": fitted_observation_scaler(5.0)})
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    np.testing.assert_array_equal(loaded.algorithm.config.observation_scaler.maximum, np.ones(3) * 5)
+
+
+def test_onnx_export_without_the_action_space_warns_that_continuous_actions_are_not_clipped(tmp_path, caplog):
+    agent = built_continuous_agent(None)
+
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+
+    assert "not clipped" in caplog.text
 
 
 def test_policy_exports_to_a_valid_onnx_model(trained, tmp_path):

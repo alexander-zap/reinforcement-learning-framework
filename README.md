@@ -102,6 +102,19 @@ agent.train(episode_sequence=sequence, training_environments=environments, total
 The training environments are used by the imitation learning algorithms in different ways.
 Some of them only use it for the observation and action space information, while others use it for iteratively checking and improving the imitation policy.
 
+#### Decision transformers (d3rlpy)
+
+The decision transformers of [the `D3RLPYAgent` class](src/rl_framework/agent/imitation/d3rlpy/d3rlpy.py) (`DecisionTransformer`, `DiscreteDecisionTransformer`) choose their actions from the context of the episode and the return they aim to achieve.
+Set this return with the agent parameter `target_return` (next to d3rlpy's algorithm parameters, not passed to d3rlpy's config):
+
+```
+agent = D3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 64, "context_size": 20, "target_return": 500.0})
+```
+
+- `choose_action` needs the context of the episode (the keyword arguments `reward`, `episode_start` and `episode_key`), which the agent's `evaluate` and `record_video` pass; without it, it raises a `NotImplementedError`, and without `target_return` a `ValueError`.
+- During training, decision transformers are evaluated online (`episode_reward_mean`) only with `target_return`; the validation metrics on validation episodes (`action_match`, `td_error`) are not computed for them.
+- Their ONNX export takes the target return as an input, see [ONNX export of agent policies](docs/onnx-export.md#decision-transformers).
+
 ### Evaluation
 
 Once you trained the agent, you can evaluate the agent policy on the environment and get the average accumulated reward (and standard deviation) as evaluation metric.
@@ -113,7 +126,7 @@ agent.evaluate(evaluation_environment=environment, n_eval_episodes=100, determin
 
 ### Exporting the policy as ONNX model
 
-The policies of the Stable-Baselines 3 and Imitation agents can be exported as ONNX model, e.g., for inference outside of Python:
+The policies of the Stable-Baselines 3, Imitation and d3rlpy agents can be exported as ONNX model, e.g., for inference outside of Python:
 
 ```
 agent.save_policy_as_onnx("policy.onnx", deterministic=True)
@@ -174,6 +187,8 @@ uv run pytest tests --cov=src --cov-report=html --cov-report=term
 Have a look at the `htmlcov` folder, after the tests are done.
 
 The ONNX export tests evaluate the exported models with ONNX Runtime (`onnxruntime`, part of the `dev` dependency group), see [ONNX export of agent policies](docs/onnx-export.md#development-notes).
+
+The tests run with the torch of the projects using this framework: `constraint-dependencies` in `pyproject.toml` locks torch 2.10 for Python >= 3.10 (torch 2.9 dropped Python 3.9, which gets torch 2.8). It only applies to this repository's lock, not to the published package. Update it together with those projects.
 
 ### Distribution Package
 
