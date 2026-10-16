@@ -6,6 +6,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import onnx
+import onnxruntime
 import pytest
 import torch as th
 from imitation.algorithms.adversarial.airl import AIRL
@@ -419,11 +420,28 @@ def test_load_with_new_parameters_updates_them(demonstrations, tmp_path):
     assert loaded.algorithm_parameters["batch_size"] == 16
 
 
-def test_policy_exports_to_a_valid_onnx_model(demonstrations, tmp_path):
+def test_policy_exports_to_onnx_like_the_sb3_agent_and_returns_the_agents_actions(
+    demonstrations, observations, tmp_path
+):
     agent = train(make_agent(), demonstrations)
 
     agent.save_policy_as_onnx(tmp_path / "policy.onnx")
 
-    onnx.checker.check_model(onnx.load(tmp_path / "policy.onnx"))
+    model = onnx.load(tmp_path / "policy.onnx")
+    onnx.checker.check_model(model)
+    assert [graph_input.name for graph_input in model.graph.input] == ["obs"]
+    assert [graph_output.name for graph_output in model.graph.output] == ["action", "values", "log_prob"]
+    session = onnxruntime.InferenceSession(str(tmp_path / "policy.onnx"), providers=["CPUExecutionProvider"])
+    (onnx_actions,) = session.run(["action"], {"obs": observations})
+    assert onnx_actions[:, 0].tolist() == actions(agent, observations)
     with pytest.raises(AssertionError, match=".onnx"):
         agent.save_policy_as_onnx(tmp_path / "policy.zip")
+
+
+def test_q_learning_based_policy_exports_greedy_actions_and_q_values(demonstrations, tmp_path):
+    agent = train(make_agent(SQIL), demonstrations)
+
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+
+    model = onnx.load(tmp_path / "policy.onnx")
+    assert [graph_output.name for graph_output in model.graph.output] == ["action", "q_values"]

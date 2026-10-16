@@ -58,6 +58,9 @@ dev = [
     "black>=23.11,<24",
     "pre-commit>=3.5,<4",
     "ruff>=0.8.3,<0.9",
+    # ONNX Runtime for evaluating exported policies in tests (1.24 dropped Python 3.10, 1.20 dropped Python 3.9)
+    "onnxruntime>=1.19.2,<1.20; python_version < '3.10'",
+    "onnxruntime>=1.20,<1.24; python_version >= '3.10'",
 ]
 
 [tool.uv]

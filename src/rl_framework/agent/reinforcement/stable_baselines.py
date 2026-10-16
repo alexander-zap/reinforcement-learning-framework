@@ -9,13 +9,10 @@ import gymnasium
 import numpy as np
 import pettingzoo
 import stable_baselines3
-import torch
-import torch.onnx
-from stable_baselines3.common.base_class import BaseAlgorithm, BasePolicy
+from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import VecEnv, VecMonitor
 from supersuit.vector import MakeCPUAsyncConstructor, MarkovVectorEnv
 from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
@@ -38,6 +35,7 @@ from rl_framework.util import (
     validate_initial_action_bias,
     wrap_environment_with_features_extractor_preprocessor,
 )
+from rl_framework.util.onnx_export import export_sb3_policy_as_onnx
 
 
 class StableBaselinesAgent(RLAgent):
@@ -318,62 +316,23 @@ class StableBaselinesAgent(RLAgent):
             action = action.item()
         return action
 
-    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = False) -> None:
-        """Save the policy as ONNX model.
+    def save_policy_as_onnx(self, file_path: Path, deterministic: bool = True) -> None:
+        """Save the policy as ONNX model (inputs and outputs: see `rl_framework.util.onnx_export`).
 
-            Details for SB3: https://stable-baselines3.readthedocs.io/en/master/guide/export.html
-
-        The exported format is kept backwards compatible (sampled actions by default, float32 inputs):
-            - Inputs: one float32 observation (batch size 1), named `input`, for every observation space (e.g., also
-              Discrete or uint8 image observations); for Dict observation spaces one float32 input per key, named
-              like the key.
-            - Outputs: `actions`; actor-critic policies (e.g., PPO, A2C, TRPO) also `values` and `log_prob`, in this
-              order (unnamed before; the order is unchanged).
-        The policy includes the features extractor and the observation preprocessing, but not the postprocessing of
-            actions: Box actions may have to be clipped or unscaled to the action space bounds, e.g.
-            `low + (0.5 * (scaled_action + 1.0) * (high - low))` for squashed actions (SAC, TD3).
+        Inputs: `obs` (float32; one input per key for Dict observations), plus `noise_u` / `noise_eps` for a
+            stochastic export. Outputs: `action` (postprocessed like `predict`); `values` and `log_prob` for
+            actor-critic policies (PPO, A2C, TRPO), `log_prob` for SAC, `q_values` for DQN.
+            All inputs and outputs have a dynamic batch axis.
 
         Args:
             file_path (Path): The file where the policy should be saved to.
-            deterministic (bool): Whether the exported policy returns its most likely action or samples one (default;
-                exported with random number nodes).
+            deterministic (bool): Whether the exported policy returns its most likely action (default) or samples one
+                from external noise inputs.
         """
         assert str(file_path).endswith(".onnx"), "File path must end with .onnx"
-
-        policy = self.algorithm.policy
-        observation_space = self.algorithm.observation_space
-        is_dict_observation = isinstance(observation_space, gymnasium.spaces.Dict)
-
-        # A sampled observation, converted like in `predict` (shape per observation space), as float32 input
-        dummy_observation, _ = policy.obs_to_tensor(observation_space.sample())
-        if is_dict_observation:
-            input_names = list(observation_space.spaces.keys())
-            dummy_inputs = tuple(dummy_observation[key].float() for key in input_names)
-        else:
-            input_names = ["input"]
-            dummy_inputs = (dummy_observation.float(),)
-        output_names = ["actions", "values", "log_prob"] if isinstance(policy, ActorCriticPolicy) else ["actions"]
-
-        class OnnxableSB3Policy(torch.nn.Module):
-            def __init__(self, sb3_policy: BasePolicy):
-                super().__init__()
-                self.policy = sb3_policy
-
-            def forward(self, *observations: torch.Tensor):
-                observation = dict(zip(input_names, observations)) if is_dict_observation else observations[0]
-                # SB3 policies return the action (off-policy policies like SAC/TD3/DQN via their actor/Q-network),
-                #   actor-critic policies additionally the value and the log-probability of the action
-                return self.policy(observation, deterministic=deterministic)
-
-        # FIXME: add support for batch size > 1
-        torch.onnx.export(
-            OnnxableSB3Policy(policy),
-            dummy_inputs,
-            file_path,
-            opset_version=17,
-            input_names=input_names,
-            output_names=output_names,
-        )
+        if self.algorithm_needs_initialization:
+            raise ValueError("Cannot export uninitialized agent. Start a training (or load a model) first.")
+        export_sb3_policy_as_onnx(self.algorithm.policy, file_path, deterministic=deterministic)
 
     def save_to_file(self, file_path: Path, *args, **kwargs) -> None:
         """Save the agent to a file (for later loading).
