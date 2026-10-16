@@ -44,6 +44,28 @@ def test_gym_environments_are_evaluated_together_and_closed():
     assert all(environment.closed for environment in environments)
 
 
+def test_given_environments_can_be_kept_open_for_further_evaluations():
+    environments = [Toy(), Toy(episode_length=3)]
+
+    first = evaluate(environments, close_environments=False)
+    second = evaluate(environments, close_environments=False)
+
+    assert first == second
+    assert not any(environment.closed for environment in environments)
+
+
+def test_environments_created_by_factories_are_closed_even_if_the_given_environments_are_kept_open():
+    created = []
+
+    def create_environment():
+        created.append(Toy())
+        return created[-1]
+
+    evaluate([(Toy(), create_environment)], close_environments=False)
+
+    assert created and all(environment.closed for environment in created)
+
+
 def test_vec_envs_are_evaluated_in_their_own_threads():
     mean_reward, std_reward = evaluate([DummyVecEnv([Toy, Toy]), DummyVecEnv([Toy])])
     assert (mean_reward, std_reward) == (5.0, 0.0)

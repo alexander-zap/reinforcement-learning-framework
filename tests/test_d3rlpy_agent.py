@@ -9,6 +9,7 @@ import onnx
 import pytest
 from d3rlpy.algos import DQN, DiscreteBC
 from imitation.data.types import TrajectoryWithRew
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from rl_framework.agent.imitation import EpisodeSequence
 from rl_framework.agent.imitation.d3rlpy.d3rlpy import (
@@ -155,7 +156,7 @@ def test_features_extractor_preprocesses_demonstrations(demonstrations, observat
     assert set(actions(agent, observations)) <= {0, 1}
 
 
-def test_training_on_pettingzoo_environment_uses_its_spaces_without_online_evaluation():
+def test_training_on_pettingzoo_environment_uses_its_spaces_and_evaluates_online():
     trajectory = TrajectoryWithRew(
         obs=np.zeros((65, 3), np.float32),
         acts=np.zeros(64, np.int64),
@@ -174,7 +175,68 @@ def test_training_on_pettingzoo_environment_uses_its_spaces_without_online_evalu
     assert agent.choose_action(BOX.sample()) in (0, 1)
     assert agent.algorithm.action_size == 2
     assert connector.value_sequences_to_log["loss"]
+    assert logged_steps(connector, "episode_reward_mean") == [TRAINABLE_TIMESTEPS]
+
+
+def test_training_on_vectorized_environment_uses_its_spaces_and_evaluates_online(demonstrations, observations):
+    connector = RecordingConnector()
+    environment = DummyVecEnv([lambda: gym.make("CartPole-v1"), lambda: gym.make("CartPole-v1")])
+
+    agent = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    agent.train(TRAINABLE_TIMESTEPS, demonstrations, connector=connector, training_environments=[environment])
+
+    assert set(actions(agent, observations)) <= {0, 1}
+    assert agent.algorithm.action_size == 2
+    assert logged_steps(connector, "episode_reward_mean") == [TRAINABLE_TIMESTEPS]
+
+
+def test_training_on_environment_factory_uses_the_stub_spaces_without_creating_environments(
+    demonstrations, observations, caplog
+):
+    def create_environment():
+        raise AssertionError("the factory's environment must not be created")
+
+    connector = RecordingConnector()
+    factory = (gym.make("CartPole-v1"), create_environment)
+
+    agent = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+    agent.train(TRAINABLE_TIMESTEPS, demonstrations, connector=connector, training_environments=[factory])
+
+    assert set(actions(agent, observations)) <= {0, 1}
+    assert agent.algorithm.action_size == 2
+    assert connector.value_sequences_to_log["loss"]
     assert "episode_reward_mean" not in connector.value_sequences_to_log
+    assert "not used for online evaluation" in caplog.text
+
+
+def test_online_evaluation_keeps_the_training_environment_open(demonstrations):
+    closed = []
+    environment = gym.make("CartPole-v1")
+    environment.close = lambda: closed.append(True)
+    connector = RecordingConnector()
+
+    # Two epochs (ceil(50000 / 1000) = 50 batches each): evaluated after both on the same environment
+    InProcessD3RLPYAgent(DQN, {"batch_size": 1000}).train(
+        100 * 1000, demonstrations, connector=connector, training_environments=[environment]
+    )
+
+    assert logged_steps(connector, "episode_reward_mean") == [50 * 1000, 100 * 1000]
+    assert closed == []
+
+
+def test_action_size_comes_from_the_environment_even_if_the_demonstrations_never_take_the_highest_action():
+    trajectory = TrajectoryWithRew(
+        obs=np.zeros((65, 4), np.float32),
+        acts=np.zeros(64, np.int64),  # only action 0 of CartPole's two actions
+        infos=None,
+        terminal=True,
+        rews=np.zeros(64, np.float32),
+    )
+    agent = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32})
+
+    train(agent, EpisodeSequence.from_episodes([trajectory]), total_timesteps=64)
+
+    assert agent.algorithm.action_size == 2
 
 
 def test_save_and_load_round_trip_keeps_the_policy(trained, observations, tmp_path):

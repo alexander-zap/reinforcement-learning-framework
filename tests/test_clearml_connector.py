@@ -228,6 +228,23 @@ def test_final_upload_with_failing_video_recording_uploads_the_model_without_vid
     assert "ffmpeg failed" in caplog.text
 
 
+def test_final_upload_is_stopped_by_an_interrupt_during_video_recording(monkeypatch):
+    def interrupt_recording(**kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(clearml_connector, "record_video", interrupt_recording)
+    connector = ClearMLConnector(
+        upload_config=ClearMLUploadConfig(upload=True, file_name="model.zip", video_length=10),
+        download_config=ClearMLDownloadConfig(download=False),
+        task=Mock(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        connector.upload(agent=make_agent(), video_recording_environment=object())
+
+    connector.task.get_logger.return_value.report_media.assert_not_called()
+
+
 def test_final_upload_without_video_environment_records_no_video(monkeypatch):
     recorded = []
     monkeypatch.setattr(clearml_connector, "record_video", lambda **kwargs: recorded.append(kwargs))

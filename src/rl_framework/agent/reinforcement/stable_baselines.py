@@ -24,9 +24,7 @@ from rl_framework.util import (
     Environment,
     FeaturesExtractor,
     GammaScheduleCallback,
-    LoggingCallback,
     ResetInfoCallback,
-    SavingCallback,
     apply_action_bias,
     check_saved_features_extractor,
     check_specified_policy_kwargs,
@@ -36,6 +34,7 @@ from rl_framework.util import (
     wrap_environment_with_features_extractor_preprocessor,
 )
 from rl_framework.util.onnx_export import export_sb3_policy_as_onnx
+from rl_framework.util.sb3_training_callbacks import create_saving_and_logging_callbacks
 
 
 class StableBaselinesAgent(RLAgent):
@@ -73,7 +72,7 @@ class StableBaselinesAgent(RLAgent):
                       after creating or loading the agent, e.g., to fine-tune a loaded model with fresh optimizer
                       statistics. Further trainings continue with the optimizer state.
                     - `callback_kwargs` (Dict): parameters of the training callbacks: `callback_saving_interval`
-                      (default 500000 steps), `callback_logging_interval` (default 1 episode),
+                      (default 50000 steps), `callback_logging_interval` (default 1 episode),
                       `callback_log_distributions` (default False), `callback_verbosity` (default 0),
                       `sb3_logging_interval` (default 1) and, for AsyncStableBaselinesAgent,
                       `callback_async_utilization_logging_interval` (default 1000 episodes).
@@ -272,24 +271,11 @@ class StableBaselinesAgent(RLAgent):
         return SubprocVecEnv(env_fns)
 
     def get_callbacks(self, connector: Connector) -> list[BaseCallback]:
-        callback_verbosity = self.callback_parameters.get("callback_verbosity", 0)
-        callback_saving_interval = self.callback_parameters.get("callback_saving_interval", 500000)
-        callback_logging_interval = self.callback_parameters.get("callback_logging_interval", 1)
-        callback_log_distributions = self.callback_parameters.get("callback_log_distributions", False)
-
-        callbacks = [
-            SavingCallback(
-                self, connector=connector, checkpoint_frequency=callback_saving_interval, verbose=callback_verbosity
-            ),
-            LoggingCallback(
-                connector=connector,
-                logging_frequency=callback_logging_interval,
-                log_distributions=callback_log_distributions,
-            ),
-            ResetInfoCallback(connector=connector),
-        ]
+        callbacks = create_saving_and_logging_callbacks(self, connector, self.callback_parameters)
+        callbacks.append(ResetInfoCallback(connector=connector))
         if self.gamma_schedule is not None:
-            callbacks.append(GammaScheduleCallback(self.gamma_schedule, verbose=callback_verbosity))
+            verbosity = self.callback_parameters.get("callback_verbosity", 0)
+            callbacks.append(GammaScheduleCallback(self.gamma_schedule, verbose=verbosity))
 
         return callbacks
 

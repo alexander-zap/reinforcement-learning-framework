@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Callable, Deque, List, Optional, Union
+from typing import Callable, Deque, Dict, List, Optional, Union
 
 import numpy as np
 from async_gym_agents import constants
@@ -16,6 +16,9 @@ from async_gym_agents.episode_codec import (
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 from .metric_logging_utils import MetricAggregator
+
+# Default checkpoint interval in steps (`callback_kwargs["callback_saving_interval"]` of the agents)
+DEFAULT_CHECKPOINT_FREQUENCY = 50000
 
 
 def add_callbacks_to_callback(
@@ -230,7 +233,7 @@ class SavingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
     A custom callback which uploads the agent to the connector after every `checkpoint_frequency` steps.
     """
 
-    def __init__(self, agent, connector, checkpoint_frequency=50000, verbose=0):
+    def __init__(self, agent, connector, checkpoint_frequency=DEFAULT_CHECKPOINT_FREQUENCY, verbose=0):
         """
         Args:
             checkpoint_frequency: After how many steps a checkpoint should be saved to the connector.
@@ -461,3 +464,34 @@ class GammaScheduleCallback(EpisodeBatchableCallbackMixin, BaseCallback):
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
         return True
+
+
+def create_saving_and_logging_callbacks(agent, connector, callback_parameters: Dict) -> List[BaseCallback]:
+    """
+    The checkpoint saving and episode logging callbacks of an agent, configured by its `callback_kwargs`.
+
+    Args:
+        agent: Agent whose checkpoints are uploaded.
+        connector: Connector for uploading checkpoints and logging metrics.
+        callback_parameters: The agent's `callback_kwargs`:
+            - `callback_saving_interval` (default 50000 steps),
+            - `callback_logging_interval` (default 1 episode),
+            - `callback_log_distributions` (default False),
+            - `callback_verbosity` (default 0).
+
+    Returns:
+        [SavingCallback, LoggingCallback]
+    """
+    return [
+        SavingCallback(
+            agent,
+            connector=connector,
+            checkpoint_frequency=callback_parameters.get("callback_saving_interval", DEFAULT_CHECKPOINT_FREQUENCY),
+            verbose=callback_parameters.get("callback_verbosity", 0),
+        ),
+        LoggingCallback(
+            connector=connector,
+            logging_frequency=callback_parameters.get("callback_logging_interval", 1),
+            log_distributions=callback_parameters.get("callback_log_distributions", False),
+        ),
+    ]

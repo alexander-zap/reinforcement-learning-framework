@@ -88,6 +88,13 @@ def test_default_callbacks_follow_callback_kwargs():
     assert isinstance(reset_info, ResetInfoCallback) and reset_info.connector is connector
 
 
+def test_default_callbacks_save_every_50000_steps_and_log_every_episode():
+    saving, logging_, _ = SB3Agent(PPO).get_callbacks(RecordingConnector())
+
+    assert saving.checkpoint_frequency == 50000
+    assert logging_.logging_frequency == 1 and not logging_.log_distributions
+
+
 def test_gamma_schedule_adds_a_callback():
     agent = SB3Agent(PPO, {"gamma": lambda progress_remaining: 0.9})
     assert isinstance(agent.get_callbacks(RecordingConnector())[-1], GammaScheduleCallback)

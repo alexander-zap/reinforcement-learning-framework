@@ -111,6 +111,16 @@ This evaluation method is implemented in the [evaluate function of the agent](sr
 agent.evaluate(evaluation_environment=environment, n_eval_episodes=100, deterministic=False)
 ```
 
+### Exporting the policy as ONNX model
+
+The policies of the Stable-Baselines 3 and Imitation agents can be exported as ONNX model, e.g., for inference outside of Python:
+
+```
+agent.save_policy_as_onnx("policy.onnx", deterministic=True)
+```
+
+The exported inputs and outputs, the supported algorithms and further details are described in [ONNX export of agent policies](docs/onnx-export.md).
+
 ### Uploading and downloading models from a experiment registry
 
 Once you trained the agent, you can upload the agent model to an experiment registry (HuggingFace Hub or ClearML) in order to share and compare your agent to others. You can also download yours or other agents from the same service and use them for solving environments or re-training.
@@ -162,6 +172,8 @@ uv run pytest tests --cov=src --cov-report=html --cov-report=term
 ```
 
 Have a look at the `htmlcov` folder, after the tests are done.
+
+The ONNX export tests evaluate the exported models with ONNX Runtime (`onnxruntime`, part of the `dev` dependency group), see [ONNX export of agent policies](docs/onnx-export.md#development-notes).
 
 ### Distribution Package
 
