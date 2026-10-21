@@ -1,5 +1,6 @@
+from abc import abstractmethod
 from collections import deque
-from typing import Callable, Deque, Dict, List, Optional, Union
+from typing import Callable, Deque, Dict, List, Union
 
 import numpy as np
 from async_gym_agents import constants
@@ -50,14 +51,18 @@ def add_callbacks_to_callback(
 
 
 class EpisodeBatchableCallbackMixin:
-    """Advance SB3 bookkeeping without invoking the per-step hook.
-
-    Satisfies half of async_gym_agents.callback_batching.EpisodeBatchableCallback;
-    each callback below implements the other half, `process_episode`, so that
+    """Implement async_gym_agents.callback_batching.EpisodeBatchableCallback, so that
     async-gym-agents can process a complete episode instead of every transition.
+
+    Subclasses must implement `process_episode`.
     """
 
+    @abstractmethod
+    def process_episode(self, context: EpisodeCallbackContext) -> bool:
+        """Process one complete episode and return whether training should continue."""
+
     def advance_callback(self, transition_count: int, num_timesteps: int) -> None:
+        """Advance SB3 bookkeeping without invoking the per-step hook."""
         self.n_calls += transition_count
         self.num_timesteps = num_timesteps
 
@@ -80,9 +85,8 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         - mean of any tracked metric (provided as "step_metric_<name>" in the info dict at each step)
         - reason of episode end (provided as "episode_end_reason" in the info dict on terminated step)
 
-    Metrics are aggregated per agent: per environment of the vectorized environment (SB3) or per episode origin,
-    i.e., worker and sub-environment (async-gym-agents). Each agent is logged after every `logging_frequency` of
-    its own completed episodes, into the same series as all other agents.
+    Metrics are aggregated over the episodes of all environments (SB3) or episode origins, i.e., workers and
+    sub-environments (async-gym-agents), and logged after every `logging_frequency` completed episodes.
     """
 
     def __init__(self, connector, logging_frequency=1, log_distributions=False, verbose=0):
@@ -94,10 +98,7 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         self.connector = connector
         self.logging_frequency = logging_frequency
         self.log_distributions = log_distributions
-        self.episode_counter: dict[str, int] = {}
         self.metric_aggregator = MetricAggregator(connector=connector, aggregate_distributions=log_distributions)
-        # Episode-batched mode (async-gym-agents): one aggregator per agent, since each batch is a single environment
-        self.episode_metric_aggregators: dict[int, MetricAggregator] = {}
         self.logged_metadata_by_key: dict[str, object] = {}
 
     def _on_step(self) -> bool:
@@ -118,11 +119,7 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         for info in self.locals["infos"]:
             self._log_meta_infos(info)
 
-        # Log metrics at end of episode
-        done_indices = np.where(self.locals["dones"] == True)[0]
-        for done_index in done_indices:
-            self._log_if_due(done_index, self.num_timesteps, self.locals["infos"][done_index])
-
+        self._log_if_due(self.num_timesteps)
         return True
 
     def process_episode(self, context: EpisodeCallbackContext) -> bool:
@@ -133,27 +130,15 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
         transition's reward/action/step-metrics, since any of them may carry a metric.
         """
         batch = context.batch
-        agent_index = self._get_agent_index(context)
-        metric_aggregator = self.episode_metric_aggregators.setdefault(
-            agent_index,
-            MetricAggregator(connector=self.connector, aggregate_distributions=self.log_distributions),
-        )
         for transition_index in range(batch.transition_count):
-            self._process_transition(batch, transition_index, metric_aggregator)
+            self._process_transition(batch, transition_index)
 
-        terminal_index = batch.transition_count - 1
-        terminal_dones = slice_episode_field(batch, "dones", terminal_index)
-        terminal_infos = get_episode_infos(batch, terminal_index)
-        for done_index in np.flatnonzero(terminal_dones):
-            self._log_if_due(
-                agent_index, context.end_timestep, terminal_infos[done_index], metric_aggregator, done_index
-            )
-
+        self._log_if_due(context.end_timestep)
         return True
 
-    def _process_transition(self, batch, transition_index: int, metric_aggregator: MetricAggregator) -> None:
+    def _process_transition(self, batch, transition_index: int) -> None:
         infos = get_episode_infos(batch, transition_index)
-        metric_aggregator.aggregate_step(
+        self.metric_aggregator.aggregate_step(
             slice_episode_field(batch, "new_obs", transition_index),
             slice_episode_field(
                 batch,
@@ -177,32 +162,15 @@ class LoggingCallback(EpisodeBatchableCallbackMixin, BaseCallback):
             if key.startswith(constants.META_INFO_PREFIX):
                 self._log_metadata(key, value)
 
-    def _log_if_due(
-        self,
-        agent_index: int,
-        num_timesteps: int,
-        info: dict,
-        metric_aggregator: Optional[MetricAggregator] = None,
-        aggregator_index: Optional[int] = None,
-    ) -> None:
-        """Log and reset one agent's aggregated metrics if its logging_frequency is met.
+    def _log_if_due(self, num_timesteps: int) -> None:
+        """Log and clear the aggregated metrics once `logging_frequency` episodes were recorded since the last log.
 
-        Shared by both `_on_step` (one done agent at a time, in the shared aggregator at index `agent_index`) and
-        `process_episode` (the agent's own aggregator, at the batch's index `aggregator_index`).
         Discarded episodes are not recorded by the metric aggregator, so they do not count towards logging.
         """
-        if info.get(constants.DISCARD_INFO_KEY, False):
-            return
-        metric_aggregator = metric_aggregator or self.metric_aggregator
-        aggregator_index = agent_index if aggregator_index is None else aggregator_index
-        self.episode_counter[agent_index] = self.episode_counter.get(agent_index, 0) + 1
-        if self.episode_counter[agent_index] % self.logging_frequency == 0:
-            metric_aggregator.log_aggregated_metrics(
-                agent_index=aggregator_index,
-                num_timesteps=num_timesteps,
-                log_distributions=self.log_distributions,
+        if len(self.metric_aggregator.episode_rewards) >= self.logging_frequency:
+            self.metric_aggregator.log_and_clear_aggregated_metrics(
+                num_timesteps=num_timesteps, log_distributions=self.log_distributions
             )
-            metric_aggregator.reset_multi_episode_trackers(aggregator_index)
 
     def _log_metadata(self, key: str, value: object) -> None:
         if key in self.logged_metadata_by_key and self._metadata_matches(
