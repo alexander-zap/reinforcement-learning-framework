@@ -145,3 +145,16 @@ def test_evaluation_step_metric_means_cover_only_the_logging_window():
     means = [value for _, series, _, value in connector.scalars if series == "Mean - x"]
     assert means == list(range(len(means)))
     assert len(means) >= 3
+
+
+def test_logged_evaluation_metrics_cover_only_the_requested_episodes():
+    connector = RecordingConnector()
+    ConstantActionAgent().evaluate(
+        evaluation_environments=[DummyVecEnv([lambda: FixedLengthEnv(1), lambda: FixedLengthEnv(5)])],
+        n_eval_episodes=4,
+        connector=connector,
+        logging_frequency=10,
+    )
+
+    rewards = [(step, value) for title, _, step, value in connector.scalars if title == "Evaluation - Episode reward"]
+    assert rewards == [(4, 3.0)]  # 2 episodes of return 1 and 2 of return 5, not the extra short ones

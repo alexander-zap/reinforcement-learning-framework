@@ -71,7 +71,8 @@ class Agent(ABC):
                 each contributing a fixed number of episodes, so that environments with shorter episodes are not
                 over-represented. Environment factories without episodes to contribute are not instantiated.
             connector (Connector): Connector for logging evaluation metrics.
-            logging_frequency (int): Frequency with which evaluation metrics are logged (per environment).
+            logging_frequency (int): Frequency with which evaluation metrics are logged, in episodes of all
+                environments.
             deterministic (bool): Whether the agents' actions should be determined in a deterministic or stochastic way.
             close_environments (bool): Whether the given environments are closed after the evaluation (default).
                 Environments created from environment factories are always closed.
@@ -104,6 +105,8 @@ class Agent(ABC):
         episode_rewards = []
         episode_rewards_lock = threading.Lock()
         evaluated_episode_count = 0
+        # Aggregates the evaluation metrics of (vectorized) gymnasium environments
+        metric_aggregator = None
 
         def count_evaluated_episode() -> int:
             """Count one evaluated episode of any environment and return the running count.
@@ -229,11 +232,23 @@ class Agent(ABC):
                 if isinstance(evaluation_environments[0], VecEnv):
                     vectorized_environments = evaluation_environments
 
+                # One aggregator for all environments (each evaluated in its own thread, hence the lock), so that
+                #   every log covers the latest episodes of all of them. Their sub-environments get distinct indices.
+                metric_aggregator = MetricAggregator(connector=connector)
+                metric_aggregator_lock = threading.Lock()
+                log_frequency = max(min(n_eval_episodes, logging_frequency), 1)
+                index_offsets, index_offset = {}, 0
+                for vectorized_environment in vectorized_environments:
+                    index_offsets[id(vectorized_environment)] = index_offset
+                    index_offset += vectorized_environment.num_envs
+
+                def log_evaluation_metrics(evaluation_step: int):
+                    metric_aggregator.log_and_clear_aggregated_metrics(
+                        num_timesteps=evaluation_step, log_distributions=False, metric_name_prefix="Evaluation - "
+                    )
+
                 def evaluate_agent_on_environment(evaluation_environment: VecEnv, n_episodes: int):
                     n_envs = evaluation_environment.num_envs
-
-                    metric_aggregator = MetricAggregator(connector=connector)
-                    log_frequency = max(min(n_episodes // n_envs, logging_frequency), 1)
 
                     def choose_actions(observations, rewards, episode_starts) -> list:
                         return [
@@ -258,7 +273,20 @@ class Agent(ABC):
 
                     while (episode_counts < episode_targets).any():
                         observations, rewards, dones, infos = evaluation_environment.step(np.array(prev_actions))
-                        metric_aggregator.aggregate_step(observations, prev_actions, rewards, dones, infos)
+                        # Episodes beyond a sub-environment's quota (while others complete theirs) are not evaluated
+                        aggregated_infos = [
+                            {**info, "discard": True} if done and count >= target else info
+                            for info, done, count, target in zip(infos, dones, episode_counts, episode_targets)
+                        ]
+                        with metric_aggregator_lock:
+                            metric_aggregator.aggregate_step(
+                                observations,
+                                prev_actions,
+                                rewards,
+                                dones,
+                                aggregated_infos,
+                                index_offset=index_offsets[id(evaluation_environment)],
+                            )
                         # Sub-environments reset automatically: a done one has started its next episode
                         actions = choose_actions(observations, rewards, dones)
 
@@ -277,16 +305,9 @@ class Agent(ABC):
                                 evaluation_step = count_evaluated_episode()
                                 pbar.update(1)
 
-                                # Episodes recorded since this sub-environment's last log (the window is reset below)
-                                log_episode = (len(metric_aggregator.episode_rewards.get(i, [])) % log_frequency) == 0
-                                if log_episode:
-                                    metric_aggregator.log_aggregated_metrics(
-                                        agent_index=i,
-                                        num_timesteps=evaluation_step,
-                                        log_distributions=False,
-                                        metric_name_prefix="Evaluation - ",
-                                    )
-                                    metric_aggregator.reset_multi_episode_trackers(i)
+                                with metric_aggregator_lock:
+                                    if len(metric_aggregator.episode_rewards) >= log_frequency:
+                                        log_evaluation_metrics(evaluation_step)
 
                     with episode_rewards_lock:
                         episode_rewards.extend(local_episode_rewards)
@@ -310,6 +331,10 @@ class Agent(ABC):
 
             for thread in threads:
                 thread.join()
+
+            # Episodes since the last log (fewer than the logging frequency)
+            if metric_aggregator is not None and metric_aggregator.episode_rewards:
+                log_evaluation_metrics(evaluated_episode_count)
 
         if close_environments or environments_from_factories:
             for env in evaluation_environments:

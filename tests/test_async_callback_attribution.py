@@ -1,7 +1,8 @@
-"""Per-agent attribution of LoggingCallback/ResetInfoCallback in AsyncSB3 episode-batched mode.
+"""Attribution of LoggingCallback/ResetInfoCallback in AsyncSB3 episode-batched mode.
 
-Contract: episodes collected by different async workers are attributed to distinct agent indices
-(async-gym-agents passes each episode's origin, its worker and sub-environment, since 0.5.0).
+Contract: ResetInfoCallback attributes episodes collected by different async workers to distinct agent indices
+(async-gym-agents passes each episode's origin, its worker and sub-environment, since 0.5.0), while LoggingCallback
+aggregates the episodes of all workers together.
 """
 
 import re
@@ -50,14 +51,14 @@ class RecordingConnector(DummyConnector):
 def trained():
     """Train with two async workers, recording logged reset infos and the aggregators which logged metrics."""
     logging_aggregators = set()
-    original_log = MetricAggregator.log_aggregated_metrics
+    original_log = MetricAggregator.log_and_clear_aggregated_metrics
 
-    def record_aggregator(self, agent_index, *args, **kwargs):
-        logging_aggregators.add((id(self), int(agent_index)))
-        return original_log(self, agent_index, *args, **kwargs)
+    def record_aggregator(self, *args, **kwargs):
+        logging_aggregators.add(id(self))
+        return original_log(self, *args, **kwargs)
 
     mp = pytest.MonkeyPatch()
-    mp.setattr(MetricAggregator, "log_aggregated_metrics", record_aggregator)
+    mp.setattr(MetricAggregator, "log_and_clear_aggregated_metrics", record_aggregator)
     connector = RecordingConnector()
     agent = AsyncStableBaselinesAgent(
         algorithm_class=stable_baselines3.PPO,
@@ -88,11 +89,11 @@ def reset_info_agent_indices(connector):
     return {int(m.group(1)) for name in connector.dict_names if (m := re.match(r"Reset Info - Agent (\d+)", name))}
 
 
-def test_logging_callback_attributes_workers_to_distinct_agents(trained):
+def test_logging_callback_aggregates_all_workers_together(trained):
     connector, logging_aggregators = trained
 
     assert connector.workers_seen == set(range(N_WORKERS))  # both workers' episodes reached the callbacks
-    assert len(logging_aggregators) == N_WORKERS  # each worker's metrics are aggregated and logged separately
+    assert len(logging_aggregators) == 1  # all workers' metrics are aggregated and logged together
 
 
 def test_reset_info_callback_attributes_workers_to_distinct_agents(trained):

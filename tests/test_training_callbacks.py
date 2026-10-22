@@ -214,17 +214,17 @@ def from_origin(context, worker_index, env_index=0):
     return dataclasses.replace(context, worker_index=worker_index, env_index=env_index)
 
 
-def test_logging_callback_counts_and_aggregates_episodes_per_origin():
+def test_logging_callback_counts_and_aggregates_episodes_of_all_origins_together():
     connector = RecordingConnector()
     callback = LoggingCallback(connector, logging_frequency=2)
 
     callback.process_episode(from_origin(episode([1]), worker_index=0))
     callback.process_episode(from_origin(episode([10], start_timestep=1), worker_index=1))
-    callback.process_episode(from_origin(episode([3], start_timestep=2), worker_index=0))
-    assert scalars(connector) == [(3, 2.0)]  # worker 0: mean of 1 and 3; worker 1 has only one episode
+    assert scalars(connector) == [(2, 5.5)]
 
-    callback.process_episode(from_origin(episode([20], start_timestep=3), worker_index=1, env_index=0))
-    assert scalars(connector) == [(3, 2.0), (4, 15.0)]
+    callback.process_episode(from_origin(episode([3], start_timestep=2), worker_index=0))
+    callback.process_episode(from_origin(episode([20], start_timestep=3), worker_index=1, env_index=1))
+    assert scalars(connector) == [(2, 5.5), (4, 11.5)]
 
 
 def test_episode_origins_are_numbered_in_order_of_appearance():
