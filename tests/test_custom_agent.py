@@ -189,6 +189,38 @@ def test_features_extractor_maps_observations_to_q_table_rows():
     assert agent.algorithm.q_table[:2].sum() == 0
 
 
+class TrainableIndex(FeaturesExtractor):
+    """Discretizes a learnable projection (like the experiment space's DiscretizingFeaturesExtractor)."""
+
+    output_dim = 1
+
+    def __init__(self, input_dim=3):
+        super().__init__()
+        self.layer = th.nn.Linear(input_dim, 1)
+
+    def forward(self, observations):
+        return (th.sigmoid(self.layer(observations.float())) * 3).to(th.int32)
+
+
+def test_trainable_features_extractor_warns_that_it_is_not_trained(caplog):
+    with caplog.at_level(logging.WARNING):
+        CustomAgent(QLearning, {"n_actions": 2, "n_observations": 3}, features_extractor=TrainableIndex())
+
+    assert "does not train the features extractor" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "features_extractor",
+    [None, ConstantIndex(), TrainableIndex().requires_grad_(False)],
+    ids=["none", "no_params", "frozen"],
+)
+def test_untrainable_features_extractor_does_not_warn(caplog, features_extractor):
+    with caplog.at_level(logging.WARNING):
+        CustomAgent(QLearning, {"n_actions": 2, "n_observations": 3}, features_extractor=features_extractor)
+
+    assert "does not train the features extractor" not in caplog.text
+
+
 def test_save_and_load_round_trip_restores_q_table_and_parameters(tmp_path):
     agent = make_agent()
     agent.save_to_file(tmp_path / "nested" / "q.pkl")
@@ -199,6 +231,55 @@ def test_save_and_load_round_trip_restores_q_table_and_parameters(tmp_path):
     np.testing.assert_array_equal(loaded.algorithm.q_table, agent.algorithm.q_table)
     assert loaded.algorithm.alpha == 0.7
     assert not hasattr(loaded.algorithm, "unknown")
+
+
+def frozen_index_agent():
+    """Agent mapping observations to rows by a frozen random projection (new random weights per agent)."""
+    features_extractor = TrainableIndex().requires_grad_(False)
+    return CustomAgent(QLearning, {"n_actions": 2, "n_observations": 3}, features_extractor=features_extractor)
+
+
+def rows(agent, observations):
+    return [int(row) for row in agent.algorithm.features_extractor(th.as_tensor(observations)).flatten()]
+
+
+def test_save_and_load_restore_the_features_extractor_weights(tmp_path):
+    agent = frozen_index_agent()
+    agent.train(total_timesteps=50, training_environments=[Toy()])
+    agent.save_to_file(tmp_path / "q.pkl")
+    box_observations = np.random.default_rng(0).uniform(-1, 1, (20, 3)).astype(np.float32)
+
+    # Another random projection maps the observations to other rows, until the saved weights are loaded
+    loaded = frozen_index_agent()
+    loaded.load_from_file(tmp_path / "q.pkl")
+
+    assert rows(loaded, box_observations) == rows(agent, box_observations)
+    assert [loaded.choose_action(o) for o in box_observations] == [agent.choose_action(o) for o in box_observations]
+    np.testing.assert_array_equal(loaded.algorithm.q_table, agent.algorithm.q_table)
+
+
+@pytest.mark.parametrize(
+    "features_extractor, message",
+    [
+        (ConstantIndex(), "does not match the one of the loaded model: class"),
+        (TrainableIndex(input_dim=4), "does not match the one of the loaded model: shape of `layer.weight`"),
+        (None, "The loaded model has a features extractor, but the agent has none"),
+    ],
+    ids=["other_class", "other_shapes", "none"],
+)
+def test_load_rejects_another_features_extractor(tmp_path, features_extractor, message):
+    frozen_index_agent().save_to_file(tmp_path / "q.pkl")
+
+    agent = CustomAgent(QLearning, {"n_actions": 2, "n_observations": 3}, features_extractor=features_extractor)
+    with pytest.raises(ValueError, match=message):
+        agent.load_from_file(tmp_path / "q.pkl")
+
+
+def test_load_rejects_a_features_extractor_if_the_saved_agent_has_none(tmp_path):
+    make_agent().save_to_file(tmp_path / "q.pkl")
+
+    with pytest.raises(ValueError, match="The loaded model has no features extractor, but the agent has one"):
+        frozen_index_agent().load_from_file(tmp_path / "q.pkl")
 
 
 def test_save_to_a_bare_file_name_in_the_working_directory(tmp_path, monkeypatch):

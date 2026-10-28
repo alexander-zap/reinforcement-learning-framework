@@ -6,8 +6,6 @@ import torch
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.data import buffer
 from imitation.data.types import TrajectoryWithRew
-from imitation.rewards.reward_nets import BasicRewardNet
-from imitation.util.networks import RunningNorm
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.vec_env import VecEnv
 
@@ -21,6 +19,7 @@ from .algorithm_wrapper import (
     FILE_NAME_SB3_ALGORITHM,
     AlgorithmWrapper,
 )
+from .reward_net import load_reward_net, make_reward_net
 
 
 class GAILAlgorithmWrapper(AlgorithmWrapper):
@@ -62,15 +61,8 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
                     **self.rl_algo_kwargs,
                 ),
             ),
-            # FIXME: This probably will not work with Dict as observation_space.
-            #  Might require extension of BasicRewardNet to use features_extractor as well.
             "reward_net": self.loaded_parameters.get(
-                "reward_net",
-                BasicRewardNet(
-                    observation_space=vectorized_environment.observation_space,
-                    action_space=vectorized_environment.action_space,
-                    normalize_input_layer=RunningNorm,
-                ),
+                "reward_net", make_reward_net(vectorized_environment, self.features_extractor)
             ),
         }
         parameters.update(**self.algorithm_parameters)
@@ -92,6 +84,5 @@ class GAILAlgorithmWrapper(AlgorithmWrapper):
 
     def load_algorithm(self, folder_path: Path):
         gen_algo = self._load_rl_algo(folder_path, **self.rl_algo_kwargs)
-        # The reward net is saved as whole module (not only weights), which torch>=2.6 does not unpickle by default
-        reward_net = torch.load(folder_path / FILE_NAME_REWARD_NET, weights_only=False)
+        reward_net = load_reward_net(folder_path / FILE_NAME_REWARD_NET, self.features_extractor)
         self.loaded_parameters.update({"gen_algo": gen_algo, "reward_net": reward_net})

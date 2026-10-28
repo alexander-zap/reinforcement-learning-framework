@@ -16,6 +16,8 @@ from rl_framework.util import (
     Connector,
     Environment,
     FeaturesExtractor,
+    check_saved_features_extractor_description,
+    describe_features_extractor,
     encode_observations_with_features_extractor,
 )
 
@@ -42,6 +44,10 @@ class QLearning(CustomAlgorithm):
     ):
         """
         Initialize an Q-Learning agent which will be trained.
+
+        The features extractor maps observations to Q-table rows and is not trained (the table lookup passes no
+        gradient to it, and changing it would remap the rows already learned). Pretrain and freeze it instead.
+        Its weights are saved with the Q-table (they define the mapping, also if random) and restored on load.
         """
         self.alpha = alpha
         self.gamma = gamma
@@ -49,6 +55,12 @@ class QLearning(CustomAlgorithm):
         self.epsilon_min = epsilon_min
         self.n_actions = n_actions
         self.features_extractor = features_extractor
+
+        if features_extractor and any(parameter.requires_grad for parameter in features_extractor.parameters()):
+            logging.warning(
+                "QLearning does not train the features extractor, its trainable parameters keep their current values. "
+                "Pretrain the features extractor and freeze it (`requires_grad_(False)`) to silence this warning."
+            )
 
         if randomize_q_table:
             self.q_table = np.random.random_sample((n_observations, n_actions)) * 0.1
@@ -214,7 +226,8 @@ class QLearning(CustomAlgorithm):
 
     def save_to_file(self, file_path: Path, *args, **kwargs):
         """
-        Save the action-prediction model (Q-Table) of the agent to pickle file.
+        Save the action-prediction model (Q-Table) of the agent to pickle file, together with the weights of the
+        features extractor (which map observations to Q-table rows) and its description (to check it on load).
 
         Args:
             file_path (Text): Path where the model should be saved to.
@@ -223,19 +236,37 @@ class QLearning(CustomAlgorithm):
         directory = os.path.dirname(file_path)
         if directory:  # empty for a bare file name in the working directory
             os.makedirs(directory, exist_ok=True)
+        features_extractor = (
+            {
+                "description": describe_features_extractor(self.features_extractor),
+                "state_dict": self.features_extractor.state_dict(),
+            }
+            if self.features_extractor
+            else None
+        )
         with open(file_path, "wb") as f:
-            pickle.dump(self.q_table, f)
+            pickle.dump({"q_table": self.q_table, "features_extractor": features_extractor}, f)
 
     def load_from_file(self, file_path: Path, algorithm_parameters: Optional[Dict] = None, *args, **kwargs):
         """
         Load the action-prediction model (Q-Table) from a previously created (by the .save function) pickle file.
+        The agent's features extractor must match the saved one (raises a `ValueError` otherwise); its weights are
+        restored from the file.
 
          Args:
             file_path (Text): Path where the model has been previously saved to.
             algorithm_parameters (Optional[Dict]): Parameters to be set for the downloaded agent-algorithm.
         """
         with open(file_path, "rb") as f:
-            self.q_table = pickle.load(f)
+            saved = pickle.load(f)
+
+        saved_features_extractor = saved["features_extractor"]
+        check_saved_features_extractor_description(
+            saved_features_extractor["description"] if saved_features_extractor else None, self.features_extractor
+        )
+        if saved_features_extractor:
+            self.features_extractor.load_state_dict(saved_features_extractor["state_dict"])
+        self.q_table = saved["q_table"]
 
         if algorithm_parameters:
             for key, value in algorithm_parameters.items():

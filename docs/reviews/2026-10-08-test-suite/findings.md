@@ -1,6 +1,6 @@
 # Test suite and bug report (branch `test_suite`)
 
-**Date:** 2026-10-08 (status updated 2026-10-12)
+**Date:** 2026-10-08 (status updated 2026-10-12, open items rechecked 2026-10-27)
 **Base:** `save_as_onnx` @ 827c39b (rl_framework 0.11.4). Locked dependencies: stable-baselines3 2.7.1, imitation 1.0.0, d3rlpy 2.6.1, torch 2.7.1, gymnasium 0.29.1, async-gym-agents 0.5.0.
 **Downstream reference:** `../synthetic-player-experiment-space` (usage survey below).
 
@@ -59,11 +59,17 @@ The uncovered rest is mostly abstract-method bodies (`raise NotImplementedError`
 
 ## Open items (not fixed)
 
-- **`record_video` rejects EnvironmentFactory tuples in SB3 mode**, so the experiment space's factory configs upload without a video.
-- **Same-class features extractors with different preprocessing are not detected on load.** The load check compares classes and kwargs, not the preprocessing.
-- **PettingZoo agents which leave without restarting** still fail inside supersuit (`MarkovVectorEnv` asserts on missing agents).
-- **Trainable features extractors for d3rlpy and QLearning** are not supported, and d3rlpy does not save the extractor. The plan is in `.scratch/trainable-features-extractor/README.md`.
-- **Experiment space** needs the rl_framework release that requires async-gym-agents 0.5.0 (`EpisodeCallbackContext.worker_index` / `env_index`); until then its venv (0.4.1) fails `test_launcher.py::test_cartpole_config_trains_and_evaluates_through_main`.
+Rechecked 2026-10-27 against 0.12.0 (3366b79).
+
+- **`record_video` rejects EnvironmentFactory tuples in SB3 mode**, so the experiment space's factory configs upload without a video. Fixed on branch `environment_factory_support` (not merged): `record_video` creates the environment of a factory (the first one of a list), records it and closes it.
+- **Same-class features extractors with different preprocessing are not detected on load.** Accepted limitation (decided 2026-10-27, documented in [Features extractors](../../features-extractors.md#limitations)): `preprocess` is arbitrary user code and cannot be compared in general. `check_saved_features_extractor` catches every structural mismatch (class, `output_dim`, `preprocessed_observation_space`, parameter shapes); keeping the preprocessing consistent between saving and loading is the user's responsibility.
+- **PettingZoo agents which leave without restarting** still fail inside supersuit: training a two-agent env in which one agent terminates early raises `AssertionError: environment has agent death` in `MarkovVectorEnv.concat_obs`, although `black_death=True` is passed (supersuit 3.9.3 to 3.11.0 and `master` ignore the flag there). Fixed on branch `pettingzoo_vector_env` (not merged) with our own `PettingZooVectorEnv`: a leaving agent's done step is passed through; its slot then gets dummy steps until the reset (empty observation, reward 0, truncated, `discard`, not counted as episodes). Verified 2026-10-27 on the Unity builds TanksGym (`Test`, 32 agents), 3DBall12 and Walker10 against 0.12.0 (agents restarting on their own): same done steps, final observations and episode statistics (bit-identical for the seeded 3DBall12 and Walker10 runs).
+- **Found while fixing: imitation agents report every PettingZoo episode end one step late.** supersuit's `black_death_v3` (used by `ImitationAgent`) only ends an episode when all agents are terminated *and* truncated, so the real last step looks like an ordinary step, followed by a junk step marked as truncated. Fixed upstream on supersuit `master` (#265, unreleased). Fixed on branch `pettingzoo_vector_env`: `ImitationAgent` uses `PettingZooVectorEnv` too.
+- ~~**Trainable features extractors for d3rlpy and QLearning** are not supported, and d3rlpy does not save the extractor.~~ Resolved 2026-10-27 (not yet released), documented in [Features extractors](../../features-extractors.md):
+  - **d3rlpy:** the features extractor is put in front of the network of every configured encoder factory (default 256x256 MLP), trained, and saved with the model; loading checks it. No backward compatibility for models saved earlier (none exist).
+  - **QLearning:** trainable extractors are not supported, by design. The table lookup passes no gradient to the extractor, and changing it would remap the rows already learned; a trainable Q-function over features is SB3's DQN. Extractors must be pretrained and frozen: `QLearning` logs a warning if the extractor has trainable parameters. Its weights are saved with the Q-table (they define the row mapping, also if random) and restored and checked on load. No backward compatibility for Q-tables saved earlier (none exist).
+- ~~**Found while fixing: the GAIL and AIRL discriminator ignores the features extractor.**~~ Resolved 2026-10-28 (not yet released): `BasicRewardNet` worked directly on the preprocessed observations, without the features extractor's `forward`. The discriminator now gets its own copy of the features extractor (trained with the discriminator loss), saved with it and checked on load. No backward compatibility for discriminators saved earlier (none exist). Dict observations remain unsupported by imitation's adversarial training.
+- ~~**Experiment space** needs the rl_framework release that requires async-gym-agents 0.5.0.~~ Resolved: rl_framework 0.12.0 requires `async-gym-agents>=0.5.0`, and the experiment space requires `reinforcement-learning-framework>=0.12.0` (0.12.0 locked).
 
 ## Findings (as reported)
 
@@ -137,7 +143,7 @@ Documented or deliberate behaviors rather than bugs. All but the first are fixed
 
 | Limitation | Status |
 |---|---|
-| **Features extractor on VecEnv or EnvironmentFactory:** `wrap_environment_with_features_extractor_preprocessor` raises `TypeError`, so `train` and `evaluate` with a features extractor only work for gym and PettingZoo envs. | Open, planned on a separate branch together with `record_video` for EnvironmentFactory tuples. Factories need `env_func` itself wrapped, since async workers create their environments from it. |
+| **Features extractor on VecEnv or EnvironmentFactory:** `wrap_environment_with_features_extractor_preprocessor` raises `TypeError`, so `train` and `evaluate` with a features extractor only work for gym and PettingZoo envs. | Fixed on branch `environment_factory_support` (not merged): VecEnvs are wrapped per batch (also `terminal_observation` infos), factories get a wrapped stub and a picklable wrapped `env_func` (async workers create their environments from it). |
 | **Imitation checkpoint interval is fixed** (50,000 steps, no `callback_kwargs`). Downstream `callback_kwargs` in `agent.params` even reached the imitation algorithm. | `ImitationAgent` takes `callback_kwargs` (saving and logging interval, distributions, verbosity) out of the algorithm parameters, also on load. |
 | **Video errors are swallowed:** `record_video` logs and swallows all exceptions; ClearML then reports a missing video file. | `record_video` raises (a failing ffmpeg as `RuntimeError`); an interrupt saves the video recorded so far. The connectors log the error with traceback and upload without video (HuggingFace removes a partial file). |
 | **`D3RLPYAgent.save_to_file` needs a `Path`.** | Accepts `str` as well. |

@@ -14,6 +14,8 @@ from .features_extractor_utils import (
     FeaturesExtractor,
     StableBaselinesFeaturesExtractor,
     check_saved_features_extractor,
+    check_saved_features_extractor_description,
+    describe_features_extractor,
     encode_observations_with_features_extractor,
     get_sb3_policy_kwargs_for_features_extractor,
     wrap_environment_with_features_extractor_preprocessor,

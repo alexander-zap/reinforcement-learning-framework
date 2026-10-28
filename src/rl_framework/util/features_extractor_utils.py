@@ -146,31 +146,54 @@ def check_saved_features_extractor(saved_policy_kwargs: dict, features_extractor
         features_extractor: Features extractor of the agent (None if it has none).
     """
     saved = (saved_policy_kwargs.get("features_extractor_kwargs") or {}).get("features_extractor")
-    specified = features_extractor
-    if saved is None and specified is None:
+    check_saved_features_extractor_description(
+        describe_features_extractor(saved) if saved is not None else None, features_extractor
+    )
+
+
+def describe_features_extractor(features_extractor: FeaturesExtractor) -> dict:
+    """
+    Comparable description of a features extractor, picklable to be stored next to saved weights: its class (name),
+    `output_dim`, `preprocessed_observation_space` and the shapes of its parameters (not their values, which change in
+    training).
+    """
+    return {
+        "class": f"{type(features_extractor).__module__}.{type(features_extractor).__qualname__}",
+        "output_dim": features_extractor.output_dim,
+        "preprocessed_observation_space": features_extractor.preprocessed_observation_space,
+        "parameter_shapes": {name: tuple(value.shape) for name, value in features_extractor.state_dict().items()},
+    }
+
+
+def check_saved_features_extractor_description(
+    saved_description: Optional[dict], features_extractor: Optional[FeaturesExtractor]
+) -> None:
+    """
+    Raise if the description of a saved features extractor (see `describe_features_extractor`) does not match the
+    agent's features extractor.
+
+    Args:
+        saved_description: Description of the saved features extractor (None if the saved model has none).
+        features_extractor: Features extractor of the agent (None if it has none).
+    """
+    saved = saved_description
+    if saved is None and features_extractor is None:
         return
-    if saved is None or specified is None:
+    if saved is None or features_extractor is None:
         raise ValueError(
             f"The loaded model {'has no' if saved is None else 'has a'} features extractor, but the agent "
             f"{'has one' if saved is None else 'has none'}."
         )
-
-    def class_name(extractor: FeaturesExtractor) -> str:
-        return f"{type(extractor).__module__}.{type(extractor).__qualname__}"
-
-    def parameter_shapes(extractor: FeaturesExtractor) -> dict:
-        return {name: tuple(value.shape) for name, value in extractor.state_dict().items()}
+    specified = describe_features_extractor(features_extractor)
 
     differences = []
-    if class_name(saved) != class_name(specified):
-        differences.append(f"class: stored {class_name(saved)}, specified {class_name(specified)}")
+    if saved["class"] != specified["class"]:
+        differences.append(f"class: stored {saved['class']}, specified {specified['class']}")
     else:
         for attribute in ("output_dim", "preprocessed_observation_space"):
-            if getattr(saved, attribute) != getattr(specified, attribute):
-                differences.append(
-                    f"`{attribute}`: stored {getattr(saved, attribute)!r}, specified {getattr(specified, attribute)!r}"
-                )
-        saved_shapes, specified_shapes = parameter_shapes(saved), parameter_shapes(specified)
+            if saved[attribute] != specified[attribute]:
+                differences.append(f"`{attribute}`: stored {saved[attribute]!r}, specified {specified[attribute]!r}")
+        saved_shapes, specified_shapes = saved["parameter_shapes"], specified["parameter_shapes"]
         differences += [
             f"shape of `{name}`: stored {saved_shapes.get(name, 'not set')}, "
             f"specified {specified_shapes.get(name, 'not set')}"
