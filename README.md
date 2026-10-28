@@ -46,6 +46,8 @@ In short:
 - Create a new Unity project.
 - Navigate to the menu `Window -> Package Manager` and install the `com.unity.ml-agents` package in Unity. ➡ https://docs.unity3d.com/Manual/upm-ui-install.html
 
+Unity agents which restart on their own need an `ml-agents-envs` which passes the last observation of a finished episode as `final_observation` info (see [PettingZoo environments](#pettingzoo-environments)): the fork `ml-agents-envs` 1.35 on the `mlopsbi` Artifactory index.
+
 ## Getting Started
 
 ### Configuring an environment
@@ -80,6 +82,10 @@ PettingZoo `ParallelEnv`s are trained with one shared policy: each possible agen
 - **Agents which restart on their own** while the others continue follow gymnasium's auto-reset convention: the done step returns the first observation of the agent's next episode and passes the last observation of the finished one as `infos[agent]["final_observation"]`.
 - **Agents which leave before the others** (done, and no longer in `agents`): their done step ends their episode as usual. Until the environment is reset, their slot then gets dummy steps: an empty observation (zeros), reward 0, truncated, with the info `discard`. Dummy steps are not counted as episodes (episode logging, SB3's `ep_rew_mean`), but the algorithm still trains on them: they take up batch samples, and with normalized observations the zero observation is an ordinary state. Their share of all steps is logged as `Dummy step share` (once a dummy step occurred).
 - All agents must have the same observation and action spaces.
+
+Not supported yet:
+
+- **Masking dummy steps** out of training (instead of training on them). Stable-Baselines 3 has no masking, it would need own rollout and replay buffers per algorithm. Worth it only if the `Dummy step share` turns out large.
 
 ### Imitation Learning agent
 
@@ -207,6 +213,8 @@ uv run pytest tests --cov=src --cov-report=html --cov-report=term
 ```
 
 Have a look at the `htmlcov` folder, after the tests are done.
+
+A known bug gets a test which asserts the desired behavior, marked `@pytest.mark.xfail(strict=True)`. Its fix makes the test pass, which strict mode reports as a failure, so the marker is removed together with the fix.
 
 The ONNX export tests evaluate the exported models with ONNX Runtime (`onnxruntime`, part of the `dev` dependency group), see [ONNX export of agent policies](docs/onnx-export.md#development-notes).
 
