@@ -20,9 +20,9 @@ class PettingZooVectorEnv(gymnasium.vector.VectorEnv):
     Agents which leave before the other agents (done, and no longer in `agents`): their done step is passed through,
     so their episode ends with its real last transition. Until the environment is reset, their slot then gets dummy
     steps: an empty observation (zeros), reward 0, truncated (with the empty observation as `terminal_observation`), and
-    the info `discard` (not counted as episode, e.g., by the episode logging). The training algorithm still learns from
-    these steps: being truncated, their values bootstrap from the empty observation itself, which keeps them
-    uninformative, but they take up batch samples.
+    the infos `discard` (not counted as episode, e.g., by the episode logging) and `dummy_step` (their share of all
+    steps is logged). The training algorithm still learns from these steps: being truncated, their values bootstrap
+    from the empty observation itself, which keeps them uninformative, but they take up batch samples.
 
     Agents which restart on their own while the other agents continue: see `AutoResetSB3VecEnvWrapper`.
     Replaces supersuit's `MarkovVectorEnv`, whose `black_death` option does not support leaving agents.
@@ -86,7 +86,7 @@ class PettingZooVectorEnv(gymnasium.vector.VectorEnv):
                 if env_done:
                     info["terminal_observation"] = observations.get(agent, self._empty_observation)
             else:
-                info = {"terminal_observation": self._empty_observation, "discard": True}
+                info = {"terminal_observation": self._empty_observation, "discard": True, "dummy_step": True}
             slot_infos.append(info)
 
         if env_done:

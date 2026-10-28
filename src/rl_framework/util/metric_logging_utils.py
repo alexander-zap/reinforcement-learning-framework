@@ -41,6 +41,8 @@ class MetricAggregator:
         - episode rewards
         - mean of any tracked metric (provided as "step_metric_<name>" in the info dict at each step)
         - reason of episode end (provided as "episode_end_reason" in the info dict on terminated step)
+        - share of dummy steps among all steps (provided as "dummy_step" in the info dict, e.g., the steps of PettingZoo
+          agents which left before the others), once a dummy step occurred
 
     Episodes running at the same time (one per agent index, e.g., per environment of a vectorized environment) are
     tracked separately until they end. Finished episodes are pooled; discarded ones are dropped.
@@ -68,6 +70,11 @@ class MetricAggregator:
         # Every episode end reason seen so far, logged with share 0 when absent since the last log
         self.seen_end_reasons: set = set()
 
+        # Steps (of all agent indices) and dummy steps since the last log; logged once a dummy step occurred
+        self.step_count = 0
+        self.dummy_step_count = 0
+        self.seen_dummy_steps = False
+
     def aggregate_step(self, observations, actions, rewards, dones, infos, index_offset: int = 0):
         """
         This method will be called by the model after each call to `env.step()`.
@@ -77,6 +84,11 @@ class MetricAggregator:
         """
         for index, info in enumerate(infos):
             agent_index = index_offset + index
+
+            self.step_count += 1
+            if info.get("dummy_step", False):
+                self.dummy_step_count += 1
+                self.seen_dummy_steps = True
 
             running_reward = self.running_episode_reward.get(agent_index, 0.0)
             self.running_episode_reward[agent_index] = running_reward + rewards[index]
@@ -162,6 +174,11 @@ class MetricAggregator:
                     title_name=f"{metric_name_prefix}Episode end reasons",
                 )
 
+        if self.seen_dummy_steps and self.step_count:
+            self.connector.log_value_with_timestep(
+                num_timesteps, self.dummy_step_count / self.step_count, f"{metric_name_prefix}Dummy step share"
+            )
+
         if log_distributions:
             # Log action distribution
             if self.distribution_actions:
@@ -190,6 +207,8 @@ class MetricAggregator:
 
         self.episode_rewards = []
         self.episode_end_reasons = Counter()
+        self.step_count = 0
+        self.dummy_step_count = 0
         self.step_metric_statistics = {}
         self.distribution_actions = []
         self.distribution_step_metric_values = {}

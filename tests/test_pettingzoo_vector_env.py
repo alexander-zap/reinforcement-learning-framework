@@ -43,7 +43,7 @@ def test_left_agents_get_discarded_truncated_dummy_steps_until_the_reset():
     for _ in range(2):
         observations, rewards, terminations, truncations, infos = step(vector_env)
         assert rewards[1] == 0.0 and not terminations[1] and truncations[1]
-        assert infos[1]["discard"] is True
+        assert infos[1]["discard"] is True and infos[1]["dummy_step"] is True
         np.testing.assert_array_equal(observations[1], np.zeros(3, np.float32))
         np.testing.assert_array_equal(infos[1]["terminal_observation"], np.zeros(3, np.float32))
         assert not terminations[0] and not truncations[0] and "discard" not in infos[0]
@@ -75,6 +75,10 @@ def test_sb3_training_with_left_agents_sees_only_the_real_episodes():
     assert all(3.0 <= reward <= 15.0 for reward in returns)
     assert {episode["l"] for episode in agent.algorithm.ep_info_buffer} == {2, 5}
     assert {episode["r"] for episode in agent.algorithm.ep_info_buffer} == {3.0, 15.0}
+    # Logged after every episode: when "b" leaves (no dummy step since the last log) and when "a" ends (dummy steps of
+    #   "b" in 3 of the 6 steps since then)
+    dummy_step_shares = [share for _, share in connector.value_sequences_to_log["Dummy step share"]]
+    assert set(dummy_step_shares) == {0.0, 0.5}
 
 
 def test_evaluation_with_left_agents_counts_their_real_episodes():
