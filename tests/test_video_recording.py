@@ -49,11 +49,43 @@ def test_recording_preprocesses_observations_with_the_agents_features_extractor(
     assert all(np.array_equal(observation, [2, 2, 2]) for observation in agent.observations)
 
 
-def test_recording_an_agent_with_features_extractor_requires_a_gym_environment(tmp_path):
+def test_sb3_recording_preprocesses_vectorized_observations_with_the_agents_features_extractor(tmp_path, monkeypatch):
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: FFMPEG_SUCCESS)
+    agent = ConstantActionAgent(features_extractor=Doubling())
+    environment = DummyVecEnv([lambda: Toy(observation_space=spaces.Box(1, 1, (3,), np.float32), episode_length=3)])
+
+    record_video(agent, environment, tmp_path / "replay.mp4", video_length=5)
+
+    assert agent.observations
+    assert all(np.array_equal(observation, [2, 2, 2]) for observation in agent.observations)
+
+
+class ClosingToy(Toy):
+    created = []
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        ClosingToy.created.append(self)
+
+
+@pytest.mark.parametrize("sb3_replay", [False, True], ids=["simple", "sb3"])
+@pytest.mark.parametrize("returns_list", [False, True], ids=["environment", "list"])
+def test_recording_creates_the_environment_of_a_factory_and_closes_it(tmp_path, monkeypatch, sb3_replay, returns_list):
+    monkeypatch.setattr(video_recording.subprocess, "run", lambda command, **kwargs: FFMPEG_SUCCESS)
+    ClosingToy.created = []
     agent = ConstantActionAgent(features_extractor=Doubling())
 
-    with pytest.raises(ValueError, match="features extractor requires a gym.Env"):
-        record_video(agent, DummyVecEnv([Toy]), tmp_path / "replay.mp4", video_length=5)
+    def env_func():
+        observation_space = spaces.Box(1, 1, (3,), np.float32)
+        if not returns_list:
+            return ClosingToy(observation_space=observation_space, episode_length=3)
+        return [ClosingToy(observation_space=observation_space, episode_length=3) for _ in range(2)]
+
+    record_video(agent, (Toy(), env_func), tmp_path / "replay.gif", video_length=5, sb3_replay=sb3_replay)
+
+    assert agent.observations
+    assert all(np.array_equal(observation, [2, 2, 2]) for observation in agent.observations)
+    assert ClosingToy.created and all(environment.closed for environment in ClosingToy.created)
 
 
 def test_sb3_recording_rejects_unsupported_environments(tmp_path):

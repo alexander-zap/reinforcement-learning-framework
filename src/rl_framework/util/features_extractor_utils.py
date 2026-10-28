@@ -11,6 +11,7 @@ import torch.nn
 from pettingzoo.utils.wrappers import BaseParallelWrapper
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper
 
 from rl_framework.util.types import Environment
 
@@ -47,63 +48,133 @@ def encode_observations_with_features_extractor(
     return features
 
 
+def _preprocess_one(features_extractor: "FeaturesExtractor", observation):
+    """Preprocess a single observation (`preprocess` takes a batch)."""
+    return features_extractor.preprocess(np.array([observation]))[0]
+
+
+def _preprocessed_space(features_extractor: "FeaturesExtractor", observation_space: gym.spaces.Space):
+    if features_extractor.preprocessed_observation_space is not None:
+        return features_extractor.preprocessed_observation_space
+    return observation_space
+
+
+class FeaturesExtractorPreprocessingGymWrapper(gym.ObservationWrapper):
+    def __init__(self, env, features_extractor: "FeaturesExtractor"):
+        super().__init__(env)
+        self.features_extractor = features_extractor
+        self.observation_space = _preprocessed_space(features_extractor, env.observation_space)
+
+    def observation(self, observation):
+        return _preprocess_one(self.features_extractor, observation)
+
+
+class FeaturesExtractorPreprocessingPettingzooWrapper(BaseParallelWrapper):
+    def __init__(self, env, features_extractor: "FeaturesExtractor"):
+        super().__init__(env)
+        self.features_extractor = features_extractor
+
+    def observation_space(self, agent):
+        return _preprocessed_space(self.features_extractor, self.env.observation_space(agent))
+
+    def _preprocess(self, observations: dict) -> dict:
+        return {
+            agent: _preprocess_one(self.features_extractor, observation) for agent, observation in observations.items()
+        }
+
+    def reset(self, seed=None, options=None):
+        observations, infos = self.env.reset(seed=seed, options=options)
+        return self._preprocess(observations), infos
+
+    def step(self, actions: dict):
+        observations, rewards, terminations, truncations, infos = self.env.step(actions)
+        # Last observation of a finished episode of an agent which restarted on its own (gymnasium's auto-reset
+        #   convention, see StableBaselinesAgent.train); it is preprocessed like the returned observations
+        final_observations = {
+            agent: info["final_observation"] for agent, info in infos.items() if "final_observation" in info
+        }
+        for agent, final_observation in self._preprocess(final_observations).items():
+            infos[agent]["final_observation"] = final_observation
+        return self._preprocess(observations), rewards, terminations, truncations, infos
+
+
+class FeaturesExtractorPreprocessingVecEnvWrapper(VecEnvWrapper):
+    """
+    Preprocesses the observations of a VecEnv (one `preprocess` call per batch), including the `terminal_observation`
+    infos of done sub-environments. Dict observations (a dict of batched arrays in SB3) are passed to `preprocess`
+    like those of a gym.Env: as an array of one dict per sub-environment.
+    """
+
+    def __init__(self, venv: VecEnv, features_extractor: "FeaturesExtractor"):
+        super().__init__(venv, observation_space=_preprocessed_space(features_extractor, venv.observation_space))
+        self.features_extractor = features_extractor
+
+    def _preprocess(self, observations):
+        if isinstance(observations, dict):
+            batch = np.empty(self.num_envs, dtype=object)
+            batch[:] = [{key: value[i] for key, value in observations.items()} for i in range(self.num_envs)]
+            observations = batch
+        return self.features_extractor.preprocess(observations)
+
+    def reset(self):
+        return self._preprocess(self.venv.reset())
+
+    def step_wait(self):
+        observations, rewards, dones, infos = self.venv.step_wait()
+        for info in infos:
+            if "terminal_observation" in info:
+                info["terminal_observation"] = _preprocess_one(self.features_extractor, info["terminal_observation"])
+        return self._preprocess(observations), rewards, dones, infos
+
+
+class PreprocessedEnvironmentFunction:
+    """
+    Environment function of an EnvironmentFactory whose environments are wrapped with the features extractor's
+    preprocessing (picklable, e.g., for subprocesses which create their environments).
+    """
+
+    def __init__(self, env_func, features_extractor: "FeaturesExtractor"):
+        self.env_func = env_func
+        self.features_extractor = features_extractor
+
+    def __call__(self):
+        environment = self.env_func()
+        if isinstance(environment, list):
+            return [
+                wrap_environment_with_features_extractor_preprocessor(env, self.features_extractor)
+                for env in environment
+            ]
+        return wrap_environment_with_features_extractor_preprocessor(environment, self.features_extractor)
+
+
 def wrap_environment_with_features_extractor_preprocessor(
-    environment: Environment, features_extractor: FeaturesExtractor
+    environment: Environment, features_extractor: "FeaturesExtractor"
 ) -> Environment:
-    class FeaturesExtractorPreprocessingGymWrapper(gym.ObservationWrapper):
-        def __init__(self, env, features_extractor: FeaturesExtractor):
-            super().__init__(env)
-            self.features_extractor = features_extractor
-            self.observation_space = (
-                features_extractor.preprocessed_observation_space
-                if features_extractor.preprocessed_observation_space is not None
-                else env.observation_space
-            )
+    """
+    Wrap an environment so that its observations are preprocessed with the features extractor (`preprocess`).
 
-        def observation(self, observation):
-            return self.features_extractor.preprocess(np.array([observation]))[0]
-
-    class FeaturesExtractorPreprocessingPettingzooWrapper(BaseParallelWrapper):
-        def __init__(self, env, features_extractor: FeaturesExtractor):
-            super().__init__(env)
-            self.features_extractor = features_extractor
-
-        def observation_space(self, agent):
-            if self.features_extractor.preprocessed_observation_space is not None:
-                return self.features_extractor.preprocessed_observation_space
-            return self.env.observation_space(agent)
-
-        def _preprocess(self, observations: dict) -> dict:
-            return {
-                agent: self.features_extractor.preprocess(np.array([observation]))[0]
-                for agent, observation in observations.items()
-            }
-
-        def reset(self, seed=None, options=None):
-            observations, infos = self.env.reset(seed=seed, options=options)
-            return self._preprocess(observations), infos
-
-        def step(self, actions: dict):
-            observations, rewards, terminations, truncations, infos = self.env.step(actions)
-            # Last observation of a finished episode of an agent which restarted on its own (gymnasium's auto-reset
-            #   convention, see StableBaselinesAgent.train); it is preprocessed like the returned observations
-            final_observations = {
-                agent: info["final_observation"] for agent, info in infos.items() if "final_observation" in info
-            }
-            for agent, final_observation in self._preprocess(final_observations).items():
-                infos[agent]["final_observation"] = final_observation
-            return self._preprocess(observations), rewards, terminations, truncations, infos
-
+    - gym.Env and PettingZoo ParallelEnv: every observation (also `final_observation` infos of PettingZoo agents which
+      restart on their own).
+    - VecEnv: every batch of observations (also `terminal_observation` infos).
+    - EnvironmentFactory (stub_environment, env_return_function): the stub environment (for its observation space)
+      and the environments the function creates (gym.Env, list of gym.Env or VecEnv), when they are created.
+    """
     if isinstance(environment, pettingzoo.ParallelEnv):
-        wrapped_environment = FeaturesExtractorPreprocessingPettingzooWrapper(environment, features_extractor)
-    elif isinstance(environment, gym.Env):
-        wrapped_environment = FeaturesExtractorPreprocessingGymWrapper(environment, features_extractor)
-    else:
-        raise TypeError(
-            "Environment must be either a gym.Env or pettingzoo.ParallelEnv. "
-            "Other types are not supported yet for using features_extractor."
+        return FeaturesExtractorPreprocessingPettingzooWrapper(environment, features_extractor)
+    if isinstance(environment, gym.Env):
+        return FeaturesExtractorPreprocessingGymWrapper(environment, features_extractor)
+    if isinstance(environment, VecEnv):
+        return FeaturesExtractorPreprocessingVecEnvWrapper(environment, features_extractor)
+    if isinstance(environment, tuple):
+        stub_environment, env_func = environment
+        return (
+            FeaturesExtractorPreprocessingGymWrapper(stub_environment, features_extractor),
+            PreprocessedEnvironmentFunction(env_func, features_extractor),
         )
-    return wrapped_environment
+    raise TypeError(
+        f"Environment of type {type(environment).__name__} is not supported for using features_extractor (supported: "
+        "gym.Env, pettingzoo.ParallelEnv, VecEnv and EnvironmentFactory)."
+    )
 
 
 def get_sb3_policy_kwargs_for_features_extractor(

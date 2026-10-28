@@ -32,20 +32,37 @@ def record_video(
     Like `Agent.evaluate`, the agent's `choose_action` gets the context of the episode (`reward` of its previous step,
     `episode_start` and `episode_key`), for agents whose actions depend on it (e.g., d3rlpy's decision transformers).
 
+    The environment can be a gym.Env, a VecEnv (SB3 recording only; its first sub-environment is recorded) or an
+    EnvironmentFactory (stub_environment, env_return_function): the environment is then created for the recording (of
+    a list of environments, the first one) and closed afterwards.
+
     If the agent has a features extractor, the environment's observations are preprocessed with it (like in training
-    and evaluation) before the agent chooses its actions; the recorded frames (`render`) are unaffected. This requires
-    a gym.Env: a VecEnv cannot be wrapped and is rejected with a ValueError.
+    and evaluation) before the agent chooses its actions; the recorded frames (`render`) are unaffected.
 
     Errors of the agent, the environment or the video conversion are raised (a failing ffmpeg as RuntimeError), and so
     are interrupts (KeyboardInterrupt): no video is saved then.
     """
+    # tuple = EnvironmentFactory in format (stub_environment, env_return_function)
+    environment_from_factory = isinstance(video_recording_environment, tuple)
+    if environment_from_factory:
+        _, env_func = video_recording_environment
+        video_recording_environment = env_func()
+        if isinstance(video_recording_environment, list):
+            video_recording_environment, *unused_environments = video_recording_environment
+            for unused_environment in unused_environments:
+                unused_environment.close()
+
+    try:
+        _record_video(agent, video_recording_environment, file_path, fps, video_length, sb3_replay)
+    finally:
+        if environment_from_factory:
+            # Closing twice is harmless (the SB3 recording closes its environment itself)
+            video_recording_environment.close()
+
+
+def _record_video(agent, video_recording_environment, file_path: Path, fps: int, video_length: int, sb3_replay: bool):
     features_extractor = getattr(agent, "features_extractor", None)
     if isinstance(features_extractor, FeaturesExtractor):
-        if not isinstance(video_recording_environment, gym.Env):
-            raise ValueError(
-                "Recording an agent with a features extractor requires a gym.Env as video recording environment "
-                f"(to preprocess its observations), got {type(video_recording_environment).__name__}."
-            )
         video_recording_environment = wrap_environment_with_features_extractor_preprocessor(
             video_recording_environment, features_extractor
         )
