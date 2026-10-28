@@ -73,6 +73,14 @@ agent.train(training_environments=environments, total_timesteps=N_TRAINING_TIMES
 
 Independent of which environment and which agent you choose, the unified interface allows to always start the training this way.
 
+#### PettingZoo environments
+
+PettingZoo `ParallelEnv`s are trained with one shared policy: each possible agent is one sub-environment ("slot") of the vectorized environment (see [`PettingZooVectorEnv`](src/rl_framework/util/pettingzoo_vector_env.py), used by the Stable-Baselines 3 and Imitation agents). The environment is reset once all agents are done.
+
+- **Agents which restart on their own** while the others continue follow gymnasium's auto-reset convention: the done step returns the first observation of the agent's next episode and passes the last observation of the finished one as `infos[agent]["final_observation"]`.
+- **Agents which leave before the others** (done, and no longer in `agents`): their done step ends their episode as usual. Until the environment is reset, their slot then gets dummy steps: an empty observation (zeros), reward 0, truncated, with the info `discard`. Dummy steps are not counted as episodes (episode logging, SB3's `ep_rew_mean`), but the algorithm still trains on them: they take up batch samples, and with normalized observations the zero observation is an ordinary state.
+- All agents must have the same observation and action spaces.
+
 ### Imitation Learning agent
 
 #### Class definition

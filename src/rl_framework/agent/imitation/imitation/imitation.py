@@ -6,7 +6,6 @@ from typing import Dict, List, Optional, Type
 
 import gymnasium as gym
 import pettingzoo
-import supersuit as ss
 from imitation.algorithms.adversarial.airl import AIRL
 from imitation.algorithms.adversarial.gail import GAIL
 from imitation.algorithms.base import DemonstrationAlgorithm
@@ -42,6 +41,7 @@ from rl_framework.util import (
     wrap_environment_with_features_extractor_preprocessor,
 )
 from rl_framework.util.onnx_export import export_sb3_policy_as_onnx
+from rl_framework.util.pettingzoo_vector_env import pettingzoo_environments_to_vec_env
 from rl_framework.util.sb3_training_callbacks import create_saving_and_logging_callbacks
 
 patch_imitation_safe_to_tensor()
@@ -179,13 +179,6 @@ class ImitationAgent(ILAgent):
             ]
 
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
-
-            def pettingzoo_environment_to_vectorized_environment(pettingzoo_environment: pettingzoo.ParallelEnv):
-                env = ss.black_death_v3(pettingzoo_environment)
-                env = ss.pettingzoo_env_to_vec_env_v1(env)
-                env = ss.concat_vec_envs_v1(env, 1, num_cpus=1, base_class="stable_baselines3")
-                return env
-
             if len(training_environments) > 1:
                 logging.warning(
                     f"Imitation Learning algorithm {self.__class__.__qualname__} does not support "
@@ -193,7 +186,7 @@ class ImitationAgent(ILAgent):
                     f"training environment."
                 )
 
-            vectorized_environment = pettingzoo_environment_to_vectorized_environment(training_environments[0])
+            vectorized_environment = pettingzoo_environments_to_vec_env(training_environments[:1], max_num_cpus=1)
 
         elif isinstance(training_environments[0], gym.Env):
             training_environments = [Monitor(env) for env in training_environments]

@@ -85,6 +85,30 @@ class ToyParallel(pettingzoo.ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
 
+class LeavingParallel(ToyParallel):
+    """
+    Agent "b" terminates after `leave_after` steps and leaves (no longer in `agents`), "a" after `episode_length`
+    steps. The reward of the t-th step is t, so with the defaults the returns are 1+...+5 = 15 ("a") and 1+2 = 3 ("b").
+    """
+
+    def __init__(self, episode_length=5, leave_after=2):
+        super().__init__(episode_length)
+        self.leave_after = leave_after
+
+    def step(self, actions):
+        assert set(actions) == set(self.agents), "only active agents may act"
+        self.t += 1
+        observations = {agent: BOX.sample() for agent in self.agents}
+        rewards = {agent: float(self.t) for agent in self.agents}
+        terminations = {
+            agent: self.t >= (self.leave_after if agent == "b" else self.episode_length) for agent in self.agents
+        }
+        truncations = {agent: False for agent in self.agents}
+        infos = {agent: {} for agent in self.agents}
+        self.agents = [agent for agent in self.agents if not terminations[agent]]
+        return observations, rewards, terminations, truncations, infos
+
+
 class RestartingParallel(ToyParallel):
     """
     Agents restart on their own, following gymnasium's auto-reset convention: a done step returns the START

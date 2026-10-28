@@ -278,7 +278,7 @@ def test_pettingzoo_training_with_self_restarting_agents_uses_their_final_observ
             return super().get_callbacks(connector) + [DoneStepRecorder()]
 
     agent = RecordingAgent(PPO, PPO_PARAMETERS)
-    # 'a' restarts every 3 steps, 'b' every 4, so both finish together every 12 steps (when MarkovVectorEnv resets)
+    # 'a' restarts every 3 steps, 'b' every 4, so both finish together every 12 steps (when PettingZooVectorEnv resets)
     agent.train(total_timesteps=48, training_environments=[RestartingParallel(lengths=(3, 4))])
 
     assert len(done_steps) >= 12
