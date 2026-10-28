@@ -1,7 +1,6 @@
 import logging
 import tempfile
 from functools import partial
-from os import cpu_count
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Type
 
@@ -13,9 +12,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import VecEnv, VecMonitor
-from supersuit.vector import MakeCPUAsyncConstructor, MarkovVectorEnv
-from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
+from stable_baselines3.common.vec_env import VecEnv
 
 from rl_framework.agent.reinforcement_learning_agent import RLAgent
 from rl_framework.util import (
@@ -34,6 +31,7 @@ from rl_framework.util import (
     wrap_environment_with_features_extractor_preprocessor,
 )
 from rl_framework.util.onnx_export import export_sb3_policy_as_onnx
+from rl_framework.util.pettingzoo_vector_env import pettingzoo_environments_to_vec_env
 from rl_framework.util.sb3_training_callbacks import create_saving_and_logging_callbacks
 
 
@@ -121,6 +119,8 @@ class StableBaselinesAgent(RLAgent):
                 other agents continue follow gymnasium's auto-reset convention: the done step returns the first
                 observation of the agent's next episode and passes the last observation of the finished episode as
                 `infos[agent]["final_observation"]`. Without this info, the returned observation is used as both.
+                Agents which leave before the others get dummy steps until the reset (empty observation, reward 0,
+                truncated, not counted as episodes; see `PettingZooVectorEnv`).
             total_timesteps (int): Amount of individual steps the agent should take before terminating the training.
             connector (Connector): Connector for executing callbacks (e.g., logging metrics and saving checkpoints)
                 on training time. Calls need to be declared manually in the code.
@@ -142,64 +142,7 @@ class StableBaselinesAgent(RLAgent):
             ]
 
         if isinstance(training_environments[0], pettingzoo.ParallelEnv):
-            vector_envs = []
-            for pettingzoo_environment in training_environments:
-                vector_env = MarkovVectorEnv(pettingzoo_environment, black_death=True)
-                vector_envs.append(vector_env)
-
-            environment_return_functions = [
-                partial(make_env, vector_envs, env_index) for env_index in range(len(vector_envs))
-            ]
-
-            vectorized_environment = MakeCPUAsyncConstructor(min(cpu_count(), len(environment_return_functions)))(
-                environment_return_functions, vector_envs[0].observation_space, vector_envs[0].action_space
-            )
-
-            class AutoResetSB3VecEnvWrapper(SB3VecEnvWrapper):
-                """
-                A SB3VecEnvWrapper for Pettingzoo based vectorized environments (through MarkovVectorEnv).
-                MarkovVectorEnv resets the environment automatically once all agents are done and returns the done
-                flags and rewards of the final step together with the observations of the new episode.
-                Sets infos for each done agent on step (as SB3 expects from auto-resetting vectorized environments):
-                    - `infos["terminal_observation"]`: the last observation of the finished episode
-                    - `infos["TimeLimit.truncated"] = True` when truncated (else False)
-
-                For agents which restart on their own, the `final_observation` info (gymnasium's auto-reset convention,
-                see `train`) is the last observation of the finished episode. It takes precedence, also over the
-                `terminal_observation` which MarkovVectorEnv sets to the returned observation when all agents are done.
-
-                Seeding (SB3 calls `seed` when the algorithm gets a `seed`): the seed is applied at the next reset,
-                each PettingZoo environment being reset with `seed + index` (by supersuit's vectorized environments).
-                """
-
-                def __init__(self, venv):
-                    super().__init__(venv)
-                    self._seed_for_next_reset: Optional[int] = None
-
-                def seed(self, seed: Optional[int] = None):
-                    self._seed_for_next_reset = seed
-                    return [None if seed is None else seed + index for index in range(self.num_envs)]
-
-                def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-                    seed = self._seed_for_next_reset if seed is None else seed
-                    self._seed_for_next_reset = None
-                    # Note: SB3's vector envs return only observations on reset, and store infos in `self.reset_infos`
-                    observations, self.reset_infos = self.venv.reset(seed=seed, options=options)
-                    return observations
-
-                def step_wait(self):
-                    observations, rewards, terminations, truncations, infos = self.venv.step_wait()
-                    dones = np.array([terminations[i] or truncations[i] for i in range(len(terminations))])
-                    for i in np.flatnonzero(dones):
-                        infos[i]["TimeLimit.truncated"] = bool(truncations[i] and not terminations[i])
-                        if "final_observation" in infos[i]:
-                            infos[i]["terminal_observation"] = infos[i]["final_observation"]
-                        else:
-                            infos[i].setdefault("terminal_observation", observations[i])
-                    return observations, rewards, dones, infos
-
-            vectorized_environment = AutoResetSB3VecEnvWrapper(vectorized_environment)
-            vectorized_environment = VecMonitor(vectorized_environment)
+            vectorized_environment = pettingzoo_environments_to_vec_env(training_environments)
 
         elif isinstance(training_environments[0], gymnasium.Env):
             training_environments = [Monitor(env) for env in training_environments]

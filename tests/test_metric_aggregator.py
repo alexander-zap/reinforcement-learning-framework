@@ -216,3 +216,21 @@ def test_end_reasons_absent_since_the_last_log_are_logged_as_zero():
 
     assert connector.scalars[("Episode end reasons", "Episode end reason - won")] == (1, 1.0)
     assert connector.scalars[("Episode end reasons", "Episode end reason - lost")] == (1, 0.0)
+
+
+def test_dummy_step_share_is_logged_once_a_dummy_step_occurred():
+    connector = LoggedValues()
+    aggregator = MetricAggregator(connector=connector)
+    step(aggregator, [1, 1], [True, True])
+    aggregator.log_and_clear_aggregated_metrics(num_timesteps=1)
+    assert (None, "Dummy step share") not in connector.scalars
+
+    step(aggregator, [1, 0], [False, True], [{}, {"discard": True, "dummy_step": True}])
+    step(aggregator, [1, 0], [True, True], [{}, {"discard": True, "dummy_step": True}])
+    aggregator.log_and_clear_aggregated_metrics(num_timesteps=3)
+    assert connector.scalars[(None, "Dummy step share")] == (3, 0.5)
+
+    # Once seen, also logged as 0 (counted since the last log)
+    step(aggregator, [1, 1], [True, True])
+    aggregator.log_and_clear_aggregated_metrics(num_timesteps=4)
+    assert connector.scalars[(None, "Dummy step share")] == (4, 0.0)
