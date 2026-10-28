@@ -9,6 +9,7 @@ import numpy as np
 import onnx
 import onnxruntime
 import pytest
+import torch as th
 from d3rlpy.algos import (
     DQN,
     TD3,
@@ -25,7 +26,14 @@ from rl_framework.agent.imitation.d3rlpy.d3rlpy import (
     ConnectorAdapterFactory,
 )
 from rl_framework.util import FeaturesExtractor, record_video, video_recording
-from tests.toys import BOX, InProcessD3RLPYAgent, RecordingConnector, Toy, ToyParallel
+from tests.toys import (
+    BOX,
+    InProcessD3RLPYAgent,
+    Linear,
+    RecordingConnector,
+    Toy,
+    ToyParallel,
+)
 
 CARTPOLE_ROLLOUT = Path(__file__).parents[1] / "data" / "cartpole_rollout"
 # One logging interval (ceil(10000 / 32) = 313 batches of 32)
@@ -252,7 +260,7 @@ def test_q_learning_trains_with_validation_episodes(demonstrations, observations
 
 
 class Scaling(FeaturesExtractor):
-    """Preprocessing-only features extractor (d3rlpy uses its own encoders, not `forward`)."""
+    """Preprocessing-only features extractor (its `forward`, in front of d3rlpy's encoders, is the identity)."""
 
     output_dim = 4
 
@@ -266,6 +274,121 @@ class Scaling(FeaturesExtractor):
 def test_features_extractor_preprocesses_demonstrations(demonstrations, observations):
     agent = train(InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}, Scaling()), demonstrations)
     assert set(actions(agent, observations)) <= {0, 1}
+
+
+def network_features_extractor(agent):
+    """The features extractor copy in the (DiscreteBC) agent's network."""
+    return agent.algorithm.impl.modules.imitator._encoder.features_extractor
+
+
+def test_features_extractor_is_trained_in_front_of_the_default_encoder(demonstrations):
+    features_extractor = Linear(input_dim=4)
+    initial_weights = features_extractor.layer.weight.detach().clone()
+    agent = train(InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}, features_extractor), demonstrations)
+
+    encoder = agent.algorithm.impl.modules.imitator._encoder
+    assert encoder.features_extractor is not features_extractor
+    assert not th.equal(encoder.features_extractor.layer.weight, initial_weights)
+    # The agent's own features extractor is not trained (the network has a copy)
+    assert th.equal(features_extractor.layer.weight, initial_weights)
+    # d3rlpy's default encoder (256x256 MLP) after the features extractor
+    assert [layer.out_features for layer in encoder.encoder._layers if isinstance(layer, th.nn.Linear)] == [256, 256]
+    assert agent.algorithm_parameters == {"batch_size": 32}
+
+
+@pytest.mark.parametrize("hidden_units", [[], [8]])
+def test_encoder_factory_defines_the_network_after_the_features_extractor(hidden_units):
+    parameters = {"batch_size": 32, "encoder_factory": d3rlpy.models.VectorEncoderFactory(hidden_units=hidden_units)}
+    agent = InProcessD3RLPYAgent(DiscreteBC, parameters, Linear(input_dim=4))
+    agent.algorithm.build_with_env(gym.make("CartPole-v1"))
+
+    encoder = agent.algorithm.impl.modules.imitator._encoder
+    assert isinstance(encoder.features_extractor, Linear)
+    assert [layer.out_features for layer in encoder.encoder._layers if isinstance(layer, th.nn.Linear)] == hidden_units
+
+
+def test_every_network_has_its_own_features_extractor_copy():
+    agent = InProcessD3RLPYAgent(DQN, {"batch_size": 32}, Linear(input_dim=4))
+    agent.algorithm.build_with_env(gym.make("CartPole-v1"))
+
+    modules = agent.algorithm.impl.modules
+    q_function_extractor = modules.q_funcs[0]._encoder.features_extractor
+    assert q_function_extractor is not modules.targ_q_funcs[0]._encoder.features_extractor
+
+
+def test_continuous_critics_put_the_features_extractor_in_front_of_the_state_action_encoder(tmp_path):
+    action_space = gym.spaces.Box(-1, 1, (2,), np.float32)
+    agent = InProcessD3RLPYAgent(TD3, {"batch_size": 32}, Linear(input_dim=3))
+    agent.algorithm.build_with_env(Toy(BOX, action_space))
+    agent.action_space = action_space
+    box_observations = np.random.default_rng(0).uniform(-1, 1, (5, 3)).astype(np.float32)
+
+    modules = agent.algorithm.impl.modules
+    assert isinstance(modules.policy._encoder.features_extractor, Linear)
+    critic_encoder = modules.q_funcs[0]._encoder
+    assert isinstance(critic_encoder.features_extractor, Linear)
+    # State-action encoder: extracted features (4) concatenated with the action (2)
+    assert critic_encoder.encoder._layers[0].in_features == Linear.output_dim + 2
+
+    agent.save_to_file(tmp_path / "agent.d3")
+    loaded = InProcessD3RLPYAgent(TD3, {"batch_size": 32}, Linear(input_dim=3))
+    loaded.load_from_file(tmp_path / "agent.d3")
+    chosen_actions = np.stack([agent.choose_action(observation) for observation in box_observations])
+    np.testing.assert_allclose(
+        np.stack([loaded.choose_action(observation) for observation in box_observations]), chosen_actions, rtol=1e-6
+    )
+
+    agent.save_policy_as_onnx(tmp_path / "policy.onnx")
+    session = onnxruntime.InferenceSession(str(tmp_path / "policy.onnx"), providers=["CPUExecutionProvider"])
+    (onnx_actions,) = session.run(["action"], {"obs": box_observations})
+    np.testing.assert_allclose(onnx_actions, chosen_actions, rtol=1e-5, atol=1e-6)
+
+
+@pytest.fixture(scope="module")
+def trained_with_features_extractor(demonstrations):
+    return train(InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}, Linear(input_dim=4)), demonstrations)
+
+
+def test_load_restores_the_trained_features_extractor(trained_with_features_extractor, observations, tmp_path):
+    agent = trained_with_features_extractor
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    # A new features extractor instance (other random weights): the weights come from the file
+    loaded = InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}, Linear(input_dim=4))
+    loaded.load_from_file(tmp_path / "agent.d3")
+
+    assert th.equal(network_features_extractor(loaded).layer.weight, network_features_extractor(agent).layer.weight)
+    assert actions(loaded, observations) == actions(agent, observations)
+
+
+class OtherLinear(Linear):
+    pass
+
+
+@pytest.mark.parametrize(
+    "features_extractor, message",
+    [
+        (OtherLinear(input_dim=4), "does not match the one of the loaded model: class"),
+        (Linear(input_dim=5), "does not match the one of the loaded model: shape of `layer.weight`"),
+        (None, "The loaded model has a features extractor, but the agent has none"),
+    ],
+    ids=["other_class", "other_shapes", "none"],
+)
+def test_load_rejects_another_features_extractor(
+    trained_with_features_extractor, tmp_path, features_extractor, message
+):
+    trained_with_features_extractor.save_to_file(tmp_path / "agent.d3")
+
+    with pytest.raises(ValueError, match=message):
+        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}, features_extractor).load_from_file(tmp_path / "agent.d3")
+
+
+def test_load_rejects_a_features_extractor_if_the_model_has_none(trained, tmp_path):
+    agent, _ = trained
+    agent.save_to_file(tmp_path / "agent.d3")
+
+    with pytest.raises(ValueError, match="The loaded model has no features extractor, but the agent has one"):
+        InProcessD3RLPYAgent(DiscreteBC, {"batch_size": 32}, Scaling()).load_from_file(tmp_path / "agent.d3")
 
 
 def test_training_on_pettingzoo_environment_uses_its_spaces_and_evaluates_online():

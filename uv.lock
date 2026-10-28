@@ -3512,7 +3512,7 @@ wheels = [
 
 [[package]]
 name = "reinforcement-learning-framework"
-version = "0.11.6"
+version = "0.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "async-gym-agents" },

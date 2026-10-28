@@ -73,6 +73,9 @@ from d3rlpy.dataset import ReplayBuffer
 from d3rlpy.logging import LoggerAdapter, LoggerAdapterFactory
 from stable_baselines3.common.vec_env import VecEnv
 
+from rl_framework.agent.imitation.d3rlpy.features_extractor_encoder import (
+    put_features_extractor_in_front_of_encoders,
+)
 from rl_framework.agent.imitation.episode_sequence import (
     EpisodeSequence,
     WrappedEpisodeSequence,
@@ -83,6 +86,8 @@ from rl_framework.util import (
     DummyConnector,
     Environment,
     FeaturesExtractor,
+    check_saved_features_extractor_description,
+    describe_features_extractor,
     patch_d3rlpy_map_location,
     patch_d3rlpy_onnx_export,
     wrap_environment_with_features_extractor_preprocessor,
@@ -222,6 +227,13 @@ class D3RLPYAgent(ILAgent):
                 - "target_return" (float): Decision transformers only: the return their actions aim to achieve
                   (required to choose actions, e.g. in `evaluate`).
                 - See https://d3rlpy.readthedocs.io/en/v2.6.0/references/algos.html for details on individual params.
+            features_extractor (FeaturesExtractor): When provided, its `preprocess` is applied to the observations
+                (demonstrations and environments), and the features extractor network is put in front of every
+                network of the algorithm and trained with it: each network is the features extractor, followed by the
+                network of the configured encoder factory (e.g. `encoder_factory`, `actor_encoder_factory`; d3rlpy's
+                default is a 256x256 MLP), followed by the algorithm's output layer. The encoder factory parameters
+                therefore define the network after the features extractor (e.g. `VectorEncoderFactory(hidden_units=[])`
+                for none).
         """
         super().__init__(algorithm_class, algorithm_parameters, features_extractor)
         self.algorithm = self._algorithm_config().create(device=self.algorithm_parameters.get("device"))
@@ -233,11 +245,15 @@ class D3RLPYAgent(ILAgent):
         self._episode_wrappers_lock = threading.Lock()
 
     def _algorithm_config(self) -> LearnableConfig:
-        """d3rlpy's config of the algorithm, from the algorithm parameters except the agent's own."""
+        """d3rlpy's config of the algorithm, from the algorithm parameters except the agent's own, with the features
+        extractor in front of every encoder."""
         config_parameters = {
             name: value for name, value in self.algorithm_parameters.items() if name not in AGENT_PARAMETERS
         }
-        return D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**config_parameters)
+        algorithm_config = D3RLPY_ALGORITHM_CONFIG_REGISTRY[self.algorithm_class](**config_parameters)
+        if self.features_extractor:
+            put_features_extractor_in_front_of_encoders(algorithm_config, self.features_extractor)
+        return algorithm_config
 
     def train(
         self,
@@ -525,17 +541,23 @@ class D3RLPYAgent(ILAgent):
             file_path (Path): The path where the agent should be saved to.
         """
         self.algorithm.save(Path(file_path).as_posix())
+        # Next to d3rlpy's keys ("torch", "config", "version"), the only ones its `load_learnable` reads
+        with open(file_path, "rb") as f:
+            obj = pickle.load(f)
         if self.action_space is not None:
-            # Next to d3rlpy's keys ("torch", "config", "version"), the only ones its `load_learnable` reads
-            with open(file_path, "rb") as f:
-                obj = pickle.load(f)
             obj["action_space"] = self.action_space
-            with open(file_path, "wb") as f:
-                pickle.dump(obj, f)
+        if self.features_extractor:
+            # To check the agent's features extractor on load
+            obj["features_extractor"] = describe_features_extractor(self.features_extractor)
+        with open(file_path, "wb") as f:
+            pickle.dump(obj, f)
 
     def load_from_file(self, file_path: Path, algorithm_parameters: Dict = None, *args, **kwargs) -> None:
         """Loads the agent policy (`self.agent_policy`) in-place from a zipped folder.
         The agent algorithm (`self.algorithm`) is re-initialized in the train method and remains None until then.
+
+        The agent's features extractor must match the one saved in the networks (raises a `ValueError` otherwise);
+        its trained weights are restored from the file.
 
         Args:
             file_path (Path): The file path the agent has been saved to before.
@@ -549,6 +571,7 @@ class D3RLPYAgent(ILAgent):
             obj = pickle.load(f)
 
         config = LearnableConfigWithShape.deserialize(obj["config"])
+        check_saved_features_extractor_description(obj.get("features_extractor"), self.features_extractor)
         algorithm_config = self._algorithm_config()
         # The scalers are fitted in training (to the dataset or environment): the stored ones, unless fitted ones are
         #   given (the parameters usually hold unfitted ones, or none)

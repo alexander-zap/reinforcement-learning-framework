@@ -115,6 +115,20 @@ agent = D3RLPYAgent(DiscreteDecisionTransformer, {"batch_size": 64, "context_siz
 - During training, decision transformers are evaluated online (`episode_reward_mean`) only with `target_return`; the validation metrics on validation episodes (`action_match`, `td_error`) are not computed for them.
 - Their ONNX export takes the target return as an input, see [ONNX export of agent policies](docs/onnx-export.md#decision-transformers).
 
+### Features extractors
+
+All agents accept a `features_extractor`: numpy preprocessing of the observations (`preprocess`) and a torch network (`forward`) in front of the agent's networks:
+
+```
+agent = StableBaselinesAgent(PPO, algorithm_parameters, features_extractor=MyFeaturesExtractor())
+```
+
+- Stable-Baselines 3, Imitation and d3rlpy agents train the features extractor together with their networks and save it with the model. For d3rlpy, the features extractor is put in front of the network of the configured encoder factory (default: 256x256 MLP). The discriminators of GAIL and AIRL get their own copy of the features extractor.
+- `QLearning` does not train it: use a pretrained, frozen features extractor (a trainable one logs a warning). Its weights are saved with the Q-table.
+- On load, the agent's features extractor must match the saved one (class, output size, parameter shapes), otherwise a `ValueError` is raised. Its preprocessing is not compared.
+
+Details in [Features extractors](docs/features-extractors.md).
+
 ### Evaluation
 
 Once you trained the agent, you can evaluate the agent policy on the environment and get the average accumulated reward (and standard deviation) as evaluation metric.

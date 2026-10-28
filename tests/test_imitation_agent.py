@@ -15,6 +15,8 @@ from imitation.algorithms.bc import BC
 from imitation.algorithms.density import DensityAlgorithm
 from imitation.algorithms.sqil import SQIL
 from imitation.data.types import TrajectoryWithRew
+from imitation.rewards.reward_nets import BasicRewardNet
+from imitation.util.networks import RunningNorm
 from stable_baselines3 import PPO
 
 from rl_framework.agent.imitation import (
@@ -22,6 +24,9 @@ from rl_framework.agent.imitation import (
     EpisodeSequence,
 )
 from rl_framework.agent.imitation.imitation.algorithms import BCAlgorithmWrapper
+from rl_framework.agent.imitation.imitation.algorithms.reward_net import (
+    FeaturesExtractorRewardNet,
+)
 from rl_framework.util import LoggingCallback, SavingCallback
 from tests.toys import (
     BOX,
@@ -465,3 +470,84 @@ def test_q_learning_based_policy_exports_greedy_actions_and_q_values(demonstrati
 
     model = onnx.load(tmp_path / "policy.onnx")
     assert [graph_output.name for graph_output in model.graph.output] == ["action", "q_values"]
+
+
+# --- features extractor in the reward network (discriminator) of GAIL and AIRL ---
+
+
+def reward_net_extractor_weights(agent):
+    return agent.algorithm._reward_net.features_extractor.layer.weight.detach().clone()
+
+
+@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL])
+def test_adversarial_reward_net_trains_its_own_copy_of_the_features_extractor(demonstrations, algorithm_class):
+    features_extractor = Linear(input_dim=4)
+    initial_weights = features_extractor.layer.weight.detach().clone()
+    agent = train(make_agent(algorithm_class, features_extractor=features_extractor), demonstrations)
+
+    reward_net = agent.algorithm._reward_net
+    assert isinstance(reward_net, FeaturesExtractorRewardNet)
+    assert reward_net.features_extractor is not features_extractor
+    assert reward_net.features_extractor is not agent.algorithm_policy.features_extractor.features_extractor
+    assert not th.equal(reward_net_extractor_weights(agent), initial_weights)
+    assert not th.equal(reward_net_extractor_weights(agent), extractor_weights(agent.algorithm_policy))
+
+
+@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL])
+def test_adversarial_reward_net_features_extractor_is_saved_and_loaded(demonstrations, tmp_path, algorithm_class):
+    agent, path = save_trained_agent_with_features_extractor(tmp_path, demonstrations, algorithm_class)
+
+    loaded = make_agent(algorithm_class, features_extractor=Linear(input_dim=4))
+    loaded.load_from_file(path)
+    loaded_reward_net = loaded.algorithm_wrapper.loaded_parameters["reward_net"]
+
+    th.testing.assert_close(loaded_reward_net.features_extractor.layer.weight, reward_net_extractor_weights(agent))
+    train(loaded, demonstrations, total_timesteps=64)
+    assert loaded.algorithm._reward_net is loaded_reward_net
+
+
+def test_adversarial_loading_rejects_another_features_extractor_in_the_reward_net(demonstrations, tmp_path):
+    agent, path = save_trained_agent_with_features_extractor(tmp_path, demonstrations, GAIL)
+    # Only the reward network's features extractor differs (the policy's matches)
+    agent.algorithm._reward_net.features_extractor = Negated(input_dim=4)
+    agent.save_to_file(path)
+
+    with pytest.raises(
+        ValueError, match=r"class: stored tests\.test_imitation_agent\.Negated, specified tests\.toys\.Linear$"
+    ):
+        make_agent(GAIL, features_extractor=Linear(input_dim=4)).load_from_file(path)
+
+
+def test_adversarial_loading_rejects_a_reward_net_without_the_features_extractor(demonstrations, tmp_path):
+    agent, path = save_trained_agent_with_features_extractor(tmp_path, demonstrations, GAIL)
+    cartpole = gym.make("CartPole-v1")
+    # Only the reward network has no features extractor (the policy has one)
+    agent.algorithm._reward_net = BasicRewardNet(
+        cartpole.observation_space, cartpole.action_space, normalize_input_layer=RunningNorm
+    )
+    agent.save_to_file(path)
+
+    with pytest.raises(ValueError, match="The loaded model has no features extractor, but the agent has one"):
+        make_agent(GAIL, features_extractor=Linear(input_dim=4)).load_from_file(path)
+
+
+class FirstTwoLinear(Linear):
+    """Preprocesses CartPole's observations to their first two values, then a trainable linear layer."""
+
+    preprocessed_observation_space = gym.spaces.Box(-np.inf, np.inf, (2,), np.float32)
+
+    def __init__(self):
+        super().__init__(input_dim=2)
+
+    def preprocess(self, observations):
+        return np.asarray(observations)[..., :2]
+
+
+@pytest.mark.parametrize("algorithm_class", [GAIL, AIRL])
+def test_adversarial_reward_net_applies_the_features_extractor_to_preprocessed_observations(
+    demonstrations, algorithm_class
+):
+    agent = train(make_agent(algorithm_class, features_extractor=FirstTwoLinear()), demonstrations)
+
+    assert agent.algorithm._reward_net.observation_space.shape == (2,)
+    assert agent.algorithm._reward_net.features_extractor.layer.in_features == 2
