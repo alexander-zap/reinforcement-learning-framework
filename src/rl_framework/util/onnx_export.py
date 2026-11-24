@@ -202,8 +202,12 @@ class OnnxPolicy(torch.nn.Module):
         self.is_dict_observation = isinstance(self.observation_space, gym.spaces.Dict)
         self.observation_names = list(self.observation_space.spaces.keys()) if self.is_dict_observation else ["obs"]
         if isinstance(self.action_space, gym.spaces.Box):
-            self.register_buffer("action_low", torch.as_tensor(self.action_space.low, dtype=torch.float32))
-            self.register_buffer("action_high", torch.as_tensor(self.action_space.high, dtype=torch.float32))
+            self.register_buffer(
+                "action_low", torch.as_tensor(self.action_space.low, dtype=torch.float32, device=self.device())
+            )
+            self.register_buffer(
+                "action_high", torch.as_tensor(self.action_space.high, dtype=torch.float32, device=self.device())
+            )
 
     # --- contract ---
 

@@ -279,6 +279,13 @@ def test_stochastic_box_export_samples_with_reparameterization_and_clips_the_act
     np.testing.assert_allclose(outputs["log_prob"], expected_log_prob, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.skipif(not th.cuda.is_available(), reason="needs CUDA")
+def test_box_export_of_a_policy_on_cuda(tmp_path):
+    model = PPO("MlpPolicy", Toy(BOX, spaces.Box(-0.5, 0.5, (2,))), device="cuda", seed=0)
+
+    export(model, tmp_path)
+
+
 # --- parity: MultiBinary, MaskablePPO ---
 
 
